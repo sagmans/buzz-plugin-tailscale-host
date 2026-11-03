@@ -116,8 +116,15 @@ async function turn(id, params) {
     brief: context.includes("Be brief."),
     named: context.includes(`pubkey ${agentArg}`),
   });
-  write({ id, result: { turn: { id: run.id, status: "inProgress" } } });
-  notify("turn/started", { threadId: thread.id, turn: { id: run.id, status: "inProgress" } });
+  // The reply, turn/started and the first item in one write, as a busy
+  // app-server's pipe can deliver them: the runner then reads all three
+  // before its turn/start call resumes. Separate writes only sometimes merge.
+  const opening = [
+    { id, result: { turn: { id: run.id, status: "inProgress" } } },
+    { method: "turn/started", params: { threadId: thread.id, turn: { id: run.id, status: "inProgress" } } },
+    { method: "item/started", params: { threadId: thread.id, turnId: run.id, item: { type: "reasoning", id: "r1" } } },
+  ];
+  process.stdout.write(opening.map((message) => `${JSON.stringify(message)}\n`).join(""));
   const end = (status, error) => {
     if (thread.turn === run) thread.turn = undefined;
     notify("turn/completed", { threadId: thread.id, turn: { id: run.id, status, ...(error ? { error: { message: error } } : {}) } });
@@ -131,7 +138,6 @@ async function turn(id, params) {
     const answer = await ask("item/commandExecution/requestApproval", { threadId: thread.id, turnId: run.id, itemId: "a1" });
     log({ type: "approval", thread: thread.id, code: answer?.error?.code ?? null });
   }
-  notify("item/started", { threadId: thread.id, turnId: run.id, item: { type: "reasoning", id: "r1" } });
   notify("item/started", {
     threadId: thread.id,
     turnId: run.id,

@@ -395,6 +395,13 @@ export class CodexEngine implements Engine {
       if (turn.title) await rpc.request("thread/name/set", { threadId, name: turn.title });
       const [text, memory] = await Promise.all([turn.prompt(fresh), this.deps.coreMemory()]);
       const settings = codexConfig({ ...setup, workspace: setup.cwd });
+      // Reported before turn/start, as an ACP harness writes session/prompt
+      // before its answer: Codex streams the turn's first items right after
+      // the reply, and they can be handled before this function resumes. The
+      // first report names the session and whether it is new, so a step seen
+      // first would announce a new thread as resumed. A refused turn/start
+      // still answers this prompt through `report`.
+      this.deps.feed?.prompt(key, threadId, !saved || fresh, text);
       const begun = await rpc.request<{ turn: { id: string } }>("turn/start", {
         threadId,
         input: input(text),
@@ -413,7 +420,6 @@ export class CodexEngine implements Engine {
       });
       active.turnId = begun.turn.id;
       this.remember(turn, threadId);
-      this.deps.feed?.prompt(key, threadId, !saved || fresh, text);
       ready();
       const status = await followed.completed;
       if (status === "interrupted" && active.stopped) {
