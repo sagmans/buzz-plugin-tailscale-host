@@ -8,6 +8,12 @@
 // hosts.json at each call. The plugin never sends a URL, so it can reach only
 // the hosts the user listed, and only their runner API.
 //
+// The Settings page also sets up a new host here (scripts/host-setup.mjs):
+// the page cannot reach a machine, and a setup runs for minutes, far past a
+// command's limit. It is the one call that takes a secret (the sudo
+// password), so the request is never logged and the password only goes on
+// to sudo's stdin on the machine.
+//
 // The build (scripts/build-plugin.mjs) declares this helper as the plugin's
 // one host process, with the hosts file fixed in the manifest. A one-shot
 // host command would not do: Desktop ends a command after five seconds, and
@@ -19,21 +25,29 @@
 //   {"id":2,"op":"save","hosts":[...]}           write the file
 //   {"id":3,"op":"request","host":"<id>","method":"GET","path":"/harnesses","timeoutMs":45000}
 //                                                one runner call; body is a JSON text
+//   {"id":4,"op":"machines"}                     the tailnet's Linux machines
+//   {"id":5,"op":"setup","setup":{"machine":"…","sshUser":"…","sudoPassword":"…",
+//     "ownerPubkey":"<hex>","relay":"wss://…","label":"…","reservedIds":["…"]}}
+//                                                install buzz-runner there, one at a time
 // stdout: one JSON reply per line, with the request's id:
 //   {"id":1,"ok":true,"hosts":[...]}  {"id":3,"ok":true,"status":200,"body":"..."}
 //   {"id":2,"ok":false,"error":"..."}
+//   {"id":5,"progress":{"step":"copy","state":"running"}}  before a setup's reply
 //   A line that cannot be read gets id null. Replies to runner calls come in
 //   the order the calls end, not the order they came.
 // Exit: 0 when stdin ends and every call is answered; 64 for wrong arguments.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PluginBuildError, readJson, runnerOrigin, validateHosts, writeAtomic } from "./build-plugin.mjs";
+import { listMachines, parseSetupRequest, setupHost, tailscaleStatus } from "./host-setup.mjs";
 
-const OPS = ["read", "save", "request"];
+const OPS = ["read", "save", "request", "machines", "setup"];
 const REQUEST_KEYS = Object.freeze({
   read: ["id", "op"],
   save: ["id", "op", "hosts"],
   request: ["id", "op", "host", "method", "path", "body", "timeoutMs"],
+  machines: ["id", "op"],
+  setup: ["id", "op", "setup"],
 });
 /** The runner contract's routes (docs/RUNNER_CONTRACT.md): every call stays
  * under this prefix, with the methods the contract uses. */
@@ -154,10 +168,34 @@ async function runnerCall(request, { hostsPath }) {
   }
 }
 
-/** Runs one request; returns the reply fields without the id. */
-export async function handle(request, paths) {
+/** True while a setup runs: two at once would race on hosts.json and ask
+ * the user for two sudo passwords in one view. */
+let settingUp = false;
+
+/** One host setup; `emit` sends each progress event to the plugin. The
+ * request is checked before anything reaches the machine. */
+async function setup(request, paths, emit) {
+  const parsed = parseSetupRequest(request.setup);
+  if (settingUp) throw new HostsHelperError("a setup is already running; wait for it to end");
+  settingUp = true;
+  try {
+    return await setupHost(parsed, { hostsPath: paths.hostsPath, onProgress: emit, deps: paths.setupDeps });
+  } finally {
+    settingUp = false;
+  }
+}
+
+/** Runs one request; returns the reply fields without the id. `emit` sends
+ * a progress event before the reply, for the calls that have them.
+ * `paths.setupDeps` is for the smoke run only (host-setup.mjs `deps`); the
+ * command line never sets it. */
+export async function handle(request, paths, emit = () => {}) {
   if (request.op === "read") return { hosts: validateHosts(readJson(paths.hostsPath, "hosts file"), paths.hostsPath) };
+  if (request.op === "machines") return { machines: listMachines(await (paths.setupDeps?.status ?? tailscaleStatus)()) };
+  if (request.op === "setup") return setup(request, paths, emit);
   if (request.op === "save") {
+    // The setup's own add would write over a save made while it runs.
+    if (settingUp) throw new HostsHelperError("a setup is running; save again when it ends");
     const hosts = validateHosts({ hosts: request.hosts }, "hosts");
     writeAtomic(paths.hostsPath, `${JSON.stringify({ hosts }, null, 2)}\n`);
     return { hosts };
@@ -190,12 +228,12 @@ async function serve(paths) {
     }
     inflight += 1;
     const started = Date.now();
-    const task = handle(request, paths)
+    const task = handle(request, paths, (progress) => reply({ id: request.id, progress }))
       .then(
         (fields) => reply({ id: request.id, ok: true, ...fields }),
         (error) => {
           // stderr is for a person who runs the helper by hand; Desktop gives it to the plugin's log.
-          console.error(JSON.stringify({ event: "hosts-helper.failed", op: request.op, host: request.host, path: request.path, elapsedMs: Date.now() - started, error: String(error?.message ?? error) }));
+          console.error(JSON.stringify({ event: "hosts-helper.failed", op: request.op, host: request.host, path: request.path, step: error?.step, elapsedMs: Date.now() - started, error: String(error?.message ?? error) }));
           errorReply(request.id, error);
         },
       )

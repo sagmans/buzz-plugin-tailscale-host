@@ -73,6 +73,10 @@ const SSH_USER_RE = /^[a-z_][a-z0-9_.-]{0,31}$/;
 /** A machine as the page names it: the first label of its MagicDNS name. */
 const MACHINE_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const HEX64 = /^[0-9a-f]{64}$/;
+/** A host id (scripts/build-plugin.mjs HOST_ID), and how many ids the page
+ * may reserve: the hosts that agents on its device still name. */
+const HOST_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+const RESERVED_MAX = 256;
 const PASSWORD_MAX = 256;
 const RELAY_MAX = 300;
 const LABEL_MAX = 40;
@@ -141,6 +145,10 @@ const SETUP_RULES = Object.freeze({
   ownerPubkey: [(value) => typeof value === "string" && HEX64.test(value), "the owner key must be 64 lowercase hex characters"],
   relay: [isRelay, "the relay must be a wss:// URL without credentials or query"],
   label: [(value) => value === undefined || isLabel(value), `the name must be 1-${LABEL_MAX} printable characters`],
+  reservedIds: [
+    (value) => value === undefined || (Array.isArray(value) && value.length <= RESERVED_MAX && value.every((id) => typeof id === "string" && HOST_ID_RE.test(id))),
+    `reserved ids must be at most ${RESERVED_MAX} host ids`,
+  ],
 });
 
 const SETUP_KEYS = Object.keys(SETUP_RULES);
@@ -153,8 +161,8 @@ export function parseSetupRequest(raw) {
   if (extra.length) throw fail(`unknown setup keys: ${extra.join(", ")}`);
   const setup = { sshUser: "", sudoPassword: "", ...raw };
   for (const [key, [ok, message]] of Object.entries(SETUP_RULES)) if (!ok(setup[key])) throw fail(message);
-  const { machine, sshUser, sudoPassword, ownerPubkey, relay, label } = setup;
-  return { machine, sshUser, sudoPassword, ownerPubkey, relay, label };
+  const { machine, sshUser, sudoPassword, ownerPubkey, relay, label, reservedIds } = setup;
+  return { machine, sshUser, sudoPassword, ownerPubkey, relay, label, reservedIds };
 }
 
 /** Runs a program with a deadline; resolves with its exit and bounded output.
@@ -367,13 +375,15 @@ const tail = (text) =>
     .map((line) => clip(line))
     .join("\n");
 
-/** The new host entry, or the one hosts.json already has for this origin. */
-function addHost(hostsPath, peer, label) {
+/** The new host entry, or the one hosts.json already has for this origin.
+ * A reserved id (a host removed by hand that agents still name) is never
+ * given out, so the new host does not take over those agents. */
+function addHost(hostsPath, peer, { label, reservedIds = [] }) {
   const origin = `https://${peer.dnsName}:${RUNNER_PORT}`;
   const hosts = existsSync(hostsPath) ? validateHosts(readJson(hostsPath, "hosts file"), hostsPath) : [];
   const known = hosts.find((host) => host.origin === origin);
   if (known) return { host: known, added: false };
-  const taken = new Set(hosts.map((host) => host.id));
+  const taken = new Set([...hosts.map((host) => host.id), ...reservedIds]);
   let id = peer.machine.slice(0, 32).replace(/-+$/, "");
   for (let n = 2; taken.has(id); n += 1) id = `${peer.machine.slice(0, 28).replace(/-+$/, "")}-${n}`;
   const host = { id, label: label ?? peer.name, origin };
@@ -499,7 +509,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     progress("done", `https://${peer.dnsName}:${RUNNER_PORT}`);
 
     begin("hosts");
-    const { host, added } = addHost(hostsPath, peer, setup.label);
+    const { host, added } = addHost(hostsPath, peer, setup);
     progress("done", added ? `added ${host.label}` : `${host.label} is already listed`);
 
     begin("health");

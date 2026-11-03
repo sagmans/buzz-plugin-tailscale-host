@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SETUP_STEPS, setupHost } from "../../scripts/host-setup.mjs";
+import { handle } from "../../scripts/hosts-helper.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -131,4 +132,43 @@ export async function setupSmoke({ check, temp }) {
   check("setup: sudo without a password runs `sudo -n` with nothing on stdin", !passwordless.error && passwordless.calls.at(-1)?.argv.at(-1).startsWith("sudo -n -- /bin/bash ") && passwordless.calls.at(-1)?.stdin === "", passwordless.error?.message);
   const asRoot = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, uid: "0" } });
   check("setup: a root login runs setup.sh directly", !asRoot.error && asRoot.calls.at(-1)?.argv.at(-1).startsWith("/bin/bash /tmp/buzz-runner-setup."), asRoot.error?.message);
+
+  // A host removed by hand whose id agents still name: the page reserves it.
+  const OTHER = "other-box";
+  const reserved = await attempt({ machine: OTHER, reservedIds: [OTHER] }, { entry: peer({ DNSName: `${OTHER}.example.ts.net.` }) });
+  const otherHost = JSON.parse(readFileSync(hostsPath, "utf8")).hosts.find((host) => host.origin === `https://${OTHER}.example.ts.net:10000`);
+  check("setup: a reserved host id is not given to the new host", !reserved.error && otherHost?.id === `${OTHER}-2`, reserved.error?.message ?? JSON.stringify(otherHost));
+
+  // The same setup through the hosts helper, as the page sends it.
+  const setupDeps = { status: async () => statusWith(peer()), ssh: FAKE_SSH, fetch: fakeFetch, root };
+  const helperPaths = { hostsPath, setupDeps };
+  const listed = await handle({ id: 1, op: "machines" }, helperPaths);
+  check(
+    "setup: the helper lists the tailnet's Linux machines with their tag, SSH and online marks",
+    JSON.stringify(listed.machines) === JSON.stringify([{ machine: MACHINE, name: "Smoke Box", dnsName: DNS, online: true, tagged: true, ssh: true }]),
+    JSON.stringify(listed),
+  );
+  const request = { id: 2, op: "setup", setup: { machine: MACHINE, sshUser: "owner", sudoPassword: PASSWORD, ownerPubkey: OWNER, relay: RELAY } };
+  const streamed = [];
+  const first = handle(request, helperPaths, (event) => streamed.push(event));
+  const second = await handle({ ...request, id: 3 }, helperPaths).then(
+    () => "ran",
+    (error) => error.message,
+  );
+  const save = await handle({ id: 5, op: "save", hosts: [{ id: "first", label: "first/host", origin: "https://first.example.ts.net:10000" }] }, helperPaths).then(
+    () => "saved",
+    (error) => error.message,
+  );
+  const firstReply = await first.catch((error) => ({ error: error.message }));
+  check("setup: the helper runs one setup at a time", /already running/.test(second) && firstReply.host?.origin === ORIGIN, `${second} ${JSON.stringify(firstReply)}`);
+  check("setup: the helper refuses a hosts.json save while a setup runs", /setup is running/.test(save) && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 3, save);
+  check(
+    "setup: the helper streams each step before its reply, and no event holds the password",
+    JSON.stringify(streamed.filter((event) => event.state === "done").map((event) => event.step)) === JSON.stringify(SETUP_STEPS) && !JSON.stringify(streamed).includes(PASSWORD),
+  );
+  const extra = await handle({ id: 4, op: "setup", setup: { ...request.setup, host: "x" } }, helperPaths).then(
+    () => "ran",
+    (error) => error.message,
+  );
+  check("setup: the helper refuses a setup with an unknown key", extra === "unknown setup keys: host", extra);
 }
