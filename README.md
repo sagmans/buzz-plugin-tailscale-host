@@ -34,7 +34,8 @@ from a desktop agent.
 ## Requirements
 
 - The Buzz desktop app with plugin API version 1.
-- A Linux host with systemd, Node.js 24 or newer, and Tailscale.
+- A Linux host with systemd, Node.js 24 or newer, and Tailscale. The host
+  must be a tagged node (see Security).
 - Node.js 24 or newer on the computer that builds the plugin.
 
 ## Install
@@ -126,6 +127,8 @@ The Buzz mobile app runs no plugins, but hosted agents do not need them:
   `tailscale serve` reaches, and it accepts only the Tailscale logins in its
   `allowedLogins`. Allow only your own devices to reach the host in the
   tailnet policy.
+- Use a tagged node for the host. On an untagged node, a harness on the
+  host can call the runner API through `tailscale serve` as you.
 - Harnesses run as a separate Unix user through two narrow sudo rules. They
   never get an agent key. All agents on a host share that user, so they can
   read each other's workspaces and the harness sign-ins.

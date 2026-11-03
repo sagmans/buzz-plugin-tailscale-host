@@ -127,9 +127,14 @@ The owner's steps after install:
    the claude version.
 4. Expose the API on the tailnet only: `tailscale serve --bg --https=10000
    unix:/run/buzz-runner/api.sock`. Limit the port to the owner in the tailnet
-   policy.
+   policy. The host must be a tagged node (`tailscale up
+   --advertise-tags=tag:<name>`): see the network note in
+   [Security notes](#security-notes).
 5. Check it as root: `curl -s --unix-socket /run/buzz-runner/api.sock -H
    'Tailscale-User-Login: <owner login>' http://runner/v1/health`.
+6. Check that the host cannot call itself: `sudo -u buzz-agent curl -s -o
+   /dev/null -w '%{http_code}\n' https://<host>.example.ts.net:10000/v1/health`
+   must print `403`.
 
 The API has no TCP listener. The runner refuses to start (exit 78) when the
 socket directory is not 0700 or not owned by its uid, when another runner still
@@ -329,6 +334,12 @@ routing). A missing and a wrong login get the same 403 body. Bodies must be
   owned by `buzz-runner`. Only `buzz-runner` and root (`tailscaled`) can
   connect, so no local user can forge the login header. `tailscale serve` is the
   only way in. The allowlist check fails closed.
+- **Tagged host:** a process on the host, such as a harness, can also reach
+  `tailscale serve` over the tailnet. On an untagged node, serve names the
+  node's owner as the caller and adds that login, so a harness would pass the
+  allowlist and control every agent. Tailscale adds no identity headers for
+  traffic from a tagged node, so on a tagged host such a call gets 403. Use a
+  tagged host, and run the self-call check in section "Deploy", step 6.
 - **Runner user:** `buzz-runner` is a system user without a login shell or
   sudo/docker groups. Its only privilege is the sudoers rule to run the two
   wrappers as `buzz-agent`.

@@ -82,6 +82,7 @@ channels (Desktop does the same, `relay/live.ts`).
 | Threat | Control |
 | --- | --- |
 | Other tailnet nodes call the runner | The tailnet policy allows only the owner to reach the host on port 10000. The runner also checks `Tailscale-User-Login` against `allowedLogins` (set by `tailscale serve`, which local users cannot forge because the socket is private). Fail closed |
+| A harness calls the runner through `tailscale serve` on its own host | The host must be a tagged node. Serve adds no identity headers for traffic from a tagged node, so the call has no login and gets 403. On an untagged node it would carry the owner's login |
 | Public internet | The API has no TCP listener: a Unix socket only, exposed with `tailscale serve`. Use no public ingress on the host |
 | The model reads an agent key | Two Unix users. The runner user owns the keys (0600 files in a 0700 state directory). Every harness runs as the harness user through two narrow sudoers lines. One workspace per agent. Tools are served in the runner, so no key is in the harness environment or files |
 | Agents read each other's data | Agents share the harness user, so they can read each other's workspaces and the shared harness sign-ins. Accepted for one owner; one Unix user per agent would close it |
