@@ -258,19 +258,27 @@ if id -u "$RUNNER_USER" >/dev/null 2>&1; then
 else
 	run useradd --system --home-dir "/var/lib/$RUNNER_DIRNAME" --no-create-home --shell /usr/sbin/nologin "$RUNNER_USER"
 fi
-if id -u "$RUNNER_USER" >/dev/null 2>&1; then
-	for group in $(id -nG "$RUNNER_USER"); do
+# An existing account may be reused, so its groups are checked: a member of
+# one of these groups reaches root (sudo) or its equivalent (docker, lxd), and
+# no-new-privs in the wrappers does not stop a docker socket.
+refuse_privileged() {
+	local user=$1 group bad
+	id -u "$user" >/dev/null 2>&1 || return 0
+	for group in $(id -nG "$user"); do
 		for bad in $PRIVILEGED_GROUPS; do
-			[ "$group" != "$bad" ] || die "$EX_CONFIG" "$RUNNER_USER is in group $bad; remove it (it must not reach root or docker)"
+			[ "$group" != "$bad" ] || die "$EX_CONFIG" "$user is in group $bad; remove it (it must not reach root or docker)"
 		done
 	done
-fi
+}
+refuse_privileged "$RUNNER_USER"
 if id -u "$AGENT_USER" >/dev/null 2>&1; then
 	note "harness user $AGENT_USER exists"
 else
 	# No login shell: the owner reaches it only with `sudo -u` and a command.
 	run useradd --create-home --home-dir "$AGENT_HOME" --shell /usr/sbin/nologin "$AGENT_USER"
 fi
+# Agents run their tools as this user, so it is held to the runner's rule.
+refuse_privileged "$AGENT_USER"
 run install -d -o "$AGENT_USER" -g "$AGENT_USER" -m 0700 "$AGENT_HOME"
 
 # ---- Files -----------------------------------------------------------------
