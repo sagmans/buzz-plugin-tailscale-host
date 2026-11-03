@@ -27,9 +27,13 @@ const PASSWORD = "smoke sudo pass";
 const LOGIN = "owner@example.com";
 const MACHINE = "smoke-box";
 const DNS = `${MACHINE}.example.ts.net`;
-const ORIGIN = `https://${DNS}:10000`;
-/** The address as the owner types it: the runner port is the setup's own. */
+/** The address as the owner types it, and as hosts.json keeps it: the
+ * runner port is the setup's own. */
 const ADDRESS = `https://${DNS}`;
+const ORIGIN = ADDRESS;
+const SERVE_ORIGIN = `${ORIGIN}:10000`;
+/** The runner-only Node path (scripts/host-setup.mjs NODE_PATHS). */
+const RUNNER_NODE = "/opt/buzz-runner/node";
 /** Stands in for scripts/build-runner.mjs: writes a bundle where --out says. */
 const FAKE_BUILD = `import { mkdirSync, writeFileSync } from "node:fs";
 const out = process.argv[process.argv.indexOf("--out") + 1];
@@ -44,7 +48,7 @@ const fixtureGit = (root, args) =>
   });
 const OWNER = "ef".repeat(32);
 const RELAY = "wss://relay.example.ts.net";
-const FACTS = Object.freeze({ os: "Linux", uid: "1000", node: "24.1.0", systemd: "1", tailscale: "1", sudo: "1" });
+const FACTS = Object.freeze({ os: "Linux", uid: "1000", node_bin: "/usr/bin/node", node: "24.1.0", systemd: "1", tailscale: "1", sudo: "1" });
 const STAGE_PREFIX = "buzz-runner-setup.";
 
 const peer = (overrides = {}) => ({
@@ -85,7 +89,7 @@ export async function setupSmoke({ check, temp }) {
   /** One setup; returns its progress, its result or error, and the ssh calls. */
   async function attempt(request, { entry = peer(), facts = FACTS, env = {} } = {}) {
     writeFileSync(log, "");
-    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
+    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
     const events = [];
     let result;
     let error;
@@ -129,6 +133,10 @@ export async function setupSmoke({ check, temp }) {
   check("setup: ssh refuses a machine whose key Tailscale does not report", failedAt(pinned, "connect") && /Host key verification failed/.test(pinned.error.message), pinned.error?.message);
   const oldNode = await attempt({}, { facts: { ...FACTS, node: "20.11.0" } });
   check("setup: Node older than 24 on the machine stops the setup before the copy", failedAt(oldNode, "connect") && oldNode.calls.length === 1 && /Node 24 or newer/.test(oldNode.error.message), oldNode.error?.message);
+  const otherNode = await attempt({}, { facts: { ...FACTS, node_bin: "/opt/tools/bin/node" } });
+  check("setup: a Node path that is not in the list stops the setup before the copy", failedAt(otherNode, "connect") && otherNode.calls.length === 1 && /at \/opt\/buzz-runner\/node or \/usr\/bin\/node/.test(otherNode.error.message), otherNode.error?.message);
+  const userNode = await attempt({}, { env: { FAKE_SSH_NODE_UNSAFE: "1" } });
+  check("setup: a Node that a non-root user can change fails the install step with that reason", failedAt(userNode, "install") && /not root can change \/usr\/bin\/node/.test(userNode.error.message), userNode.error?.message);
   const noPassword = await attempt({ sudoPassword: "" });
   check("setup: sudo that asks for a password, with none given, stops before the copy", failedAt(noPassword, "connect") && noPassword.calls.length === 1 && /enter it/.test(noPassword.error.message), noPassword.error?.message);
 
@@ -150,21 +158,24 @@ export async function setupSmoke({ check, temp }) {
   check("setup: the first-install config names this owner, relay and Tailscale login", config?.ownerPubkey === OWNER && JSON.stringify(config.relays) === JSON.stringify([RELAY]) && JSON.stringify(config.allowedLogins) === JSON.stringify([LOGIN]) && config.runAsUser === "buzz-agent", JSON.stringify(config));
   const hosts = JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
   check("setup: the machine joins hosts.json with its serve origin and the given name", hosts.length === 2 && hosts[1].id === MACHINE && hosts[1].label === "smoke/box" && hosts[1].origin === ORIGIN && done.result?.added === true, JSON.stringify(hosts));
-  check("setup: the health check goes to the new origin", health.at(-1) === `${ORIGIN}/v1/health` && done.result?.version === "0.0.0-smoke");
+  check("setup: the health check goes to the new origin, on the runner port", health.at(-1) === `${SERVE_ORIGIN}/v1/health` && done.result?.version === "0.0.0-smoke");
+  check("setup: setup.sh gets the Node path that the probe found", install?.argv.at(-1).includes(`/runner/deploy/setup.sh /tmp/buzz-runner-setup.`) && install.argv.at(-1).includes(" 10000 /usr/bin/node"), install?.argv.at(-1));
   check("setup: the manual steps name the sign-in command and the tag's port rule", done.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)), JSON.stringify(done.result?.manual));
   check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));
 
-  const again = await attempt({ address: ORIGIN });
+  const again = await attempt({ address: SERVE_ORIGIN });
   check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
   const passwordless = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, sudon: "1" } });
   check("setup: sudo without a password runs `sudo -n` with nothing on stdin", !passwordless.error && passwordless.calls.at(-1)?.argv.at(-1).startsWith("sudo -n -- /bin/bash ") && passwordless.calls.at(-1)?.stdin === "", passwordless.error?.message);
   const asRoot = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, uid: "0" } });
+  const runnerNode = await attempt({}, { facts: { ...FACTS, node_bin: RUNNER_NODE } });
+  check("setup: the runner-only Node goes to the copy and to setup.sh", !runnerNode.error && runnerNode.calls[1]?.argv.at(-1).startsWith(`${RUNNER_NODE} -e `) && runnerNode.calls.at(-1)?.argv.at(-1).includes(` 10000 ${RUNNER_NODE}'`), runnerNode.error?.message ?? runnerNode.calls.at(-1)?.argv.at(-1));
   check("setup: a root login runs setup.sh directly", !asRoot.error && asRoot.calls.at(-1)?.argv.at(-1).startsWith("/bin/bash /tmp/buzz-runner-setup."), asRoot.error?.message);
 
   // A host removed by hand whose id agents still name: the page reserves it.
   const OTHER = "other-box";
   const reserved = await attempt({ address: `https://${OTHER}.example.ts.net`, reservedIds: [OTHER] }, { entry: peer({ DNSName: `${OTHER}.example.ts.net.` }) });
-  const otherHost = JSON.parse(readFileSync(hostsPath, "utf8")).hosts.find((host) => host.origin === `https://${OTHER}.example.ts.net:10000`);
+  const otherHost = JSON.parse(readFileSync(hostsPath, "utf8")).hosts.find((host) => host.origin === `https://${OTHER}.example.ts.net`);
   check("setup: a reserved host id is not given to the new host", !reserved.error && otherHost?.id === `${OTHER}-2`, reserved.error?.message ?? JSON.stringify(otherHost));
 
   // The same setup through the hosts helper, as the page sends it.

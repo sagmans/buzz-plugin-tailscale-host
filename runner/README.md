@@ -155,6 +155,40 @@ the path.
 
 Logs: `journalctl -u buzz-runner` (one JSON object per line).
 
+### Node
+
+The runner service and the harness wrapper (as root, through sudo) run on
+Node 24 or later. A user who can change that Node, or a link or folder on
+its way to it, could thus run code as root. The setup from the Settings
+page takes the first of these paths that is there:
+
+1. `/opt/buzz-runner/node`: for the runner only. It is on no `PATH`, so a
+   newer Node here does not change the Node of other tools on the machine.
+2. `/usr/bin/node`: the system Node, if it is 24 or later.
+
+`deploy/setup.sh` refuses the path (exit 79) unless root owns the path, each
+link on its way, the last file, and every folder above them, and no group
+or other user can write any of them.
+
+To give the runner its own Node with mise, in a data folder that only root
+can write (not in a home), run these steps as the owner of the machine.
+`env -C /` keeps mise from reading a `mise.toml` in the current folder.
+
+```sh
+sudo install -d -m 0755 /opt/mise /opt/buzz-runner
+sudo -H env -C / MISE_DATA_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache \
+  MISE_STATE_DIR=/opt/mise/state MISE_CONFIG_DIR=/opt/mise/config \
+  mise install node@24
+sudo chown -R root:root /opt/mise
+sudo ln -sfn /opt/mise/installs/node/24/bin/node /opt/buzz-runner/node
+/opt/buzz-runner/node --version
+```
+
+Use a `mise` binary that only root can write, for example from the system
+package manager. `installs/node/24` is the link that mise keeps to the
+newest 24.x; after a `mise install node@24` of a newer 24.x, run the setup
+again so that the runner restarts on it.
+
 ### What the wrappers do
 
 `deploy/claude-wrapper` starts `claude`; `deploy/harness-wrapper` starts

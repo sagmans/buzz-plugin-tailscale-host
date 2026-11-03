@@ -12,6 +12,8 @@
 //   FAKE_SSH_FACTS     JSON object of the probe's key=value facts
 //   FAKE_SSH_PASSWORD  the sudo password the machine takes
 //   FAKE_SSH_CHECK     "1": print a Tailscale SSH check link first
+//   FAKE_SSH_NODE_UNSAFE "1": setup.sh finds a Node that a non-root user
+//                      can change (its exit 79)
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, rmSync } from "node:fs";
 
@@ -19,6 +21,7 @@ const STAGE_RE = /\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}/;
 const CHECK_LINK = "https://login.tailscale.com/a/smoke-check";
 const EXIT_SSH = 255;
 const EXIT_SUDO = 1;
+const EXIT_UNSAFE_NODE = 79;
 
 const argv = process.argv.slice(2);
 const stdin = readFileSync(0);
@@ -57,6 +60,11 @@ if (command.includes("/runner/deploy/setup.sh ")) {
       process.stderr.write("Sorry, try again.\nsudo: 1 incorrect password attempt\n");
       process.exit(EXIT_SUDO);
     }
+  }
+  if (process.env.FAKE_SSH_NODE_UNSAFE === "1") {
+    process.stderr.write("setup.sh: a user who is not root can change the Node or a folder above it; the root runner does not run it\n");
+    rmSync(stage, { recursive: true, force: true });
+    process.exit(EXIT_UNSAFE_NODE);
   }
   // What setup.sh would install as the config, for the scenario to check.
   appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ config: JSON.parse(readFileSync(`${stage}/config.json`, "utf8")) })}\n`);

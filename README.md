@@ -126,8 +126,10 @@ that the machine:
 
 - has an ACL tag (Tailscale admin console > Machines > Edit ACL tags),
 - has Tailscale SSH on (`tailscale set --ssh`), and your login may use it,
-- has Node 24 or later at `/usr/bin/node`, root-owned (a system package, not
-  a version manager in a user's home), and systemd.
+- has systemd, and Node 24 or later at `/opt/buzz-runner/node` (for the
+  runner only) or `/usr/bin/node`. Only root may change that Node and the
+  folders above it, so not a version manager in a user's home (see
+  `runner/README.md`, "Node").
 
 Then:
 

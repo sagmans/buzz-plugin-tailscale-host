@@ -24,7 +24,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readJson, validateHosts, writeAtomic } from "./build-plugin.mjs";
+import { RUNNER_PORT, readJson, runnerOrigin, validateHosts, writeAtomic } from "./build-plugin.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** The system ssh and git, by path: a program on PATH could be anything. */
@@ -38,11 +38,13 @@ const TAILSCALE_BINS = Object.freeze([
   "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
   "/usr/bin/tailscale",
 ]);
-/** install.sh's NODE_BIN default and its minimum major version. */
-const REMOTE_NODE = "/usr/bin/node";
+/** The Node paths a setup may give the root runner, first match wins, and
+ * the minimum major version. The first is read by the runner only, so a
+ * newer Node there leaves the system Node (and the tools that need it) as it
+ * is. setup.sh has the same list and refuses a path that a non-root user
+ * could change (runner/README.md, "Node"). */
+export const NODE_PATHS = Object.freeze(["/opt/buzz-runner/node", "/usr/bin/node"]);
 const NODE_MAJOR_MIN = 24;
-/** The tailnet HTTPS port of every runner (runner/README.md, "Deploy"). */
-export const RUNNER_PORT = 10000;
 /** The stage folder prefix on the machine; setup.sh refuses any other. */
 const STAGE_PREFIX = "/tmp/buzz-runner-setup.";
 const STAGE_RE = /^\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}$/;
@@ -118,7 +120,7 @@ const STATUS_MAX = 16_777_216;
 /** Lines of install output a failure keeps for the page. */
 const TAIL_LINES = 12;
 const LINE_MAX = 300;
-const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77 });
+const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79 });
 
 /** A setup step that failed, with the step and the reason the page shows. */
 export class HostSetupError extends Error {
@@ -355,7 +357,8 @@ function sshArgs(peer, { sshUser, knownHosts, port }, command) {
 const PROBE = [
   "echo os=$(uname -s)",
   "echo uid=$(id -u)",
-  `echo node=$(${REMOTE_NODE} -p process.versions.node 2>/dev/null)`,
+  // The first Node that is there, so that the probe and setup.sh agree.
+  `for n in ${NODE_PATHS.join(" ")}; do if [ -x "$n" ]; then echo node_bin=$n; echo node=$("$n" -p process.versions.node 2>/dev/null); break; fi; done`,
   "command -v systemctl >/dev/null && echo systemd=1",
   "command -v tailscale >/dev/null && echo tailscale=1",
   "command -v sudo >/dev/null && echo sudo=1",
@@ -383,14 +386,14 @@ process.stdin.on("end", () => {
 });`;
 // eval runs UNPACK, a constant of this module: no text from the page or
 // the machine is in it, and base64 only carries it past the login shell.
-const unpackCommand = () => `${REMOTE_NODE} -e 'eval(Buffer.from("${Buffer.from(UNPACK).toString("base64")}","base64").toString())'`;
+const unpackCommand = (node) => `${node} -e 'eval(Buffer.from("${Buffer.from(UNPACK).toString("base64")}","base64").toString())'`;
 
 /** The root run of setup.sh, by the access the probe found. With a password,
  * the remote shell reads it from stdin into a variable and gives it to sudo
  * by a pipe, so it is in no argument list; `-k` makes sudo ask even with a
  * cached sign-in, so the password never goes to setup.sh's stdin instead. */
-function installCommand(stage, access) {
-  const script = `/bin/bash ${stage}/runner/deploy/setup.sh ${stage} ${RUNNER_PORT}`;
+function installCommand(stage, access, node) {
+  const script = `/bin/bash ${stage}/runner/deploy/setup.sh ${stage} ${RUNNER_PORT} ${node}`;
   if (access === "root") return script;
   if (access === "sudon") return `sudo -n -- ${script}`;
   return `/bin/sh -c 'IFS= read -r P || exit ${SETUP_EXIT.readStdin}; printf "%s\\n" "$P" | sudo -k -S -p "" -- ${script}'`;
@@ -410,7 +413,8 @@ const tail = (text) =>
  * A reserved id (a host removed by hand that agents still name) is never
  * given out, so the new host does not take over those agents. */
 function addHost(hostsPath, peer, { label, reservedIds = [] }) {
-  const origin = `https://${peer.dnsName}:${RUNNER_PORT}`;
+  // Kept without the port, as the Settings page writes it (runnerOrigin).
+  const origin = `https://${peer.dnsName}`;
   const hosts = existsSync(hostsPath) ? validateHosts(readJson(hostsPath, "hosts file"), hostsPath) : [];
   const known = hosts.find((host) => new URL(host.origin).hostname === peer.dnsName);
   if (known) return { host: known, added: false };
@@ -501,25 +505,30 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     if (facts.os !== "Linux") throw new HostSetupError(`the machine runs ${clip(facts.os || "an unknown system", 40)}; the runner needs Linux`, { step });
     if (!facts.systemd) throw new HostSetupError("the machine has no systemd", { step });
     if (!facts.tailscale) throw new HostSetupError("the machine has no tailscale command on its PATH", { step });
-    if (!(Number.parseInt(facts.node, 10) >= NODE_MAJOR_MIN))
-      throw new HostSetupError(`the machine needs Node ${NODE_MAJOR_MIN} or newer at ${REMOTE_NODE} (found ${clip(facts.node || "none", 20)}); install it there, then run the setup again`, { step });
+    // Only a path of the list goes into the root command line.
+    const node = NODE_PATHS.find((path) => path === facts.node_bin);
+    if (!node || !(Number.parseInt(facts.node, 10) >= NODE_MAJOR_MIN))
+      throw new HostSetupError(
+        `the machine needs Node ${NODE_MAJOR_MIN} or newer at ${NODE_PATHS.join(" or ")} (found ${clip(facts.node || "none", 20)}${node ? ` at ${node}` : ""}); install it there, then run the setup again`,
+        { step },
+      );
     const access = facts.uid === "0" ? "root" : facts.sudon ? "sudon" : facts.sudo ? "password" : undefined;
     if (!access) throw new HostSetupError("the SSH login is not root and has no sudo", { step });
     if (access === "password" && !setup.sudoPassword) throw new HostSetupError("sudo on the machine asks for a password: enter it, then run the setup again", { step });
-    progress("done", `${access === "root" ? "root" : "sudo"}, Node ${clip(facts.node, 20)}`);
+    progress("done", `${access === "root" ? "root" : "sudo"}, Node ${clip(facts.node, 20)} at ${node}`);
 
     begin("copy");
     const files = STAGE_FILES.map(([path, mode]) => ({ path, mode, data: readFileSync(join(root, path)).toString("base64") }));
     files.push({ path: BUNDLE, mode: BUNDLE_MODE, data: readFileSync(built.bundle).toString("base64") });
     files.push({ path: "config.json", mode: 0o644, data: Buffer.from(runnerConfig(root, { ...setup, login })).toString("base64") });
-    const copy = await run(ssh, sshArgs(peer, session, unpackCommand()), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });
+    const copy = await run(ssh, sshArgs(peer, session, unpackCommand(node)), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });
     const stage = /^@@stage (\S+)$/m.exec(copy.stdout)?.[1];
     if (copy.code !== 0 || !stage || !STAGE_RE.test(stage)) throw new HostSetupError(`the copy failed: ${tail(copy.stderr) || `exit ${copy.code}`}`, { step });
     cleanup = () => run(ssh, sshArgs(peer, session, `rm -rf -- ${stage}`), { timeoutMs: COPY_TIMEOUT_MS }).catch(() => undefined);
     progress("done", `${files.length} files`);
 
     begin("install");
-    const install = await run(ssh, sshArgs(peer, session, installCommand(stage, access)), {
+    const install = await run(ssh, sshArgs(peer, session, installCommand(stage, access, node)), {
       input: access === "password" ? `${setup.sudoPassword}\n` : "",
       timeoutMs: INSTALL_TIMEOUT_MS,
       onLine: (line) => {
@@ -536,17 +545,19 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
           ? "sudo refused the password"
           : install.code === SETUP_EXIT.noTag
             ? "the machine has no ACL tag"
-            : tail(`${install.stdout}\n${install.stderr}`) || `exit ${install.code}`;
+            : install.code === SETUP_EXIT.unsafeNode
+              ? `a user who is not root can change ${node} or a folder above it; the root runner does not run it (runner/README.md, "Node")`
+              : tail(`${install.stdout}\n${install.stderr}`) || `exit ${install.code}`;
       throw new HostSetupError(install.timedOut ? "the install did not end in time" : reason, { step });
     }
-    progress("done", `https://${peer.dnsName}:${RUNNER_PORT}`);
+    progress("done", runnerOrigin(`https://${peer.dnsName}`));
 
     begin("hosts");
     const { host, added } = addHost(hostsPath, peer, setup);
     progress("done", added ? `added ${host.label}` : `${host.label} is already listed`);
 
     begin("health");
-    const version = await waitHealthy(host.origin, fetchImpl);
+    const version = await waitHealthy(runnerOrigin(host.origin), fetchImpl);
     progress("done", version ? `buzz-runner ${version}` : "");
     return { host, added, version, manual: manualSteps(peer, setup.sshUser) };
   } catch (error) {
