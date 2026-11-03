@@ -19,6 +19,11 @@
 // empty here. scripts/build-plugin.mjs fills it from the user's hosts.json
 // and writes dist/plugin.js and dist/manifest.json, whose
 // `host.networkOrigins` must list exactly these origins.
+//
+// hosts.json is the one host list. The plugin's Settings page reads and
+// saves it through the build's one host command (scripts/hosts-helper.mjs),
+// which builds again; the new hosts are in use after the owner selects
+// Update in Desktop, as after an edit of the file by hand.
 
 // Cordis starts apply() only after these host services exist.
 export const inject = ["react", "agents", "host"];
@@ -126,6 +131,17 @@ const LABELS = Object.freeze({
   optional: "Optional",
   save: "Save",
   saving: "Saving…",
+  // The plugin's Settings page. Update is Desktop's button on the plugin's
+  // own details in Manage plugins; a new build waits there.
+  settingsIntro:
+    "These hosts are in hosts.json. New agent of the type Tailscale host can run on each of them; the first is the default. A change here saves hosts.json and builds the plugin again. You can also edit hosts.json by hand and select Build.",
+  notInUse: "Not in use until Update",
+  fileChanged: "hosts.json differs from the hosts in use. Build the plugin, then select Update.",
+  updateReady:
+    "Saved and built. To use it, open Settings > Plugins > Manage plugins, select Tailscale host agents, then select Update.",
+  helperMissing: "This version of Buzz Desktop cannot run the hosts helper. Edit hosts.json by hand and build the plugin.",
+  helperSilent:
+    "The hosts helper did not answer. Buzz runs node from your login shell's PATH: check that node is there, then build the plugin from its folder and select Update.",
 });
 // Remembers which host holds each agent, because remove/profile/interrupt
 // calls name only the pubkey. Holds no secret: pubkey and host id only.
@@ -139,6 +155,28 @@ const EARLIER_STORE_KEY = /^[a-z][a-z0-9-]*\.tailscale-host\.agent-host\.v1:([0-
 // removed at start so the WebView store keeps nothing stale.
 const LEGACY_HARNESS_CACHE_KEY = /^[a-z][a-z0-9-]*\.tailscale-host\.harnesses\.v1$/;
 const HEX64 = /^[0-9a-f]{64}$/;
+// The host command the build declares for the Settings page
+// (scripts/build-plugin.mjs HOSTS_COMMAND), and its stdin bound there.
+const HOSTS_COMMAND = "hosts";
+const HOSTS_COMMAND_INPUT_MAX = 16384;
+// Buzz's limit on declared origins (scripts/build-plugin.mjs HOSTS_MAX).
+const HOSTS_MAX = 16;
+// The host rules of scripts/build-plugin.mjs, repeated here because the
+// plugin is one file with no imports: an id is saved in each agent's config;
+// a label is cut as runner titles are. The helper checks them again.
+const HOST_ID = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+const HOST_ID_MAX = 32;
+const HOST_ID_FALLBACK = "host";
+const LABEL_MAX = 40;
+// A DNS name is at most 253 characters; with scheme and port this bounds an
+// origin well before it could matter as stored data.
+const ORIGIN_MAX = 300;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+// The plugin's own page under Settings, beside the other plugins' cards.
+const SETTINGS_CARD_ID = "hosts";
+const SETTINGS_TITLE = "Tailscale hosts";
+const SETTINGS_GROUP = "Plugins";
+const ORIGIN_EXAMPLE = "https://runner-host.example.ts.net:10000";
 
 /** A failed runner call, carrying what is needed to diagnose it in one pass. */
 class RunnerError extends Error {
@@ -146,6 +184,71 @@ class RunnerError extends Error {
     super(message, details && details.cause ? { cause: details.cause } : undefined);
     this.name = "RunnerError";
     this.details = details;
+  }
+}
+
+/** A host entry the owner typed that breaks a host rule, or a save that the
+ * hosts helper refused; the message names what to fix. */
+class HostConfigError extends Error {
+  constructor(message, details) {
+    super(message);
+    this.name = "HostConfigError";
+    this.details = details;
+  }
+}
+
+/** A label as the build accepts it, from what the owner typed. */
+function checkHostLabel(value) {
+  const label = typeof value === "string" ? value.trim() : "";
+  if (!label || label.length > LABEL_MAX || CONTROL_CHARS.test(label))
+    throw new HostConfigError(`Name must be 1-${LABEL_MAX} printable characters.`, { field: "label" });
+  return label;
+}
+
+/** An origin exactly as Buzz and the build compare it (HTTPS, no
+ * credentials, path, query or fragment). One trailing slash is accepted,
+ * because a pasted address often has it. */
+function checkHostOrigin(value) {
+  const typed = typeof value === "string" ? value.trim() : "";
+  if (!typed || typed.length > ORIGIN_MAX) throw new HostConfigError("Enter the host's https:// address.", { field: "origin" });
+  let url;
+  try {
+    url = new URL(typed);
+  } catch {
+    throw new HostConfigError(`Address is not a URL. Example: ${ORIGIN_EXAMPLE}`, { field: "origin" });
+  }
+  if (url.protocol !== "https:") throw new HostConfigError("Address must start with https://.", { field: "origin" });
+  if (url.username || url.password) throw new HostConfigError("Address must not hold a user name or password.", { field: "origin" });
+  if (typed !== url.origin && typed !== `${url.origin}/`)
+    throw new HostConfigError(`Address must have no path. Write it as ${url.origin}`, { field: "origin" });
+  return url.origin;
+}
+
+/** A new host's id, made from its label: the owner never sees it, but it is
+ * saved in each agent's config, so it stays fixed when the label changes. */
+function hostIdFor(label, taken) {
+  const base =
+    label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, HOST_ID_MAX)
+      .replace(/-+$/g, "") || HOST_ID_FALLBACK;
+  for (let index = 1; ; index += 1) {
+    const suffix = index === 1 ? "" : `-${index}`;
+    const id = `${base.slice(0, HOST_ID_MAX - suffix.length).replace(/-+$/g, "")}${suffix}`;
+    if (HOST_ID.test(id) && !taken.has(id)) return id;
+  }
+}
+
+/** Checks one host against the others in the list: the same id, origin or
+ * name (case-insensitive) twice would route agents to the wrong runner. */
+function checkUnique(host, others) {
+  for (const other of others) {
+    if (other.id === host.id) throw new HostConfigError(`Duplicate host id ${host.id}.`, { field: "id" });
+    if (other.origin === host.origin) throw new HostConfigError(`${other.label} already uses this address.`, { field: "origin" });
+    if (other.label.toLowerCase() === host.label.toLowerCase())
+      throw new HostConfigError(`A host is already named ${other.label}.`, { field: "label" });
   }
 }
 
@@ -568,6 +671,147 @@ export function apply(ctx) {
     if (snapshot && snapshot.readiness === next.readiness && snapshot.attentionLabel === next.attentionLabel) return snapshot;
     snapshot = Object.freeze(next);
     return snapshot;
+  }
+
+  // ---- hosts.json, through the hosts helper ---------------------------------
+  // The Settings page shows and edits hosts.json, the one host list, with the
+  // build's host command (scripts/hosts-helper.mjs). Each save also builds,
+  // so Desktop offers Update. This build keeps its own HOSTS until then,
+  // because Buzz grants a build only its own origins.
+
+  // The file as last read or saved. `built`: the file holds the list this
+  // page last saved or built, so the new build waits only for Update; an
+  // edit by hand since then clears it. `busy`: one helper call at a time, so
+  // two saves never race on the file.
+  let hostsFile = Object.freeze({ state: "loading", hosts: Object.freeze([]), built: false, busy: false });
+  let lastBuilt;
+  const setHostsFile = (change) => {
+    hostsFile = Object.freeze({ ...hostsFile, ...change });
+    emit();
+  };
+
+  /** A host list as the helper reports it. The helper is local, but its
+   * answer is checked as any input, so a broken file cannot break the page. */
+  function parseFileHosts(list) {
+    if (!Array.isArray(list) || !list.length || list.length > HOSTS_MAX)
+      throw new HostConfigError(`The hosts helper returned no valid list (1-${HOSTS_MAX} hosts).`, { field: "file" });
+    return Object.freeze(
+      list.map((entry) => {
+        if (!entry || typeof entry.id !== "string" || !HOST_ID.test(entry.id)) throw new HostConfigError("The hosts helper returned an invalid host id.", { field: "file" });
+        return Object.freeze({ id: entry.id, label: checkHostLabel(entry.label), origin: checkHostOrigin(entry.origin) });
+      }),
+    );
+  }
+
+  /** One request to the hosts helper; returns the file's hosts as it left
+   * them. Throws HostConfigError with the helper's reason, or with what to
+   * check when it did not answer at all. */
+  async function runHelper(request) {
+    const started = Date.now();
+    const input = JSON.stringify(request);
+    if (input.length > HOSTS_COMMAND_INPUT_MAX) throw new HostConfigError("The host list is too large to save.", { op: request.op });
+    if (typeof ctx.host.runCommand !== "function") throw new HostConfigError(LABELS.helperMissing, { op: request.op });
+    let output = null;
+    try {
+      output = await ctx.host.runCommand(HOSTS_COMMAND, input);
+    } catch (cause) {
+      // Desktop answers null for every failure; a throw means the same here.
+      console.warn("tailscale-host: hosts helper call threw", { op: request.op, elapsedMs: Date.now() - started, error: errorText(cause) });
+    }
+    if (typeof output !== "string") throw new HostConfigError(LABELS.helperSilent, { op: request.op, elapsedMs: Date.now() - started });
+    let reply;
+    try {
+      reply = JSON.parse(output);
+    } catch {
+      throw new HostConfigError("The hosts helper gave an answer that is not JSON.", { op: request.op });
+    }
+    if (!reply || reply.ok !== true) throw new HostConfigError(text(reply && reply.error, TEXT_MAX * 3) || "The hosts helper refused the request.", { op: request.op });
+    return parseFileHosts(reply.hosts);
+  }
+
+  /** Runs one helper request and keeps its result as the page's file. A
+   * failed read shows on the page; a failed save or build is thrown to the
+   * form or button that asked, and the list stays as it was. */
+  async function fileCall(request, { built }) {
+    if (hostsFile.busy) throw new HostConfigError("A save is still running. Try again in a moment.", { op: request.op });
+    setHostsFile({ busy: true });
+    try {
+      const list = await runHelper(request);
+      if (built) lastBuilt = list;
+      if (!disposed) setHostsFile({ state: "ready", hosts: list, error: undefined, built: Boolean(lastBuilt) && sameHosts(list, lastBuilt) });
+      return list;
+    } catch (error) {
+      if (!disposed && request.op === "read") setHostsFile({ state: "error", error: errorText(error) });
+      throw error;
+    } finally {
+      if (!disposed) setHostsFile({ busy: false });
+    }
+  }
+
+  const readHostsFile = () => fileCall({ op: "read" }, { built: false }).catch(() => undefined);
+  const buildHostsFile = () => fileCall({ op: "build" }, { built: true });
+  const saveHostsFile = (list) => fileCall({ op: "save", hosts: list.map(({ id, label, origin }) => ({ id, label, origin })) }, { built: true });
+
+  /** Whether the file differs from the hosts this build uses. */
+  const sameHosts = (a, b) => JSON.stringify(a.map(({ id, label, origin }) => [id, label, origin])) === JSON.stringify(b.map(({ id, label, origin }) => [id, label, origin]));
+
+  /** The file's list, for a change: only after a good read, so a save can
+   * never write over hosts the page did not see. */
+  function fileHosts() {
+    if (hostsFile.state !== "ready") throw new HostConfigError("hosts.json is not loaded. Select Check again.", { field: "file" });
+    return hostsFile.hosts;
+  }
+
+  /** How many agents this device has placed on a host. */
+  function agentsOn(hostId) {
+    let count = 0;
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (typeof key === "string" && key.startsWith(STORE_PREFIX) && localStorage.getItem(key) === hostId) count += 1;
+    }
+    return count;
+  }
+
+  function fileHost(list, id) {
+    const host = list.find((entry) => entry.id === id);
+    if (!host) throw new HostConfigError("This host is no longer in hosts.json. Select Check again.", { field: "id", id });
+    return host;
+  }
+
+  async function addHost({ label, origin }) {
+    const list = fileHosts();
+    if (list.length >= HOSTS_MAX) throw new HostConfigError(`hosts.json can hold at most ${HOSTS_MAX} hosts (Buzz's limit).`, { field: "label" });
+    const clean = { label: checkHostLabel(label), origin: checkHostOrigin(origin) };
+    // Ids of hosts in use stay taken too: an agent may still name one that
+    // was removed from the file before Update.
+    const taken = new Set([...list, ...HOSTS].map((entry) => entry.id));
+    const host = Object.freeze({ id: hostIdFor(clean.label, taken), ...clean });
+    checkUnique(host, list);
+    await saveHostsFile([...list, host]);
+    return host;
+  }
+
+  /** Keeps the id, which each agent's config names, so agents stay on the
+   * host when its name or address changes. */
+  async function updateHost(id, { label, origin }) {
+    const list = fileHosts();
+    fileHost(list, id);
+    const host = Object.freeze({ id, label: checkHostLabel(label), origin: checkHostOrigin(origin) });
+    checkUnique(host, list.filter((entry) => entry.id !== id));
+    await saveHostsFile(list.map((entry) => (entry.id === id ? host : entry)));
+    return host;
+  }
+
+  /** Refuses while an agent of this device runs on the host: its settings,
+   * profile and delete calls would have nowhere to go. The last host stays,
+   * because a build without hosts cannot start. */
+  async function removeHost(id) {
+    const list = fileHosts();
+    const host = fileHost(list, id);
+    if (list.length === 1) throw new HostConfigError("hosts.json must keep at least one host. Add another host first.", { field: "id", id });
+    const count = agentsOn(id);
+    if (count) throw new HostConfigError(`${count} agent${count === 1 ? " runs" : "s run"} on ${host.label}. Delete them first.`, { field: "id", id });
+    await saveHostsFile(list.filter((entry) => entry.id !== id));
   }
 
   // ---- Desktop markup -------------------------------------------------------
@@ -1531,6 +1775,195 @@ export function apply(ctx) {
     );
   }
 
+  // ---- The plugin's Settings page -------------------------------------------
+
+  /** Add or edit form for one host. `host` is the host to edit, or none for
+   * a new one. Errors stay beside the form until the owner types again. */
+  function HostForm({ host, disabled, onDone, onCancel }) {
+    const labelId = React.useId();
+    const originId = React.useId();
+    const [label, setLabel] = React.useState(host ? host.label : "");
+    const [origin, setOrigin] = React.useState(host ? host.origin : "");
+    const [error, setError] = React.useState("");
+    const [saving, setSaving] = React.useState(false);
+    const editing = Boolean(host);
+    const submit = async (event) => {
+      event.preventDefault();
+      if (saving) return;
+      setSaving(true);
+      try {
+        const saved = editing ? await updateHost(host.id, { label, origin }) : await addHost({ label, origin });
+        setLabel("");
+        setOrigin("");
+        setError("");
+        onDone(saved);
+      } catch (cause) {
+        setError(errorText(cause));
+      } finally {
+        setSaving(false);
+      }
+    };
+    const typed = (set) => (event) => {
+      set(event.target.value);
+      setError("");
+    };
+    return h(
+      "form",
+      { "aria-label": editing ? `Edit ${host.label}` : "Add a host", className: "grid gap-3", onSubmit: submit },
+      h(
+        Field,
+        { label: "Name", controlId: labelId, description: "Shown in New agent and in each agent's settings." },
+        h(Input, { id: labelId, value: label, maxLength: LABEL_MAX, autoComplete: "off", spellCheck: false, onChange: typed(setLabel) }),
+      ),
+      h(
+        Field,
+        { label: "Address", controlId: originId, description: `The https:// address of the host's tailscale serve, with no path. Example: ${ORIGIN_EXAMPLE}` },
+        h(Input, {
+          id: originId,
+          value: origin,
+          maxLength: ORIGIN_MAX,
+          inputMode: "url",
+          autoComplete: "off",
+          autoCapitalize: "none",
+          spellCheck: false,
+          placeholder: ORIGIN_EXAMPLE,
+          onChange: typed(setOrigin),
+        }),
+      ),
+      error ? h("p", { role: "alert", className: "buzz-field-error" }, error) : null,
+      h(
+        "div",
+        { className: "flex items-center gap-2" },
+        h(Button, { type: "submit", variant: "prominent", loading: saving, disabled: disabled && !saving }, editing ? LABELS.save : "Add host"),
+        onCancel ? h(Button, { onClick: onCancel, disabled: saving }, LABELS.cancel) : null,
+      ),
+    );
+  }
+
+  /** One host's row: its address and whether it answers, or that it waits
+   * for Update because this build does not use it yet. */
+  function hostSubtitle(host, status) {
+    const inUse = HOSTS.some((entry) => entry.id === host.id && entry.origin === host.origin);
+    const reach = !inUse ? LABELS.notInUse : !status || status.state === "checking" ? "Checking…" : status.state === "down" ? status.error : "Reachable";
+    return `${host.origin} · ${reach}`;
+  }
+
+  /** What stands between hosts.json and the hosts in use. */
+  function PendingUpdate({ file, onBuilt, onError }) {
+    const [building, setBuilding] = React.useState(false);
+    if (sameHosts(file.hosts, HOSTS)) return null;
+    if (file.built) return h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, LABELS.updateReady);
+    return h(
+      "div",
+      { className: "flex items-center gap-2" },
+      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.fileChanged),
+      h(
+        Button,
+        {
+          size: "sm",
+          loading: building,
+          disabled: file.busy && !building,
+          onClick: () => {
+            setBuilding(true);
+            buildHostsFile()
+              .then(onBuilt, (cause) => onError(errorText(cause)))
+              .finally(() => setBuilding(false));
+          },
+        },
+        "Build",
+      ),
+    );
+  }
+
+  /** Settings > Plugins > Tailscale hosts: hosts.json, which New agent offers
+   * after Update. */
+  function HostsSettings({ active }) {
+    const file = useStore(() => hostsFile);
+    const statuses = useStore(() => hosts);
+    const [editing, setEditing] = React.useState(null);
+    const [notice, setNotice] = React.useState("");
+    const [checking, setChecking] = React.useState(false);
+    React.useEffect(() => {
+      void readHostsFile();
+    }, []);
+    const guard = (action) => {
+      if (!active()) return;
+      action().catch((cause) => setNotice(errorText(cause)));
+    };
+    const ready = file.state === "ready";
+    // Until the file is read, the page shows the hosts this build uses.
+    const list = ready ? file.hosts : HOSTS;
+    return h(
+      "section",
+      { "aria-label": `${SETTINGS_TITLE} settings`, className: "grid gap-4" },
+      h("h2", null, SETTINGS_TITLE),
+      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.settingsIntro),
+      file.state === "error" ? h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, file.error) : null,
+      h(
+        SettingsGroup,
+        null,
+        list.map((host) =>
+          editing === host.id
+            ? h(HostForm, {
+                key: host.id,
+                host,
+                disabled: file.busy,
+                onDone: (saved) => {
+                  setEditing(null);
+                  setNotice(`Saved ${saved.label}.`);
+                },
+                onCancel: () => setEditing(null),
+              })
+            : h(PreferenceRow, {
+                key: host.id,
+                title: host.label,
+                subtitle: hostSubtitle(host, statuses[host.id]),
+                trailing: ready
+                  ? h(
+                      "div",
+                      { className: "flex items-center gap-2" },
+                      h(Button, { size: "sm", disabled: file.busy, "aria-label": `Edit ${host.label}`, onClick: () => setEditing(host.id) }, "Edit"),
+                      h(
+                        Button,
+                        {
+                          size: "sm",
+                          disabled: file.busy,
+                          "aria-label": `Remove ${host.label}`,
+                          onClick: () =>
+                            guard(async () => {
+                              await removeHost(host.id);
+                              setNotice(`Removed ${host.label}.`);
+                            }),
+                        },
+                        "Remove",
+                      ),
+                    )
+                  : null,
+              }),
+        ),
+      ),
+      ready ? h(PendingUpdate, { file, onBuilt: () => setNotice(""), onError: setNotice }) : null,
+      notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, notice) : null,
+      ready ? h("h3", { className: "text-label-sm" }, "Add a host") : null,
+      ready ? h(HostForm, { disabled: file.busy, onDone: (saved) => setNotice(`Added ${saved.label}.`) }) : null,
+      h(
+        "div",
+        null,
+        h(
+          Button,
+          {
+            loading: checking,
+            onClick: () => {
+              setChecking(true);
+              Promise.all([refresh(), readHostsFile()]).finally(() => setChecking(false));
+            },
+          },
+          "Check again",
+        ),
+      ),
+    );
+  }
+
   ctx.agents.register({
     id: TYPE_ID,
     title: TYPE_TITLE,
@@ -1600,6 +2033,13 @@ export function apply(ctx) {
       },
     },
   });
+
+  // The Settings page is optional: inside a scope, so the agent type still
+  // works on a Desktop without settings cards, and the card goes with it.
+  if (typeof ctx.inject === "function")
+    ctx.inject(["settingsCards"], (scope) => {
+      scope.settingsCards.register({ id: SETTINGS_CARD_ID, title: SETTINGS_TITLE, group: SETTINGS_GROUP, icon: icons.host, component: HostsSettings });
+    });
 
   if (typeof ctx.effect === "function")
     ctx.effect(() => {
