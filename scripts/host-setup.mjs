@@ -1,0 +1,518 @@
+// Installs buzz-runner on one machine of the user's tailnet, for the
+// plugin's Settings page. The page cannot reach a machine itself, so the
+// hosts helper (scripts/hosts-helper.mjs) runs this module and streams each
+// step back as progress. The steps repeat runner/README.md, "Deploy": copy a
+// runner tree to the machine, run install.sh as root, then `tailscale serve`,
+// and add the machine to hosts.json, the one host list.
+//
+// Trust: this runs root commands on the chosen machine, with the user's own
+// SSH access. So every value that reaches the machine is checked here, the
+// machine must be a Linux peer that `tailscale status` lists, and ssh accepts
+// only the host keys that Tailscale reports for that peer (no trust on first
+// use). The sudo password goes only to the stdin of sudo on the machine; it
+// is never in an argument, a file, a log line or a progress event.
+//
+// The steps that need the user's own hands stay manual and are returned as a
+// list: the harness installs and sign-ins (a browser or a key), and the port
+// rule in the tailnet policy (no policy token here). A machine without an ACL
+// tag is refused before any change: on an untagged machine, a harness could
+// call the runner as its owner (runner/README.md, "Security notes").
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { readJson, validateHosts, writeAtomic } from "./build-plugin.mjs";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/** The system ssh, by path: a program on PATH could be anything. */
+const SSH_BIN = "/usr/bin/ssh";
+/** Where the Tailscale CLI is on macOS (Homebrew, the standalone package,
+ * the App Store app) and on Linux; the first that exists is used. */
+const TAILSCALE_BINS = Object.freeze([
+  "/usr/local/bin/tailscale",
+  "/opt/homebrew/bin/tailscale",
+  "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+  "/usr/bin/tailscale",
+]);
+/** install.sh's NODE_BIN default and its minimum major version. */
+const REMOTE_NODE = "/usr/bin/node";
+const NODE_MAJOR_MIN = 24;
+/** The tailnet HTTPS port of every runner (runner/README.md, "Deploy"). */
+export const RUNNER_PORT = 10000;
+/** The stage folder prefix on the machine; setup.sh refuses any other. */
+const STAGE_PREFIX = "/tmp/buzz-runner-setup.";
+const STAGE_RE = /^\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}$/;
+/** The runner tree install.sh needs ("run from a full checkout"), relative
+ * to the checkout, with the mode each file gets on the machine. */
+const STAGE_FILES = Object.freeze([
+  ["runner/dist/buzz-runner.mjs", 0o644],
+  ["runner/README.md", 0o644],
+  ["runner/buzz-runner.service", 0o644],
+  ["runner/config.example.json", 0o644],
+  ["runner/deploy/install.sh", 0o755],
+  ["runner/deploy/setup.sh", 0o755],
+  ["runner/deploy/check-config.mjs", 0o644],
+  ["runner/deploy/sudoers.template", 0o644],
+  ["runner/deploy/claude-wrapper", 0o755],
+  ["runner/deploy/harness-wrapper", 0o755],
+  ["runner/deploy/buzz-login", 0o755],
+  ["runner/deploy/buzz-login.mjs", 0o644],
+  ["runner/deploy/pi-launch.mjs", 0o644],
+]);
+const BUNDLE = "runner/dist/buzz-runner.mjs";
+const RUNNER_SRC = "runner/src";
+const CONFIG_EXAMPLE = "runner/config.example.json";
+const BUILD_RUNNER = "scripts/build-runner.mjs";
+/** The page's step list, in order (plugin.js SETUP_STEPS). */
+export const SETUP_STEPS = Object.freeze(["machine", "bundle", "connect", "copy", "install", "serve", "hosts", "health"]);
+
+/** A Linux login name, as install.sh's USER_RE allows. Empty means ssh's
+ * default, the local user name. */
+const SSH_USER_RE = /^[a-z_][a-z0-9_.-]{0,31}$/;
+/** A machine as the page names it: the first label of its MagicDNS name. */
+const MACHINE_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+const PASSWORD_MAX = 256;
+const RELAY_MAX = 300;
+const LABEL_MAX = 40;
+const LOGIN_MAX = 254;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+/** The shapes of an OpenSSH public host key line that Tailscale reports. */
+const HOST_KEY_RE = /^(?:ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,2}$/;
+/** A Tailscale SSH check prints a link the user must open; the page shows it. */
+const CHECK_LINK_RE = /https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.-]{1,200}/;
+/** sudo's words for a refused password (sudo 1.9). */
+const SUDO_REFUSED_RE = /incorrect password|Sorry, try again|no password was provided|a password is required/;
+
+/** Timeouts. The first connect waits for a Tailscale SSH check, which the
+ * user approves in a browser. The install builds nothing on the machine, but
+ * its service start waits up to 10 s. The health check waits for serve's
+ * first certificate, which can take a minute. */
+const STATUS_TIMEOUT_MS = 15_000;
+const BUILD_TIMEOUT_MS = 600_000;
+const CONNECT_TIMEOUT_MS = 300_000;
+const COPY_TIMEOUT_MS = 120_000;
+const INSTALL_TIMEOUT_MS = 600_000;
+const HEALTH_TIMEOUT_MS = 120_000;
+const HEALTH_TRY_MS = 20_000;
+const HEALTH_RETRY_MS = 3_000;
+const KILL_GRACE_MS = 3_000;
+/** Bounds on what a child may write back; more is a broken child. */
+const OUTPUT_MAX = 1_048_576;
+const STATUS_MAX = 16_777_216;
+/** Lines of install output a failure keeps for the page. */
+const TAIL_LINES = 12;
+const LINE_MAX = 300;
+const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77 });
+
+/** A setup step that failed, with the step and the reason the page shows. */
+export class HostSetupError extends Error {
+  constructor(message, { step, cause } = {}) {
+    super(message, cause ? { cause } : undefined);
+    this.name = "HostSetupError";
+    this.step = step;
+  }
+}
+
+const clip = (value, max = LINE_MAX) => String(value).replace(CONTROL_CHARS, " ").slice(0, max);
+
+/** A relay URL as the runner config takes it: wss://, no credentials, no
+ * query or fragment. */
+function isRelay(value) {
+  if (typeof value !== "string" || value.length > RELAY_MAX) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "wss:" && !url.username && !url.password && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}
+const isLabel = (value) => typeof value === "string" && !!value.trim() && value === value.trim() && value.length <= LABEL_MAX && !CONTROL_CHARS.test(value);
+
+/** Each setup field's rule and the reason the page shows when it fails. */
+const SETUP_RULES = Object.freeze({
+  machine: [(value) => typeof value === "string" && MACHINE_RE.test(value), "choose a machine from the list"],
+  sshUser: [(value) => typeof value === "string" && (!value || SSH_USER_RE.test(value)), "the SSH login must be a Linux user name"],
+  sudoPassword: [
+    (value) => typeof value === "string" && value.length <= PASSWORD_MAX && !/[\n\r\u0000]/.test(value),
+    `the sudo password must be one line of at most ${PASSWORD_MAX} characters`,
+  ],
+  ownerPubkey: [(value) => typeof value === "string" && HEX64.test(value), "the owner key must be 64 lowercase hex characters"],
+  relay: [isRelay, "the relay must be a wss:// URL without credentials or query"],
+  label: [(value) => value === undefined || isLabel(value), `the name must be 1-${LABEL_MAX} printable characters`],
+});
+
+const SETUP_KEYS = Object.keys(SETUP_RULES);
+
+/** The setup request as the page may send it, and nothing else. */
+export function parseSetupRequest(raw) {
+  const fail = (message) => new HostSetupError(message, { step: "machine" });
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw fail("setup must be an object");
+  const extra = Object.keys(raw).filter((key) => !SETUP_KEYS.includes(key));
+  if (extra.length) throw fail(`unknown setup keys: ${extra.join(", ")}`);
+  const setup = { sshUser: "", sudoPassword: "", ...raw };
+  for (const [key, [ok, message]] of Object.entries(SETUP_RULES)) if (!ok(setup[key])) throw fail(message);
+  const { machine, sshUser, sudoPassword, ownerPubkey, relay, label } = setup;
+  return { machine, sshUser, sudoPassword, ownerPubkey, relay, label };
+}
+
+/** Runs a program with a deadline; resolves with its exit and bounded output.
+ * `onLine` gets each stdout line as it arrives, `onErrLine` each stderr line. */
+function run(program, args, { input, timeoutMs, onLine, onErrLine, max = OUTPUT_MAX, cwd } = {}) {
+  return new Promise((done, failed) => {
+    const child = spawn(program, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const out = { stdout: "", stderr: "", tooLong: false };
+    const partial = { stdout: "", stderr: "" };
+    const read = (name, handler) =>
+      child[name].on("data", (chunk) => {
+        const text = chunk.toString("utf8");
+        if (out[name].length + text.length > max) {
+          out.tooLong = true;
+          child.kill("SIGKILL");
+          return;
+        }
+        out[name] += text;
+        if (!handler) return;
+        partial[name] += text;
+        let newline;
+        while ((newline = partial[name].indexOf("\n")) !== -1) {
+          handler(partial[name].slice(0, newline));
+          partial[name] = partial[name].slice(newline + 1);
+        }
+      });
+    read("stdout", onLine);
+    read("stderr", onErrLine);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS).unref();
+    }, timeoutMs);
+    child.on("error", (cause) => {
+      clearTimeout(timer);
+      failed(cause);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (partial.stdout && onLine) onLine(partial.stdout);
+      if (partial.stderr && onErrLine) onErrLine(partial.stderr);
+      done({ code, signal, timedOut, ...out });
+    });
+    // A child that exits before it reads its stdin closes the pipe; that is
+    // its own failure, which its exit code reports.
+    child.stdin.on("error", () => {});
+    child.stdin.end(input ?? "");
+  });
+}
+
+function tailscaleBin() {
+  const found = TAILSCALE_BINS.find((path) => existsSync(path));
+  if (!found) throw new HostSetupError(`no Tailscale CLI in ${TAILSCALE_BINS.join(", ")}`, { step: "machine" });
+  return found;
+}
+
+/** `tailscale status --json` of this device. */
+export async function tailscaleStatus() {
+  const result = await run(tailscaleBin(), ["status", "--json"], { timeoutMs: STATUS_TIMEOUT_MS, max: STATUS_MAX });
+  if (result.code !== 0) throw new HostSetupError(`tailscale status failed: ${clip(result.stderr || result.code)}`, { step: "machine" });
+  try {
+    return JSON.parse(result.stdout);
+  } catch (cause) {
+    throw new HostSetupError("tailscale status did not print JSON", { step: "machine", cause });
+  }
+}
+
+const dnsOf = (peer) => String(peer.DNSName ?? "").replace(/\.$/, "").toLowerCase();
+const machineOf = (peer) => dnsOf(peer).split(".")[0];
+
+/** The Linux machines of the tailnet that a setup can reach, for the page. */
+export function listMachines(status) {
+  return Object.values(status?.Peer ?? {})
+    .filter((peer) => peer.OS === "linux" && MACHINE_RE.test(machineOf(peer)))
+    .map((peer) => ({
+      machine: machineOf(peer),
+      name: clip(peer.HostName ?? machineOf(peer), LABEL_MAX),
+      dnsName: dnsOf(peer),
+      online: peer.Online === true,
+      tagged: Array.isArray(peer.Tags) && peer.Tags.length > 0,
+      ssh: Array.isArray(peer.sshHostKeys) && peer.sshHostKeys.length > 0,
+    }))
+    .sort((a, b) => a.machine.localeCompare(b.machine));
+}
+
+/** The chosen peer, checked for every rule before anything else runs. */
+function findPeer(status, machine) {
+  const peer = Object.values(status?.Peer ?? {}).find((entry) => machineOf(entry) === machine);
+  const fail = (message) => new HostSetupError(message, { step: "machine" });
+  if (!peer) throw fail(`${machine} is not a machine of this tailnet`);
+  if (peer.OS !== "linux") throw fail(`${machine} runs ${clip(peer.OS, 20)}; the runner needs Linux`);
+  if (peer.Online !== true) throw fail(`${machine} is offline`);
+  if (!Array.isArray(peer.Tags) || !peer.Tags.length)
+    throw fail(`${machine} has no ACL tag. In the Tailscale admin console, open Machines > ${machine} > Edit ACL tags, add a tag, then run the setup again.`);
+  const keys = (peer.sshHostKeys ?? []).filter((key) => typeof key === "string" && HOST_KEY_RE.test(key));
+  if (!keys.length) throw fail(`${machine} reports no SSH host key: turn on Tailscale SSH there (tailscale set --ssh)`);
+  const address = (peer.TailscaleIPs ?? []).find((ip) => typeof ip === "string" && /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip));
+  if (!address) throw fail(`${machine} has no Tailscale IPv4 address`);
+  return { machine, dnsName: dnsOf(peer), name: clip(peer.HostName ?? machine, LABEL_MAX), address, keys, tags: peer.Tags.map((tag) => clip(tag, 64)) };
+}
+
+/** The user's own Tailscale login, which the runner's allowlist names. */
+function selfLogin(status) {
+  const login = status?.User?.[status?.Self?.UserID]?.LoginName;
+  if (typeof login !== "string" || !login || login.length > LOGIN_MAX || CONTROL_CHARS.test(login) || /\s/.test(login))
+    throw new HostSetupError("tailscale status names no login for this device", { step: "machine" });
+  return login;
+}
+
+/** The newest file time under a folder, to tell a stale bundle. */
+function newestMtime(dir) {
+  let newest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    newest = Math.max(newest, entry.isDirectory() ? newestMtime(path) : statSync(path).mtimeMs);
+  }
+  return newest;
+}
+
+/** The runner bundle, built when it is missing or older than its source. */
+async function ensureBundle(root, progress) {
+  const bundle = join(root, BUNDLE);
+  if (existsSync(bundle) && statSync(bundle).mtimeMs >= newestMtime(join(root, RUNNER_SRC))) return "up to date";
+  progress("running", "Building the runner bundle");
+  const result = await run(process.execPath, [join(root, BUILD_RUNNER)], { cwd: root, timeoutMs: BUILD_TIMEOUT_MS });
+  if (result.code !== 0 || !existsSync(bundle))
+    throw new HostSetupError(`the runner build failed (see runner/README.md, "Build"): ${clip(result.stderr.trim().split("\n").pop() ?? result.code)}`, { step: "bundle" });
+  return "built";
+}
+
+/** The runner config for a first install: the example, with this owner, this
+ * relay and the user's own login. install.sh's check-config.mjs checks it
+ * again on the machine. */
+function runnerConfig(root, { ownerPubkey, relay, login }) {
+  const example = JSON.parse(readFileSync(join(root, CONFIG_EXAMPLE), "utf8"));
+  return `${JSON.stringify({ ...example, ownerPubkey, allowedLogins: [login], relays: [relay] }, null, 2)}\n`;
+}
+
+/** One ssh session to the peer, pinned to the keys Tailscale reports. */
+function sshArgs(peer, { sshUser, knownHosts, port }, command) {
+  return [
+    "-F", "/dev/null",
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", `UserKnownHostsFile=${knownHosts}`,
+    "-o", "GlobalKnownHostsFile=/dev/null",
+    "-o", `HostKeyAlias=${peer.dnsName}`,
+    "-o", "ConnectTimeout=20",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=4",
+    "-p", String(port),
+    ...(sshUser ? ["-l", sshUser] : []),
+    "--", peer.address, command,
+  ];
+}
+
+/** The probe: what the machine has, as key=value lines. It runs as the SSH
+ * user and changes nothing. */
+const PROBE = [
+  "echo os=$(uname -s)",
+  "echo uid=$(id -u)",
+  `echo node=$(${REMOTE_NODE} -p process.versions.node 2>/dev/null)`,
+  "command -v systemctl >/dev/null && echo systemd=1",
+  "command -v tailscale >/dev/null && echo tailscale=1",
+  "command -v sudo >/dev/null && echo sudo=1",
+  "sudo -n true 2>/dev/null && echo sudon=1",
+  "true",
+].join("; ");
+
+/** The copy: one Node program, as the SSH user, that makes a fresh stage
+ * folder and writes the files from a JSON document on stdin. Base64 keeps it
+ * free of quotes for any login shell. */
+const UNPACK = `
+const fs = require("node:fs"), path = require("node:path");
+const chunks = []; let size = 0;
+process.stdin.on("data", (c) => { size += c.length; if (size > ${64 * OUTPUT_MAX}) process.exit(65); chunks.push(c); });
+process.stdin.on("end", () => {
+  const files = JSON.parse(Buffer.concat(chunks).toString("utf8")).files;
+  if (!files.every((f) => /^(?:runner\\/[A-Za-z0-9._/-]+|config\\.json)$/.test(f.path) && !f.path.split("/").includes(".."))) process.exit(65);
+  const stage = fs.mkdtempSync(${JSON.stringify(STAGE_PREFIX)});
+  for (const f of files) {
+    const to = path.join(stage, f.path);
+    fs.mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(to, Buffer.from(f.data, "base64"), { mode: f.mode });
+  }
+  process.stdout.write("@@stage " + stage + "\\n");
+});`;
+// eval runs UNPACK, a constant of this module: no text from the page or
+// the machine is in it, and base64 only carries it past the login shell.
+const unpackCommand = () => `${REMOTE_NODE} -e 'eval(Buffer.from("${Buffer.from(UNPACK).toString("base64")}","base64").toString())'`;
+
+/** The root run of setup.sh, by the access the probe found. With a password,
+ * the remote shell reads it from stdin into a variable and gives it to sudo
+ * by a pipe, so it is in no argument list; `-k` makes sudo ask even with a
+ * cached sign-in, so the password never goes to setup.sh's stdin instead. */
+function installCommand(stage, access) {
+  const script = `/bin/bash ${stage}/runner/deploy/setup.sh ${stage} ${RUNNER_PORT}`;
+  if (access === "root") return script;
+  if (access === "sudon") return `sudo -n -- ${script}`;
+  return `/bin/sh -c 'IFS= read -r P || exit ${SETUP_EXIT.readStdin}; printf "%s\\n" "$P" | sudo -k -S -p "" -- ${script}'`;
+}
+
+const tail = (text) =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("@@"))
+    .slice(-TAIL_LINES)
+    .map((line) => clip(line))
+    .join("\n");
+
+/** The new host entry, or the one hosts.json already has for this origin. */
+function addHost(hostsPath, peer, label) {
+  const origin = `https://${peer.dnsName}:${RUNNER_PORT}`;
+  const hosts = existsSync(hostsPath) ? validateHosts(readJson(hostsPath, "hosts file"), hostsPath) : [];
+  const known = hosts.find((host) => host.origin === origin);
+  if (known) return { host: known, added: false };
+  const taken = new Set(hosts.map((host) => host.id));
+  let id = peer.machine.slice(0, 32).replace(/-+$/, "");
+  for (let n = 2; taken.has(id); n += 1) id = `${peer.machine.slice(0, 28).replace(/-+$/, "")}-${n}`;
+  const host = { id, label: label ?? peer.name, origin };
+  const next = validateHosts({ hosts: [...hosts, host] }, "hosts");
+  writeAtomic(hostsPath, `${JSON.stringify({ hosts: next }, null, 2)}\n`);
+  return { host, added: true };
+}
+
+/** GET /v1/health through serve, until it answers or the time is up. */
+async function waitHealthy(origin, fetchImpl) {
+  const deadline = Date.now() + HEALTH_TIMEOUT_MS;
+  let last = "no answer";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetchImpl(`${origin}/v1/health`, { redirect: "manual", signal: AbortSignal.timeout(HEALTH_TRY_MS) });
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 200 && body.ok === true) return clip(body.version ?? "", 40);
+      last = `HTTP ${response.status}`;
+    } catch (cause) {
+      last = clip(cause?.cause?.code || cause?.message || cause, 120);
+    }
+    await new Promise((wait) => setTimeout(wait, HEALTH_RETRY_MS));
+  }
+  throw new HostSetupError(`${origin} did not answer /v1/health (${last}). Check that the tailnet policy lets this device reach port ${RUNNER_PORT}.`, { step: "health" });
+}
+
+/** The steps that stay with the user, with commands to copy. */
+function manualSteps(peer, sshUser) {
+  const at = `${sshUser ? `${sshUser}@` : ""}${peer.dnsName}`;
+  return [
+    { id: "harnesses", text: "Install each harness at its pinned path, root-owned, and verify each download (runner/README.md, \"Deploy\", step 1)." },
+    { id: "sign-in", text: "Sign each harness in as the harness user.", command: `ssh -t ${at} sudo -u buzz-agent /usr/local/bin/buzz-login` },
+    { id: "policy", text: `In the tailnet policy, let only your own login reach port ${RUNNER_PORT} on ${peer.tags.join(", ")}.` },
+  ];
+}
+
+/**
+ * Sets up one machine. `onProgress({step, state, detail?, link?})` gets each
+ * step as it starts and ends; state is running, waiting, done or failed.
+ * Resolves with `{host, added, manual, version}`; rejects with a
+ * HostSetupError that names the failed step.
+ *
+ * `deps` lets the smoke run replace what reaches outside this process:
+ * `status` (tailscale status), `ssh` (the ssh program), `sshPort`, `fetch`
+ * and `root` (the checkout).
+ */
+export async function setupHost(request, { hostsPath, onProgress = () => {}, deps = {} }) {
+  const { status: getStatus = tailscaleStatus, ssh = SSH_BIN, sshPort = 22, fetch: fetchImpl = fetch, root = ROOT } = deps;
+  let step = "machine";
+  const progress = (state, detail, link) => onProgress({ step, state, ...(detail ? { detail: clip(detail) } : {}), ...(link ? { link } : {}) });
+  const begin = (next) => {
+    step = next;
+    progress("running");
+  };
+  const work = mkdtempSync(join(tmpdir(), "buzz-setup-"));
+  // Set once the copy made a stage, so a failure before setup.sh takes it
+  // over still removes it (setup.sh removes it on its own exit).
+  let cleanup;
+  try {
+    begin("machine");
+    const setup = parseSetupRequest(request);
+    const status = await getStatus();
+    const peer = findPeer(status, setup.machine);
+    const login = selfLogin(status);
+    progress("done", `${peer.dnsName}, ${peer.tags.join(", ")}`);
+
+    begin("bundle");
+    progress("done", await ensureBundle(root, progress));
+
+    begin("connect");
+    const knownHosts = join(work, "known_hosts");
+    writeFileSync(knownHosts, peer.keys.map((key) => `${peer.dnsName} ${key}\n`).join(""), { mode: 0o600 });
+    const session = { sshUser: setup.sshUser, knownHosts, port: sshPort };
+    // A Tailscale SSH check holds the session until the user approves it.
+    const onCheck = (line) => {
+      const link = CHECK_LINK_RE.exec(line)?.[0];
+      if (link) progress("waiting", "Approve the Tailscale SSH check in your browser", link);
+    };
+    const probe = await run(ssh, sshArgs(peer, session, `/bin/sh -c '${PROBE}'`), { timeoutMs: CONNECT_TIMEOUT_MS, onErrLine: onCheck });
+    if (probe.timedOut) throw new HostSetupError("ssh did not connect in time (a Tailscale SSH check waits for your approval)", { step });
+    if (probe.code !== 0) throw new HostSetupError(`ssh failed: ${tail(probe.stderr) || `exit ${probe.code}`}`, { step });
+    const facts = Object.fromEntries(probe.stdout.split("\n").filter((line) => line.includes("=")).map((line) => line.split(/=(.*)/s, 2)));
+    if (facts.os !== "Linux") throw new HostSetupError(`the machine runs ${clip(facts.os || "an unknown system", 40)}; the runner needs Linux`, { step });
+    if (!facts.systemd) throw new HostSetupError("the machine has no systemd", { step });
+    if (!facts.tailscale) throw new HostSetupError("the machine has no tailscale command on its PATH", { step });
+    if (!(Number.parseInt(facts.node, 10) >= NODE_MAJOR_MIN))
+      throw new HostSetupError(`the machine needs Node ${NODE_MAJOR_MIN} or newer at ${REMOTE_NODE} (found ${clip(facts.node || "none", 20)}); install it there, then run the setup again`, { step });
+    const access = facts.uid === "0" ? "root" : facts.sudon ? "sudon" : facts.sudo ? "password" : undefined;
+    if (!access) throw new HostSetupError("the SSH login is not root and has no sudo", { step });
+    if (access === "password" && !setup.sudoPassword) throw new HostSetupError("sudo on the machine asks for a password: enter it, then run the setup again", { step });
+    progress("done", `${access === "root" ? "root" : "sudo"}, Node ${clip(facts.node, 20)}`);
+
+    begin("copy");
+    const files = STAGE_FILES.map(([path, mode]) => ({ path, mode, data: readFileSync(join(root, path)).toString("base64") }));
+    files.push({ path: "config.json", mode: 0o644, data: Buffer.from(runnerConfig(root, { ...setup, login })).toString("base64") });
+    const copy = await run(ssh, sshArgs(peer, session, unpackCommand()), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });
+    const stage = /^@@stage (\S+)$/m.exec(copy.stdout)?.[1];
+    if (copy.code !== 0 || !stage || !STAGE_RE.test(stage)) throw new HostSetupError(`the copy failed: ${tail(copy.stderr) || `exit ${copy.code}`}`, { step });
+    cleanup = () => run(ssh, sshArgs(peer, session, `rm -rf -- ${stage}`), { timeoutMs: COPY_TIMEOUT_MS }).catch(() => undefined);
+    progress("done", `${files.length} files`);
+
+    begin("install");
+    const install = await run(ssh, sshArgs(peer, session, installCommand(stage, access)), {
+      input: access === "password" ? `${setup.sudoPassword}\n` : "",
+      timeoutMs: INSTALL_TIMEOUT_MS,
+      onLine: (line) => {
+        const marker = /^@@step (install|serve|done)$/.exec(line.trim())?.[1];
+        if (marker === "serve") {
+          progress("done");
+          begin("serve");
+        }
+      },
+    });
+    if (install.code !== 0) {
+      const reason =
+        access === "password" && SUDO_REFUSED_RE.test(install.stderr)
+          ? "sudo refused the password"
+          : install.code === SETUP_EXIT.noTag
+            ? "the machine has no ACL tag"
+            : tail(`${install.stdout}\n${install.stderr}`) || `exit ${install.code}`;
+      throw new HostSetupError(install.timedOut ? "the install did not end in time" : reason, { step });
+    }
+    progress("done", `https://${peer.dnsName}:${RUNNER_PORT}`);
+
+    begin("hosts");
+    const { host, added } = addHost(hostsPath, peer, setup.label);
+    progress("done", added ? `added ${host.label}` : `${host.label} is already listed`);
+
+    begin("health");
+    const version = await waitHealthy(host.origin, fetchImpl);
+    progress("done", version ? `buzz-runner ${version}` : "");
+    return { host, added, version, manual: manualSteps(peer, setup.sshUser) };
+  } catch (error) {
+    const failure = error instanceof HostSetupError ? error : new HostSetupError(clip(error?.message ?? error), { step, cause: error });
+    failure.step ??= step;
+    await cleanup?.();
+    onProgress({ step: failure.step, state: "failed", detail: clip(failure.message, 500) });
+    throw failure;
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}

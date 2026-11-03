@@ -26,6 +26,7 @@ import { gooseSmoke } from "./goose.mjs";
 import { codexSmoke } from "./codex.mjs";
 import { piSmoke } from "./pi.mjs";
 import { pluginSmoke } from "./plugin.mjs";
+import { setupSmoke } from "./setup.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The bundle under test: runner/dist by default, or one built elsewhere
@@ -1638,6 +1639,7 @@ async function main() {
     await piSmoke(harnessCtx);
     await gooseSmoke(harnessCtx);
     await codexSmoke(harnessCtx);
+    await setupSmoke({ check, temp });
 
     /** A separate runner with its own socket and state, seeded with `seed`
      * not-yet-activated records, for limits that need a fresh count. */

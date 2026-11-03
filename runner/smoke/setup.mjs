@@ -1,0 +1,134 @@
+// Host setup scenarios of the smoke run: scripts/host-setup.mjs, as the
+// Settings page runs it through the hosts helper, against fake-ssh.mjs and a
+// fake `tailscale status`. They check the rules that keep a setup safe (a
+// tagged Linux peer only, ssh pinned to Tailscale's host keys, the sudo
+// password only on sudo's stdin, the stage removed on every exit) and what
+// the user sees: each step's progress and the host added to hosts.json.
+// The real install on a systemd machine is a host test (runner/README.md).
+//
+// Called from run.mjs with its `check`; adds PASS/FAIL lines.
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { SETUP_STEPS, setupHost } from "../../scripts/host-setup.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO = resolve(HERE, "../..");
+const FAKE_SSH = resolve(HERE, "fake-ssh.mjs");
+/** The files the setup copies (host-setup.mjs STAGE_FILES), less the bundle,
+ * which the scenario writes itself so no runner build is needed. */
+const TREE = ["runner/README.md", "runner/buzz-runner.service", "runner/config.example.json", "runner/deploy/install.sh", "runner/deploy/setup.sh", "runner/deploy/check-config.mjs", "runner/deploy/sudoers.template", "runner/deploy/claude-wrapper", "runner/deploy/harness-wrapper", "runner/deploy/buzz-login", "runner/deploy/buzz-login.mjs", "runner/deploy/pi-launch.mjs"];
+const HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISmokeHostKeySmokeHostKeySmokeHostKeySmoke";
+const OTHER_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherHostKeyOtherHostKeyOtherHostKeyOther";
+const PASSWORD = "smoke sudo pass";
+const LOGIN = "owner@example.com";
+const MACHINE = "smoke-box";
+const DNS = `${MACHINE}.example.ts.net`;
+const ORIGIN = `https://${DNS}:10000`;
+const OWNER = "ef".repeat(32);
+const RELAY = "wss://relay.example.ts.net";
+const FACTS = Object.freeze({ os: "Linux", uid: "1000", node: "24.1.0", systemd: "1", tailscale: "1", sudo: "1" });
+const STAGE_PREFIX = "buzz-runner-setup.";
+
+const peer = (overrides = {}) => ({
+  DNSName: `${DNS}.`,
+  HostName: "Smoke Box",
+  OS: "linux",
+  Online: true,
+  Tags: ["tag:smoke"],
+  sshHostKeys: [HOST_KEY],
+  TailscaleIPs: ["100.64.0.7", "fd7a:115c:a1e0::7"],
+  ...overrides,
+});
+const statusWith = (entry) => ({ Self: { UserID: 7 }, User: { 7: { LoginName: LOGIN } }, Peer: { node: entry } });
+const leftoverStages = () => readdirSync("/tmp").filter((name) => name.startsWith(STAGE_PREFIX));
+
+/** @param {{check: (name: string, ok: unknown, detail?: string) => void, temp: string}} deps */
+export async function setupSmoke({ check, temp }) {
+  const root = join(temp, "setup-root");
+  for (const file of TREE) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    copyFileSync(join(REPO, file), join(root, file));
+  }
+  mkdirSync(join(root, "runner/dist"), { recursive: true });
+  mkdirSync(join(root, "runner/src"), { recursive: true });
+  writeFileSync(join(root, "runner/src/main.ts"), "// source\n");
+  const past = new Date(Date.now() - 60_000);
+  utimesSync(join(root, "runner/src/main.ts"), past, past);
+  writeFileSync(join(root, "runner/dist/buzz-runner.mjs"), "// bundle\n");
+  const hostsPath = join(temp, "setup-hosts.json");
+  writeFileSync(hostsPath, `${JSON.stringify({ hosts: [{ id: "first", label: "first/host", origin: "https://first.example.ts.net:10000" }] }, null, 2)}\n`);
+  const log = join(temp, "fake-ssh.log");
+  const before = new Set(leftoverStages());
+  const health = [];
+  const fakeFetch = async (url) => {
+    health.push(url);
+    return { status: 200, json: async () => ({ ok: true, version: "0.0.0-smoke", agents: 0 }) };
+  };
+
+  /** One setup; returns its progress, its result or error, and the ssh calls. */
+  async function attempt(request, { entry = peer(), facts = FACTS, env = {} } = {}) {
+    writeFileSync(log, "");
+    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
+    const events = [];
+    let result;
+    let error;
+    try {
+      result = await setupHost(
+        { machine: MACHINE, sshUser: "owner", sudoPassword: PASSWORD, ownerPubkey: OWNER, relay: RELAY, ...request },
+        { hostsPath, onProgress: (event) => events.push(event), deps: { status: async () => statusWith(entry), ssh: FAKE_SSH, fetch: fakeFetch, root } },
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    const lines = readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return { events, result, error, calls: lines.filter((line) => line.argv), configs: lines.filter((line) => line.config).map((line) => line.config) };
+  }
+  const failedAt = (outcome, step) => outcome.error?.step === step && outcome.events.at(-1)?.state === "failed" && outcome.events.at(-1)?.step === step;
+
+  const untagged = await attempt({}, { entry: peer({ Tags: [] }) });
+  check("setup: an untagged machine is refused before any ssh call", failedAt(untagged, "machine") && untagged.calls.length === 0 && /no ACL tag.*Edit ACL tags/.test(untagged.error.message), untagged.error?.message);
+  const mac = await attempt({}, { entry: peer({ OS: "macOS" }) });
+  check("setup: a machine that is not Linux is refused", failedAt(mac, "machine") && mac.calls.length === 0 && /needs Linux/.test(mac.error.message), mac.error?.message);
+  const unknown = await attempt({ machine: "elsewhere" });
+  check("setup: a name that is not a tailnet peer is refused", failedAt(unknown, "machine") && unknown.calls.length === 0, unknown.error?.message);
+  const bad = await Promise.all([{ ownerPubkey: "npub1x" }, { relay: "https://relay.example.ts.net" }, { sudoPassword: "a\nb" }, { sshUser: "root;id" }, { extra: 1 }].map((request) => attempt(request)));
+  check("setup: a bad owner key, relay, password, login or key is refused", bad.every((outcome) => failedAt(outcome, "machine") && outcome.calls.length === 0), bad.map((outcome) => outcome.error?.message).join(" | "));
+
+  const pinned = await attempt({}, { env: { FAKE_SSH_HOST_KEY: OTHER_KEY } });
+  check("setup: ssh refuses a machine whose key Tailscale does not report", failedAt(pinned, "connect") && /Host key verification failed/.test(pinned.error.message), pinned.error?.message);
+  const oldNode = await attempt({}, { facts: { ...FACTS, node: "20.11.0" } });
+  check("setup: Node older than 24 on the machine stops the setup before the copy", failedAt(oldNode, "connect") && oldNode.calls.length === 1 && /Node 24 or newer/.test(oldNode.error.message), oldNode.error?.message);
+  const noPassword = await attempt({ sudoPassword: "" });
+  check("setup: sudo that asks for a password, with none given, stops before the copy", failedAt(noPassword, "connect") && noPassword.calls.length === 1 && /enter it/.test(noPassword.error.message), noPassword.error?.message);
+
+  const wrong = await attempt({ sudoPassword: "not it" });
+  check("setup: a refused sudo password fails the install step with that reason", failedAt(wrong, "install") && wrong.error.message === "sudo refused the password", wrong.error?.message);
+  check("setup: a failed setup removes its stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && wrong.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."), leftoverStages().join(","));
+  const hostsAfterFailure = JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
+  check("setup: a failed setup leaves hosts.json as it was", hostsAfterFailure.length === 1);
+
+  const done = await attempt({ label: "smoke/box" }, { env: { FAKE_SSH_CHECK: "1" } });
+  const stepsDone = done.events.filter((event) => event.state === "done").map((event) => event.step);
+  check("setup: every step runs in order and ends done", !done.error && JSON.stringify(stepsDone) === JSON.stringify(SETUP_STEPS), done.error?.message ?? stepsDone.join(","));
+  check("setup: a Tailscale SSH check shows its link as a waiting step", done.events.some((event) => event.step === "connect" && event.state === "waiting" && event.link === "https://login.tailscale.com/a/smoke-check"));
+  const argvText = JSON.stringify(done.calls.map((call) => call.argv));
+  check("setup: ssh goes to the peer's Tailscale address, pinned to its reported keys", done.calls.length === 3 && done.calls.every((call) => call.argv.includes("StrictHostKeyChecking=yes") && call.argv.includes(`HostKeyAlias=${DNS}`) && call.argv.includes("100.64.0.7") && call.argv.includes("GlobalKnownHostsFile=/dev/null") && call.argv.slice(0, 2).join(" ") === "-F /dev/null"), argvText.slice(0, 300));
+  const install = done.calls.at(-1);
+  check("setup: the sudo password is on sudo's stdin only, never in an argument", !argvText.includes(PASSWORD) && install?.stdin === `${PASSWORD}\n` && done.calls.slice(0, 2).every((call) => !call.stdin.includes(PASSWORD)) && !JSON.stringify(done.events).includes(PASSWORD));
+  const config = done.configs[0];
+  check("setup: the first-install config names this owner, relay and Tailscale login", config?.ownerPubkey === OWNER && JSON.stringify(config.relays) === JSON.stringify([RELAY]) && JSON.stringify(config.allowedLogins) === JSON.stringify([LOGIN]) && config.runAsUser === "buzz-agent", JSON.stringify(config));
+  const hosts = JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
+  check("setup: the machine joins hosts.json with its serve origin and the given name", hosts.length === 2 && hosts[1].id === MACHINE && hosts[1].label === "smoke/box" && hosts[1].origin === ORIGIN && done.result?.added === true, JSON.stringify(hosts));
+  check("setup: the health check goes to the new origin", health.at(-1) === `${ORIGIN}/v1/health` && done.result?.version === "0.0.0-smoke");
+  check("setup: the manual steps name the sign-in command and the tag's port rule", done.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)), JSON.stringify(done.result?.manual));
+  check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));
+
+  const again = await attempt({});
+  check("setup: a second setup of the same machine keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
+  const passwordless = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, sudon: "1" } });
+  check("setup: sudo without a password runs `sudo -n` with nothing on stdin", !passwordless.error && passwordless.calls.at(-1)?.argv.at(-1).startsWith("sudo -n -- /bin/bash ") && passwordless.calls.at(-1)?.stdin === "", passwordless.error?.message);
+  const asRoot = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, uid: "0" } });
+  check("setup: a root login runs setup.sh directly", !asRoot.error && asRoot.calls.at(-1)?.argv.at(-1).startsWith("/bin/bash /tmp/buzz-runner-setup."), asRoot.error?.message);
+}
