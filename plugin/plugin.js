@@ -15,15 +15,14 @@
 // Contract with the runner: "Runner contract v1" in docs/RUNNER_CONTRACT.md,
 // harness routes in docs/HARNESSES.md. Change both together.
 //
-// This file is the source, not the installable module: the host list is
-// empty here. scripts/build-plugin.mjs fills it from the user's hosts.json
-// and writes dist/plugin.js and dist/manifest.json, whose
-// `host.networkOrigins` must list exactly these origins.
-//
-// hosts.json is the one host list. The plugin's Settings page reads and
-// saves it through the build's one host command (scripts/hosts-helper.mjs),
-// which builds again; the new hosts are in use after the owner selects
-// Update in Desktop, as after an edit of the file by hand.
+// hosts.json is the one host list, and it is not in this file. The build
+// (scripts/build-plugin.mjs) grants one host process, scripts/hosts-helper.mjs
+// on the user's hosts.json. The plugin reads and saves the list through it,
+// and sends every runner call through it by host id: the helper takes the
+// origin from the file at each call. So a host added on the plugin's Settings
+// page, or by hand in the file, works at once, with no new build and no
+// Update; Buzz would let the plugin reach only the origins of its installed
+// manifest itself.
 
 // Cordis starts apply() only after these host services exist.
 export const inject = ["react", "agents", "host"];
@@ -31,24 +30,23 @@ export const inject = ["react", "agents", "host"];
 // The manifest id; storage keys are named after it, so two builds under
 // different ids never read each other's data.
 const PLUGIN_ID = "sagmans.tailscale-host";
-// Hosts this plugin may reach, in the user's order; the first is the default
-// for new agents. Each origin must also be listed in manifest.json
-// `host.networkOrigins`, because Buzz allows only declared origins. Written
-// by scripts/build-plugin.mjs from hosts.json; the marker below is replaced
-// there, so keep it exactly as it is.
-const HOST_LIST = /* @build:hosts */ [];
-const HOSTS = Object.freeze(HOST_LIST.map((host) => Object.freeze({ id: host.id, label: host.label, origin: host.origin })));
-const DEFAULT_HOST_ID = HOSTS.length ? HOSTS[0].id : undefined;
+// The hosts in hosts.json as the helper last read or saved them, in the
+// user's order; the first is the default for new agents. Replaced, never
+// changed in place, so views that read it see each change (setHostList).
+let HOSTS = Object.freeze([]);
+const defaultHostId = () => (HOSTS.length ? HOSTS[0].id : undefined);
 
 // The type id the plugin always had, so existing agents (whose saved config
 // names it) keep working.
 const TYPE_ID = "tailscale-host";
 const TYPE_TITLE = "Tailscale host";
 // Desktop's New agent Harness picker shows only the type title, so the title
-// names where the agent runs: the host itself when the build has one, else
-// the host count, and the Host field below the picker names each host.
-const TYPE_PICKER_TITLE =
-  HOSTS.length === 1 ? `${TYPE_TITLE} · ${HOSTS[0].label}` : `${TYPE_TITLE} · ${HOSTS.length} hosts`;
+// names where the agent runs: the host itself when there is one, else the
+// host count, and the Host field below the picker names each host. Desktop
+// keeps the title it got at registration, so it names the hosts as the
+// plugin found them at start; the Host field always shows the list as it is.
+const pickerTitle = (list) =>
+  list.length === 1 ? `${TYPE_TITLE} · ${list[0].label}` : list.length ? `${TYPE_TITLE} · ${list.length} hosts` : TYPE_TITLE;
 // The harness an agent gets when its config names none: every agent made
 // before harnesses existed runs Claude.
 const CLAUDE_HARNESS = "claude-code";
@@ -142,17 +140,13 @@ const LABELS = Object.freeze({
   optional: "Optional",
   save: "Save",
   saving: "Saving…",
-  // The plugin's Settings page. Update is Desktop's button on the plugin's
-  // own details in Manage plugins; a new build waits there.
+  // The plugin's Settings page.
   settingsIntro:
-    "These hosts are in hosts.json. New agent of the type Tailscale host can run on each of them; the first is the default. A change here saves hosts.json and builds the plugin again. You can also edit hosts.json by hand and select Build.",
-  notInUse: "Not in use until Update",
-  fileChanged: "hosts.json differs from the hosts in use. Build the plugin, then select Update.",
-  updateReady:
-    "Saved and built. To use it, open Settings > Plugins > Manage plugins, select Tailscale host agents, then select Update.",
-  helperMissing: "This version of Buzz Desktop cannot run the hosts helper. Edit hosts.json by hand and build the plugin.",
+    "These hosts are in hosts.json. New agent of the type Tailscale host can run on each of them; the first is the default. A change here saves hosts.json and is in use at once. You can also edit hosts.json by hand, then select Check again.",
+  noHosts: "No Tailscale hosts. Add one in Settings > Plugins > Tailscale hosts.",
+  helperMissing: "This version of Buzz Desktop cannot run the hosts helper, which this plugin needs to reach its hosts.",
   helperSilent:
-    "The hosts helper did not answer. Buzz runs node from your login shell's PATH: check that node is there, then build the plugin from its folder and select Update.",
+    "The hosts helper did not answer. Buzz runs node from your login shell's PATH: check that node is there, then select Check again.",
 });
 // Remembers which host holds each agent, because remove/profile/interrupt
 // calls name only the pubkey. Holds no secret: pubkey and host id only.
@@ -166,11 +160,23 @@ const EARLIER_STORE_KEY = /^[a-z][a-z0-9-]*\.tailscale-host\.agent-host\.v1:([0-
 // removed at start so the WebView store keeps nothing stale.
 const LEGACY_HARNESS_CACHE_KEY = /^[a-z][a-z0-9-]*\.tailscale-host\.harnesses\.v1$/;
 const HEX64 = /^[0-9a-f]{64}$/;
-// The host command the build declares for the Settings page
-// (scripts/build-plugin.mjs HOSTS_COMMAND), and its stdin bound there.
-const HOSTS_COMMAND = "hosts";
-const HOSTS_COMMAND_INPUT_MAX = 16384;
-// Buzz's limit on declared origins (scripts/build-plugin.mjs HOSTS_MAX).
+// A host's status before its first answer.
+const CHECKING = Object.freeze({ state: "checking" });
+// The host process the build declares (scripts/build-plugin.mjs
+// HOSTS_PROCESS), and its bounds (scripts/hosts-helper.mjs): one request line
+// at most LINE_MAX, a reply carries at most a 1 MiB runner body, which JSON
+// escaping can about double.
+const HOSTS_PROCESS = "hosts";
+const HELPER_LINE_MAX = 262144;
+const HELPER_REPLY_MAX = 4 * 1048576;
+// A hosts.json read or save is local; it gets the time a command would.
+const HELPER_FILE_TIMEOUT_MS = 10000;
+// The helper ends each runner call at its own timeout; the plugin waits this
+// much longer, so the helper's reason, not a bare timeout, reaches the owner.
+const HELPER_GRACE_MS = 5000;
+// Helper log lines kept per line, so a runaway process cannot flood the log.
+const HELPER_LOG_MAX = 1000;
+// The status poll asks each host every minute (scripts/build-plugin.mjs HOSTS_MAX).
 const HOSTS_MAX = 16;
 // The host rules of scripts/build-plugin.mjs, repeated here because the
 // plugin is one file with no imports: an id is saved in each agent's config;
@@ -264,6 +270,7 @@ function checkUnique(host, others) {
 }
 
 function hostById(id) {
+  if (!HOSTS.length) throw new RunnerError(LABELS.noHosts, { op: "host", id });
   const host = HOSTS.find((entry) => entry.id === id);
   if (!host) throw new RunnerError(`Unknown Tailscale host: ${id}`, { op: "host", id });
   return host;
@@ -279,7 +286,7 @@ function cleanConfig(config) {
   const value = config && typeof config === "object" ? config : {};
   const harness = typeof value.harness === "string" && HARNESS_ID.test(value.harness) ? value.harness : CLAUDE_HARNESS;
   const out = {
-    host: typeof value.host === "string" && HOSTS.some((entry) => entry.id === value.host) ? value.host : DEFAULT_HOST_ID,
+    host: typeof value.host === "string" && HOSTS.some((entry) => entry.id === value.host) ? value.host : defaultHostId(),
     harness,
     scope: SCOPES.some(([id]) => id === value.scope) ? value.scope : DEFAULT_SCOPE,
     instructions: typeof value.instructions === "string" ? value.instructions.slice(0, INSTRUCTIONS_MAX) : "",
@@ -448,46 +455,179 @@ function migrateStore() {
   }
 }
 
-export function apply(ctx) {
+// ---- The hosts helper -------------------------------------------------------
+/**
+ * The client for the plugin's one long-lived host process
+ * (scripts/hosts-helper.mjs): it reads and saves hosts.json and carries each
+ * runner call. Kept outside apply() so the process, its line buffer and its
+ * waiting requests have one owner. The process is started on first use and
+ * again after it exits; requests and replies are JSON lines matched by id,
+ * because runner calls end in any order.
+ */
+class HelperClient {
+  /** @param {object} host Desktop's `ctx.host`, for `spawn`. */
+  constructor(host) {
+    this.host = host;
+    this.process = undefined;
+    this.starting = undefined;
+    this.buffer = "";
+    this.nextId = 1;
+    this.pending = new Map();
+    this.stopped = false;
+  }
+
+  /** Fails every request still waiting, as when the helper exits. */
+  failPending(reason) {
+    for (const [id, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(new HostConfigError(reason, { op: entry.op, id }));
+    }
+    this.pending.clear();
+  }
+
+  /** Settles the waiting request that one reply line answers. */
+  onReplyLine(line) {
+    let reply;
+    try {
+      reply = JSON.parse(line);
+    } catch {
+      console.warn("tailscale-host: hosts helper wrote a line that is not JSON", { line: line.slice(0, HELPER_LOG_MAX) });
+      return;
+    }
+    const entry = reply && this.pending.get(reply.id);
+    if (!entry) {
+      // A late reply after its wait ended, or a refusal of a line that
+      // could not be read (id null): the request already failed.
+      if (reply && reply.ok === false) console.warn("tailscale-host: hosts helper refused a request", { id: reply.id, error: text(reply.error, TEXT_MAX * 3) });
+      return;
+    }
+    this.pending.delete(reply.id);
+    clearTimeout(entry.timer);
+    if (reply.ok === true) entry.resolve(reply);
+    // `refused`: the helper ran the request and it failed, as opposed to a
+    // helper that is missing or does not answer.
+    else entry.reject(new HostConfigError(text(reply.error, TEXT_MAX * 3) || "The hosts helper refused the request.", { op: entry.op, refused: true }));
+  }
+
+  /** Desktop hands stdout over in chunks, not lines. */
+  onOutput(chunk) {
+    this.buffer += chunk;
+    let newline;
+    while ((newline = this.buffer.indexOf("\n")) !== -1) {
+      const line = this.buffer.slice(0, newline);
+      this.buffer = this.buffer.slice(newline + 1);
+      this.onReplyLine(line);
+    }
+    // A reply never gets this long; the helper is broken, so start it again.
+    if (this.buffer.length > HELPER_REPLY_MAX) {
+      this.buffer = "";
+      this.process?.kill();
+    }
+  }
+
+  /** Watches a started helper: when it exits, the next call starts a new one. */
+  adopt(child) {
+    this.process = child;
+    this.buffer = "";
+    const gone = (reason) => {
+      if (this.process === child) this.process = undefined;
+      this.failPending(reason);
+    };
+    Promise.resolve(child.exited).then(
+      (code) => gone(`The hosts helper stopped (${JSON.stringify(code)}). ${LABELS.helperSilent}`),
+      () => gone(LABELS.helperSilent),
+    );
+    if (this.stopped) child.kill();
+    return child;
+  }
+
+  /** The running helper, started when there is none. */
+  running() {
+    if (this.process) return Promise.resolve(this.process);
+    if (typeof this.host.spawn !== "function") return Promise.reject(new HostConfigError(LABELS.helperMissing, { op: "spawn" }));
+    this.starting ??= this.host
+      .spawn(HOSTS_PROCESS, {
+        onStdout: (chunk) => this.onOutput(chunk),
+        // The helper logs each failure as one JSON line, for the app's log.
+        onStderr: (chunk) => console.warn("tailscale-host: hosts helper", String(chunk).slice(0, HELPER_LOG_MAX)),
+      })
+      .then(
+        (child) => this.adopt(child),
+        (cause) => {
+          console.warn("tailscale-host: hosts helper did not start", { error: errorText(cause) });
+          throw new HostConfigError(LABELS.helperSilent, { op: "spawn", cause });
+        },
+      )
+      .finally(() => {
+        this.starting = undefined;
+      });
+    return this.starting;
+  }
+
+  /** One request to the helper; resolves with its reply. Waits at most
+   * `waitMs`, so a helper that hangs fails the call instead of the view. */
+  async call(request, waitMs) {
+    const id = this.nextId++;
+    const line = `${JSON.stringify({ id, ...request })}\n`;
+    if (line.length > HELPER_LINE_MAX) throw new HostConfigError("The request is too large for the hosts helper.", { op: request.op });
+    const child = await this.running();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new HostConfigError(LABELS.helperSilent, { op: request.op, waitMs }));
+      }, waitMs);
+      this.pending.set(id, { op: request.op, resolve, reject, timer });
+      Promise.resolve(child.write(line)).catch((cause) => {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(new HostConfigError(LABELS.helperSilent, { op: request.op, cause }));
+      });
+    });
+  }
+
+  /** Ends the helper for good, as when the plugin is unloaded. */
+  stop(reason) {
+    this.stopped = true;
+    this.failPending(reason);
+    this.process?.kill();
+  }
+}
+
+// Async: the type's picker title names the hosts, so the first read of
+// hosts.json comes before the type is registered.
+export async function apply(ctx) {
   const React = ctx.react;
   const h = React.createElement;
   const icons = makeIcons(h);
   const glyphs = makeGlyphs(h);
   let disposed = false;
-  // A build without hosts (the unbuilt source) can reach nothing, so it
-  // fails here, where Settings shows the reason, instead of later per call.
-  if (!HOSTS.length) throw new RunnerError("No Tailscale hosts in this build. Build it with scripts/build-plugin.mjs from hosts.json.", { op: "apply" });
   migrateStore();
 
-  /** One JSON call to a host's runner; throws RunnerError on any failure. */
+  const helper = new HelperClient(ctx.host);
+
+  /** One JSON call to a host's runner, through the helper; throws
+   * RunnerError on any failure. */
   async function call(host, method, path, body, timeoutMs = REQUEST_TIMEOUT_MS) {
     const started = Date.now();
-    const url = host.origin + API_PREFIX + path;
     let response;
     try {
-      response = await ctx.host.request({
-        url,
-        method,
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        timeoutMs,
-      });
+      response = await helper.call(
+        { op: "request", host: host.id, method, path, ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs },
+        timeoutMs + HELPER_GRACE_MS,
+      );
     } catch (cause) {
-      throw new RunnerError(`Could not reach ${host.label}. Check Tailscale and buzz-runner.`, {
+      // A helper that does not run is not a host problem; say which it is.
+      const reason = cause?.details?.refused ? `Could not reach ${host.label}. Check Tailscale and buzz-runner.` : errorText(cause);
+      throw new RunnerError(reason, {
         op: `${method} ${path}`,
         host: host.id,
         elapsedMs: Date.now() - started,
         cause,
       });
     }
-    if (!response) {
-      throw new RunnerError(`No response from ${host.label}.`, {
-        op: `${method} ${path}`,
-        host: host.id,
-        elapsedMs: Date.now() - started,
-      });
-    }
     if (response.status === HTTP_NO_CONTENT) return undefined;
+    if (!Number.isInteger(response.status) || typeof response.body !== "string")
+      throw new RunnerError(`Invalid reply from ${host.label}.`, { op: `${method} ${path}`, host: host.id });
     let parsed;
     try {
       parsed = response.body ? JSON.parse(response.body) : undefined;
@@ -533,6 +673,9 @@ export function apply(ctx) {
    * runner keeps it (covers a cleared WebView store or another device). */
   async function locate(pubkey) {
     if (!HEX64.test(pubkey)) throw new RunnerError("Invalid agent pubkey.", { op: "locate" });
+    // Without a host list no host can be asked, and "no host knows it" would
+    // let a delete drop an agent that still runs.
+    if (!HOSTS.length) throw new RunnerError(hostsFile.error || LABELS.noHosts, { op: "locate" });
     const saved = localStorage.getItem(STORE_PREFIX + pubkey);
     if (saved && HOSTS.some((entry) => entry.id === saved)) return hostById(saved);
     for (const host of HOSTS) {
@@ -581,7 +724,9 @@ export function apply(ctx) {
   // React sees each change.
 
   const listeners = new Set();
-  let hosts = Object.freeze(Object.fromEntries(HOSTS.map((host) => [host.id, Object.freeze({ state: "checking" })])));
+  // A host has no entry until its first answer, which reads as checking.
+  let hosts = Object.freeze({});
+  const statusOf = (id) => hosts[id] || CHECKING;
   let models = Object.freeze({});
   // Keys with a fetch in flight: a stale list stays "ok" while it refreshes,
   // so its state alone cannot stop a second picker from asking again.
@@ -596,9 +741,11 @@ export function apply(ctx) {
   const useStore = (read) => React.useSyncExternalStore(subscribe, read);
 
   let refreshing;
-  /** Asks every host for its harnesses, one round at a time. */
+  /** Reads hosts.json again, then asks every host in it for its harnesses,
+   * one round at a time. The read picks up an edit by hand. */
   function refresh() {
-    refreshing ??= Promise.all(
+    refreshing ??= readHostsFile().then(() =>
+      Promise.all(
       HOSTS.map(async (host) => {
         try {
           const list = parseHarnesses(await call(host, "GET", "/harnesses", undefined, HARNESS_TIMEOUT_MS));
@@ -607,10 +754,11 @@ export function apply(ctx) {
           return [host.id, Object.freeze({ state: "down", error: errorText(error) })];
         }
       }),
-    )
+    ))
       .then((entries) => {
         if (disposed) return;
-        hosts = Object.freeze({ ...hosts, ...Object.fromEntries(entries) });
+        // Only hosts still in the list keep a status.
+        hosts = Object.freeze(Object.fromEntries(HOSTS.map((host) => [host.id, hosts[host.id]]).filter(([, status]) => status).concat(entries)));
         emit();
       })
       .finally(() => {
@@ -673,9 +821,10 @@ export function apply(ctx) {
   let snapshot;
   /** The type is ready when some host answers with a ready harness. */
   function providerSnapshot() {
-    const statuses = HOSTS.map((host) => hosts[host.id]);
+    const statuses = HOSTS.map((host) => statusOf(host.id));
     let next;
-    if (statuses.some((status) => status.state === "ok" && status.harnesses.some((item) => item.ready))) next = { readiness: "ready" };
+    if (!statuses.length) next = { readiness: "attention", attentionLabel: "No Tailscale host" };
+    else if (statuses.some((status) => status.state === "ok" && status.harnesses.some((item) => item.ready))) next = { readiness: "ready" };
     else if (statuses.some((status) => status.state === "checking")) next = { readiness: "checking" };
     else if (statuses.every((status) => status.state === "down")) next = { readiness: "attention", attentionLabel: "Host unreachable" };
     else next = { readiness: "attention", attentionLabel: "No harness ready on host" };
@@ -685,17 +834,13 @@ export function apply(ctx) {
   }
 
   // ---- hosts.json, through the hosts helper ---------------------------------
-  // The Settings page shows and edits hosts.json, the one host list, with the
-  // build's host command (scripts/hosts-helper.mjs). Each save also builds,
-  // so Desktop offers Update. This build keeps its own HOSTS until then,
-  // because Buzz grants a build only its own origins.
+  // The Settings page shows and edits hosts.json, the one host list, through
+  // the helper. A read or save also replaces HOSTS, which New agent and every
+  // runner call use, so a change is in use at once.
 
-  // The file as last read or saved. `built`: the file holds the list this
-  // page last saved or built, so the new build waits only for Update; an
-  // edit by hand since then clears it. `busy`: one helper call at a time, so
-  // two saves never race on the file.
-  let hostsFile = Object.freeze({ state: "loading", hosts: Object.freeze([]), built: false, busy: false });
-  let lastBuilt;
+  // The file as last read or saved. `busy`: one save at a time, so two saves
+  // never race on the file.
+  let hostsFile = Object.freeze({ state: "loading", error: undefined, busy: false });
   const setHostsFile = (change) => {
     hostsFile = Object.freeze({ ...hostsFile, ...change });
     emit();
@@ -714,74 +859,58 @@ export function apply(ctx) {
     );
   }
 
-  /** One request to the hosts helper; returns the file's hosts as it left
-   * them. Throws HostConfigError with the helper's reason, or with what to
-   * check when it did not answer at all. */
-  async function runHelper(request) {
-    const started = Date.now();
-    const input = JSON.stringify(request);
-    if (input.length > HOSTS_COMMAND_INPUT_MAX) throw new HostConfigError("The host list is too large to save.", { op: request.op });
-    if (typeof ctx.host.runCommand !== "function") throw new HostConfigError(LABELS.helperMissing, { op: request.op });
-    let output = null;
-    try {
-      output = await ctx.host.runCommand(HOSTS_COMMAND, input);
-    } catch (cause) {
-      // Desktop answers null for every failure; a throw means the same here.
-      console.warn("tailscale-host: hosts helper call threw", { op: request.op, elapsedMs: Date.now() - started, error: errorText(cause) });
-    }
-    if (typeof output !== "string") throw new HostConfigError(LABELS.helperSilent, { op: request.op, elapsedMs: Date.now() - started });
-    let reply;
-    try {
-      reply = JSON.parse(output);
-    } catch {
-      throw new HostConfigError("The hosts helper gave an answer that is not JSON.", { op: request.op });
-    }
-    if (!reply || reply.ok !== true) throw new HostConfigError(text(reply && reply.error, TEXT_MAX * 3) || "The hosts helper refused the request.", { op: request.op });
-    return parseFileHosts(reply.hosts);
+  /** The new list for every view; a list equal to the one in use keeps its
+   * object, so views do not draw again for nothing. */
+  function setHostList(list) {
+    if (!sameHosts(list, HOSTS)) HOSTS = list;
   }
 
-  /** Runs one helper request and keeps its result as the page's file. A
-   * failed read shows on the page; a failed save or build is thrown to the
-   * form or button that asked, and the list stays as it was. */
-  async function fileCall(request, { built }) {
-    if (hostsFile.busy) throw new HostConfigError("A save is still running. Try again in a moment.", { op: request.op });
-    setHostsFile({ busy: true });
+  /** Runs one file request and keeps its result. A failed read keeps the
+   * hosts in use and shows the reason on the page; a failed save is thrown
+   * to the form or button that asked, and the list stays as it was. */
+  async function fileCall(request) {
+    if (request.op === "save") {
+      if (hostsFile.busy) throw new HostConfigError("A save is still running. Try again in a moment.", { op: request.op });
+      setHostsFile({ busy: true });
+    }
     try {
-      const list = await runHelper(request);
-      if (built) lastBuilt = list;
-      if (!disposed) setHostsFile({ state: "ready", hosts: list, error: undefined, built: Boolean(lastBuilt) && sameHosts(list, lastBuilt) });
+      const reply = await helper.call(request, HELPER_FILE_TIMEOUT_MS);
+      const list = parseFileHosts(reply.hosts);
+      if (disposed) return list;
+      setHostList(list);
+      setHostsFile({ state: "ready", error: undefined });
       return list;
     } catch (error) {
       if (!disposed && request.op === "read") setHostsFile({ state: "error", error: errorText(error) });
       throw error;
     } finally {
-      if (!disposed) setHostsFile({ busy: false });
+      if (!disposed && request.op === "save") setHostsFile({ busy: false });
     }
   }
 
-  const readHostsFile = () => fileCall({ op: "read" }, { built: false }).catch(() => undefined);
-  const buildHostsFile = () => fileCall({ op: "build" }, { built: true });
-  const saveHostsFile = (list) => fileCall({ op: "save", hosts: list.map(({ id, label, origin }) => ({ id, label, origin })) }, { built: true });
+  const readHostsFile = () => fileCall({ op: "read" }).catch(() => undefined);
+  const saveHostsFile = (list) => fileCall({ op: "save", hosts: list.map(({ id, label, origin }) => ({ id, label, origin })) });
 
-  /** Whether the file differs from the hosts this build uses. */
   const sameHosts = (a, b) => JSON.stringify(a.map(({ id, label, origin }) => [id, label, origin])) === JSON.stringify(b.map(({ id, label, origin }) => [id, label, origin]));
 
   /** The file's list, for a change: only after a good read, so a save can
    * never write over hosts the page did not see. */
   function fileHosts() {
     if (hostsFile.state !== "ready") throw new HostConfigError("hosts.json is not loaded. Select Check again.", { field: "file" });
-    return hostsFile.hosts;
+    return HOSTS;
   }
 
-  /** How many agents this device has placed on a host. */
-  function agentsOn(hostId) {
-    let count = 0;
+  /** The host id of each agent this device has placed. */
+  function placedHostIds() {
+    const ids = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
-      if (typeof key === "string" && key.startsWith(STORE_PREFIX) && localStorage.getItem(key) === hostId) count += 1;
+      if (typeof key === "string" && key.startsWith(STORE_PREFIX)) ids.push(localStorage.getItem(key));
     }
-    return count;
+    return ids;
   }
+  /** How many agents this device has placed on a host. */
+  const agentsOn = (hostId) => placedHostIds().filter((id) => id === hostId).length;
 
   function fileHost(list, id) {
     const host = list.find((entry) => entry.id === id);
@@ -791,11 +920,11 @@ export function apply(ctx) {
 
   async function addHost({ label, origin }) {
     const list = fileHosts();
-    if (list.length >= HOSTS_MAX) throw new HostConfigError(`hosts.json can hold at most ${HOSTS_MAX} hosts (Buzz's limit).`, { field: "label" });
+    if (list.length >= HOSTS_MAX) throw new HostConfigError(`hosts.json can hold at most ${HOSTS_MAX} hosts.`, { field: "label" });
     const clean = { label: checkHostLabel(label), origin: checkHostOrigin(origin) };
-    // Ids of hosts in use stay taken too: an agent may still name one that
-    // was removed from the file before Update.
-    const taken = new Set([...list, ...HOSTS].map((entry) => entry.id));
+    // Ids that agents on this device still name stay taken too, so a new
+    // host never takes over the agents of a host removed by hand.
+    const taken = new Set([...list.map((entry) => entry.id), ...placedHostIds()]);
     const host = Object.freeze({ id: hostIdFor(clean.label, taken), ...clean });
     checkUnique(host, list);
     await saveHostsFile([...list, host]);
@@ -815,7 +944,7 @@ export function apply(ctx) {
 
   /** Refuses while an agent of this device runs on the host: its settings,
    * profile and delete calls would have nowhere to go. The last host stays,
-   * because a build without hosts cannot start. */
+   * because the helper refuses an empty hosts.json. */
   async function removeHost(id) {
     const list = fileHosts();
     const host = fileHost(list, id);
@@ -1603,9 +1732,12 @@ export function apply(ctx) {
    * sees which host the agent goes to and finds where new hosts appear.
    * Sessions keep Desktop's default and change in Settings, as Desktop's do. */
   function Create(props) {
+    const list = useStore(() => HOSTS);
+    const file = useStore(() => hostsFile);
     const config = cleanConfig(props.config);
-    const host = hostById(config.host);
     const set = (patch) => props.onChange(pick(config, patch));
+    if (!list.length) return h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, file.error || LABELS.noHosts);
+    const host = hostById(config.host);
     return h(
       "div",
       { className: "grid gap-4" },
@@ -1614,7 +1746,7 @@ export function apply(ctx) {
         variant: "field",
         value: config.host,
         disabled: props.disabled,
-        options: HOSTS.map((entry) => ({ value: entry.id, label: entry.label })),
+        options: list.map((entry) => ({ value: entry.id, label: entry.label })),
         onValueChange: (id) => set({ host: id }),
       }),
       h("p", { className: "m-0 text-body-sm text-secondary" }, `Runs on ${host.label}. The host keeps its key and runs it, whether or not this app is open.`),
@@ -1729,12 +1861,14 @@ export function apply(ctx) {
   /** The provider dialog: each host and every harness on it, and a recheck. */
   function DialogBody({ onClose }) {
     useStore(() => hosts);
+    const list = useStore(() => HOSTS);
     const [checking, setChecking] = React.useState(false);
     return h(
       "div",
       { className: "grid gap-4" },
-      HOSTS.map((host) => {
-        const status = hosts[host.id];
+      list.length ? null : h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, hostsFile.error || LABELS.noHosts),
+      list.map((host) => {
+        const status = statusOf(host.id);
         return h(
           "section",
           { key: host.id, "aria-label": host.label },
@@ -1783,9 +1917,10 @@ export function apply(ctx) {
   /** Pinned across the agent's tabs while no host answers: settings and
    * profile changes need the runner, so the host's access notice fits. */
   function PanelFooter() {
-    const statuses = useStore(() => hosts);
-    const down = HOSTS.filter((host) => statuses[host.id].state === "down");
-    if (!down.length || down.length < HOSTS.length) return null;
+    useStore(() => hosts);
+    const list = useStore(() => HOSTS);
+    const down = list.filter((host) => statusOf(host.id).state === "down");
+    if (!down.length || down.length < list.length) return null;
     return h(
       "div",
       { role: "status", className: "text-body-sm text-secondary" },
@@ -1858,59 +1993,33 @@ export function apply(ctx) {
     );
   }
 
-  /** One host's row: its address and whether it answers, or that it waits
-   * for Update because this build does not use it yet. */
+  /** One host's row: its address and whether it answers. */
   function hostSubtitle(host, status) {
-    const inUse = HOSTS.some((entry) => entry.id === host.id && entry.origin === host.origin);
-    const reach = !inUse ? LABELS.notInUse : !status || status.state === "checking" ? "Checking…" : status.state === "down" ? status.error : "Reachable";
+    const reach = status.state === "checking" ? "Checking…" : status.state === "down" ? status.error : "Reachable";
     return `${host.origin} · ${reach}`;
   }
 
-  /** What stands between hosts.json and the hosts in use. */
-  function PendingUpdate({ file, onBuilt, onError }) {
-    const [building, setBuilding] = React.useState(false);
-    if (sameHosts(file.hosts, HOSTS)) return null;
-    if (file.built) return h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, LABELS.updateReady);
-    return h(
-      "div",
-      { className: "flex items-center gap-2" },
-      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.fileChanged),
-      h(
-        Button,
-        {
-          size: "sm",
-          loading: building,
-          disabled: file.busy && !building,
-          onClick: () => {
-            setBuilding(true);
-            buildHostsFile()
-              .then(onBuilt, (cause) => onError(errorText(cause)))
-              .finally(() => setBuilding(false));
-          },
-        },
-        "Build",
-      ),
-    );
-  }
-
-  /** Settings > Plugins > Tailscale hosts: hosts.json, which New agent offers
-   * after Update. */
+  /** Settings > Plugins > Tailscale hosts: hosts.json, which New agent
+   * offers at once. */
   function HostsSettings({ active }) {
     const file = useStore(() => hostsFile);
-    const statuses = useStore(() => hosts);
+    const list = useStore(() => HOSTS);
+    useStore(() => hosts);
     const [editing, setEditing] = React.useState(null);
     const [notice, setNotice] = React.useState("");
     const [checking, setChecking] = React.useState(false);
+    // The file may have changed by hand since the last read.
     React.useEffect(() => {
       void readHostsFile();
     }, []);
+    // A save changes the hosts, so each is asked again for its status.
     const guard = (action) => {
       if (!active()) return;
-      action().catch((cause) => setNotice(errorText(cause)));
+      action()
+        .then(() => refresh())
+        .catch((cause) => setNotice(errorText(cause)));
     };
     const ready = file.state === "ready";
-    // Until the file is read, the page shows the hosts this build uses.
-    const list = ready ? file.hosts : HOSTS;
     return h(
       "section",
       { "aria-label": `${SETTINGS_TITLE} settings`, className: "grid gap-4" },
@@ -1929,13 +2038,14 @@ export function apply(ctx) {
                 onDone: (saved) => {
                   setEditing(null);
                   setNotice(`Saved ${saved.label}.`);
+                  void refresh();
                 },
                 onCancel: () => setEditing(null),
               })
             : h(PreferenceRow, {
                 key: host.id,
                 title: host.label,
-                subtitle: hostSubtitle(host, statuses[host.id]),
+                subtitle: hostSubtitle(host, statusOf(host.id)),
                 trailing: ready
                   ? h(
                       "div",
@@ -1960,10 +2070,17 @@ export function apply(ctx) {
               }),
         ),
       ),
-      ready ? h(PendingUpdate, { file, onBuilt: () => setNotice(""), onError: setNotice }) : null,
       notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, notice) : null,
       ready ? h("h3", { className: "text-label-sm" }, "Add a host") : null,
-      ready ? h(HostForm, { disabled: file.busy, onDone: (saved) => setNotice(`Added ${saved.label}.`) }) : null,
+      ready
+        ? h(HostForm, {
+            disabled: file.busy,
+            onDone: (saved) => {
+              setNotice(`Added ${saved.label}.`);
+              void refresh();
+            },
+          })
+        : null,
       h(
         "div",
         null,
@@ -1973,7 +2090,7 @@ export function apply(ctx) {
             loading: checking,
             onClick: () => {
               setChecking(true);
-              Promise.all([refresh(), readHostsFile()]).finally(() => setChecking(false));
+              refresh().finally(() => setChecking(false));
             },
           },
           "Check again",
@@ -1982,17 +2099,22 @@ export function apply(ctx) {
     );
   }
 
+  // The first read, before the type: its picker title names the hosts. A
+  // failed read leaves the list empty; the type still registers, so agents
+  // made before stay listed, and every view says what is wrong.
+  await readHostsFile();
+  if (disposed) return;
   ctx.agents.register({
     id: TYPE_ID,
-    title: TYPE_PICKER_TITLE,
+    title: pickerTitle(HOSTS),
     description: "Runs on your own Tailscale host, on any harness the host offers. The key stays on the host.",
     icon: icons.host,
     defaults: () => ({ config: cleanConfig({}) }),
     summary: (agent) => {
       const config = cleanConfig(agent.config);
       const saved = localStorage.getItem(STORE_PREFIX + agent.pubkey);
-      const host = HOSTS.find((entry) => entry.id === saved) || hostById(config.host);
-      return [TYPE_TITLE, harnessTitle(host.id, config.harness), config.model, host.label].filter(Boolean).join(" · ");
+      const host = HOSTS.find((entry) => entry.id === saved) || HOSTS.find((entry) => entry.id === config.host);
+      return [TYPE_TITLE, harnessTitle(host?.id, config.harness), config.model, host?.label].filter(Boolean).join(" · ");
     },
     Create,
     CreateModel,
@@ -2066,6 +2188,7 @@ export function apply(ctx) {
       return () => {
         disposed = true;
         clearInterval(timer);
+        helper.stop("The plugin stopped.");
       };
     });
   else void refresh();

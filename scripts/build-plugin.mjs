@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Builds the installable plugin from the user's own host list. Buzz grants
-// network access only to the exact origins in `host.networkOrigins` (no
-// wildcards), so the hosts cannot ship in the source: each user writes a
-// local hosts.json (gitignored, see hosts.example.json) and this script
-// writes dist/manifest.json with those origins and dist/plugin.js with the
-// same list. Both must agree, which is why one script writes both.
+// Builds the installable plugin for the user's own host list. hosts.json
+// (gitignored, see hosts.example.json) is the one host list, and it stays
+// outside the build: the manifest grants one host process, node on
+// scripts/hosts-helper.mjs with this hosts file fixed as its argument. The
+// plugin reads and saves the list through it, and the helper carries every
+// runner call to the origin the list names. So a host change, on the
+// Settings page or by hand, works at once, without a new build or an Update.
+// Buzz would grant a plugin only the origins of its installed manifest, and
+// change them only at an Update, which is why the manifest declares none.
 //
-// hosts.json is the one host list. The plugin's Settings page edits it too:
-// the manifest also grants one host command that runs
-// scripts/hosts-helper.mjs on this hosts file and output folder, which
-// writes hosts.json and builds again. Buzz lets a plugin neither write files
-// nor change its own grants, so this is the only way the page can save.
+// A build is needed once per checkout (the manifest holds its absolute
+// paths), and again only when the plugin's code changes.
 //
 // Usage: node scripts/build-plugin.mjs [--hosts <hosts.json>] [--out <dir>]
 //   defaults: --hosts ./hosts.json  --out ./dist
@@ -26,10 +26,9 @@ const DEFAULT_HOSTS = join(ROOT, "hosts.json");
 const DEFAULT_OUT = join(ROOT, "dist");
 const MANIFEST = "manifest.json";
 const MODULE = "plugin.js";
-/** The one place in plugin/plugin.js the host list goes. */
-const HOSTS_MARKER = "/* @build:hosts */ []";
 const PLUGIN_ID_PATTERN = /^const PLUGIN_ID = "([^"]+)";$/m;
-/** Buzz's own limit on declared origins (crates/plugin-manager). */
+/** The plugin asks each host for its status every minute, so the list
+ * stays short (plugin.js HOSTS_MAX). */
 const HOSTS_MAX = 16;
 /** A host id is saved in each agent's config and shown nowhere else. */
 const HOST_ID = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
@@ -37,17 +36,12 @@ const HOST_ID = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const LABEL_MAX = 40;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const HOST_KEYS = ["id", "label", "origin"];
-/** The host command the Settings page runs (plugin.js HOSTS_COMMAND). */
-export const HOSTS_COMMAND = "hosts";
-/** Desktop resolves a command's program by name on the login shell's PATH;
+/** The host process the plugin starts (plugin.js HOSTS_PROCESS). */
+export const HOSTS_PROCESS = "hosts";
+/** Desktop resolves a process's program by name on the login shell's PATH;
  * a path is not allowed there (crates/plugin-manager valid_program). */
 const HELPER_PROGRAM = "node";
 const HELPER = join(ROOT, "scripts", "hosts-helper.mjs");
-/** stdin and stdout bounds of the command: a full list of 16 hosts at the
- * longest id, label and origin is about 6 KB as JSON. Desktop allows at most
- * 64 KB in and 1 MB out. */
-export const HELPER_INPUT_MAX = 16384;
-export const HELPER_OUTPUT_MAX = 16384;
 /** Desktop's limit on one declared argument. */
 const HELPER_ARG_MAX = 1024;
 /** `node --check` of the output; local and fast, but still bounded. */
@@ -66,9 +60,10 @@ export class PluginBuildError extends Error {
 
 const invalid = (where, message) => new PluginBuildError(`${where}: ${message}`, { exit: EXIT_DATA });
 
-/** One origin exactly as Buzz compares it: HTTPS, no credentials, path,
- * query or fragment, and written the way the URL standard serializes it
- * (lowercase host, no default :443), or Buzz rejects the manifest. */
+/** One origin exactly as the URL standard serializes it: HTTPS, no
+ * credentials, path, query or fragment, lowercase host, no default :443. The
+ * helper joins it with a runner path, so anything more would change where a
+ * call goes. */
 function checkOrigin(value, where) {
   if (typeof value !== "string" || !value) throw invalid(where, "origin must be a non-empty string");
   let url;
@@ -91,7 +86,7 @@ export function validateHosts(raw, source = "hosts.json") {
   if (extra.length) throw invalid(source, `unknown keys: ${extra.join(", ")}`);
   const { hosts } = raw;
   if (!Array.isArray(hosts) || !hosts.length) throw invalid(source, "hosts must be a non-empty array");
-  if (hosts.length > HOSTS_MAX) throw invalid(source, `at most ${HOSTS_MAX} hosts (Buzz allows ${HOSTS_MAX} network origins)`);
+  if (hosts.length > HOSTS_MAX) throw invalid(source, `at most ${HOSTS_MAX} hosts`);
   const ids = new Set();
   const origins = new Set();
   return hosts.map((host, index) => {
@@ -135,17 +130,20 @@ export function writeAtomic(path, text) {
   renameSync(temp, path);
 }
 
-/** The command that lets the Settings page save this same hosts file and
- * build into this same folder. Its arguments are fixed in the manifest, so
- * the page can choose neither the program nor the paths. */
-function helperCommand(hostsPath, outDir) {
-  const args = [HELPER, "--hosts", hostsPath, "--out", outDir];
+/** The process that keeps this same hosts file and carries the plugin's
+ * runner calls. Its arguments are fixed in the manifest, and the helper
+ * refuses any the plugin adds, so the plugin can choose neither the program
+ * nor the file. */
+function helperProcess(hostsPath) {
+  const args = [HELPER, "--hosts", hostsPath];
   const long = args.find((arg) => arg.length > HELPER_ARG_MAX);
   if (long) throw new PluginBuildError(`path longer than ${HELPER_ARG_MAX} characters, which Buzz refuses: ${long}`, { exit: EXIT_USAGE });
-  return { id: HOSTS_COMMAND, program: HELPER_PROGRAM, args, maxInputBytes: HELPER_INPUT_MAX, maxOutputBytes: HELPER_OUTPUT_MAX };
+  return { id: HOSTS_PROCESS, program: HELPER_PROGRAM, args };
 }
 
-/** Builds dist from a hosts file; returns what it wrote. */
+/** Builds dist for a hosts file; returns the folder and the file's hosts.
+ * The file is checked so a first build names a mistake at once, but its
+ * hosts do not go into the build. */
 export function buildPlugin({ hostsPath = DEFAULT_HOSTS, outDir = DEFAULT_OUT } = {}) {
   const out = resolve(outDir);
   if (out === SOURCE_DIR) throw new PluginBuildError("--out must not be the plugin/ source folder", { exit: EXIT_USAGE });
@@ -157,15 +155,12 @@ export function buildPlugin({ hostsPath = DEFAULT_HOSTS, outDir = DEFAULT_OUT } 
   if (declared !== manifest.id)
     throw new PluginBuildError(`plugin.js PLUGIN_ID (${declared}) differs from manifest id (${manifest.id})`);
   if (manifest.host !== undefined)
-    throw new PluginBuildError("plugin/manifest.json must not declare host: the build writes it from hosts.json");
-  const parts = source.split(HOSTS_MARKER);
-  if (parts.length !== 2) throw new PluginBuildError(`plugin.js must hold the marker ${HOSTS_MARKER} exactly once`);
+    throw new PluginBuildError("plugin/manifest.json must not declare host: the build writes it for this checkout");
 
-  const built = parts.join(JSON.stringify(hosts, null, 2));
-  const builtManifest = { ...manifest, host: { networkOrigins: hosts.map((host) => host.origin), commands: [helperCommand(resolve(hostsPath), out)] } };
+  const builtManifest = { ...manifest, host: { processes: [helperProcess(resolve(hostsPath))] } };
   mkdirSync(out, { recursive: true });
   const modulePath = join(out, MODULE);
-  writeAtomic(modulePath, built);
+  writeAtomic(modulePath, source);
   const check = spawnSync(process.execPath, ["--check", modulePath], { encoding: "utf8", timeout: CHECK_TIMEOUT_MS });
   if (check.error || check.status !== 0)
     throw new PluginBuildError(`built ${modulePath} does not parse: ${check.stderr || check.error?.message}`);

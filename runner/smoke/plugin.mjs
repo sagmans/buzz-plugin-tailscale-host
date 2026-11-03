@@ -1,30 +1,33 @@
 // Dogfood of the Buzz plugin against a live runner: the module is built from
-// ../../plugin/plugin.js for a smoke host list (scripts/build-plugin.mjs, as
-// a user builds it from hosts.json), then loaded with a stand-in for
-// Desktop's plugin context (React, `agents.register`, `host.request`,
-// `host.runCommand`, `effect`), its React views are rendered in jsdom, and
-// its `remote` calls go to the runner's API socket the way Desktop sends
-// them through Tailscale. It checks what the owner sees in the New agent
+// ../../plugin/plugin.js for a smoke hosts.json (scripts/build-plugin.mjs, as
+// a user builds it), then loaded with a stand-in for Desktop's plugin
+// context (React, `agents.register`, `host.spawn`, `effect`), and its React
+// views are rendered in jsdom. `host.spawn` starts the real hosts helper from
+// the built manifest, as Desktop does, and the helper reaches each test host
+// over HTTPS (https-front.mjs), which forwards to the runner's API socket as
+// `tailscale serve` does. It checks what the owner sees in the New agent
 // dialog and in Settings, without Buzz Desktop.
 //
 // React, react-dom and jsdom are the runner's own pinned dev dependencies
 // (runner/package.json), at the versions Desktop uses.
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildPlugin } from "../../scripts/build-plugin.mjs";
+import { makeCertificate, startFront } from "./https-front.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-/** The unbuilt source: it holds no hosts, so it must refuse to start. */
-const SOURCE_PLUGIN = resolve(HERE, "../../plugin/plugin.js");
-/** The host the smoke build is made for. Its origin is never contacted:
- * `host.request` below sends every call to the local runner socket. */
-const SMOKE_HOST = Object.freeze({ id: "smoke-host", label: "smoke/host", origin: "https://runner.example.invalid:10000" });
-/** A second host, answered by the smoke itself, that claims agents it does
- * not hold; and the pubkey it names in those answers. */
-const ROGUE_HOST = Object.freeze({ id: "rogue-host", label: "rogue/host", origin: "https://rogue.example.invalid:10000" });
+/** The source manifest: it grants nothing until a build adds the helper. */
+const SOURCE_MANIFEST = resolve(HERE, "../../plugin/manifest.json");
+/** The test hosts; each gets the origin of its HTTPS front at the start.
+ * The smoke host forwards to the runner. The rogue host, answered by the
+ * smoke itself, claims agents it does not hold, under ROGUE_PUBKEY. The lab
+ * host is a second front on the same runner, added on the Settings page. */
+const SMOKE_HOST_BASE = Object.freeze({ id: "smoke-host", label: "smoke/host" });
+const ROGUE_HOST_BASE = Object.freeze({ id: "rogue-host", label: "rogue/host" });
+const LAB_HOST_BASE = Object.freeze({ id: "lab-one", label: "lab/one" });
 const ROGUE_PUBKEY = "cd".repeat(32);
 /** Desktop's sources, to check the plugin draws only Desktop's classes; the
  * runner build reads the same clone (the runner/buzz-app link). */
@@ -43,10 +46,8 @@ const LEGACY_HARNESS_CACHE_KEY = "example.tailscale-host.harnesses.v1";
  * and the key this build keeps it under (plugin.js STORE_PREFIX). */
 const EARLIER_HOST_KEY = `example.tailscale-host.agent-host.v1:${"ab".repeat(32)}`;
 const MIGRATED_HOST_KEY = `sagmans.tailscale-host.agent-host.v1:${"ab".repeat(32)}`;
-/** The helper the build grants the Settings page, and Desktop's deadline for
- * one host command (src-tauri host_command.rs DEADLINE). */
+/** The helper the build grants as the plugin's one host process. */
 const HOSTS_HELPER = resolve(HERE, "../../scripts/hosts-helper.mjs");
-const DESKTOP_COMMAND_DEADLINE_MS = 5000;
 const POLL_MS = 25;
 const WAIT_MS = 15_000;
 const DOM_URL = "https://buzz.invalid/";
@@ -82,7 +83,34 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const cleanups = [];
   const buildDir = mkdtempSync(join(tmpdir(), "buzz-plugin-smoke-"));
+  const fronts = [];
+  // Every helper process the stand-in started, so none outlives the run.
+  const helpers = { children: new Set(), spawns: 0, failSpawn: false };
   try {
+    const tls = await makeCertificate(buildDir);
+    let hostDown = false;
+    let rogueDown = false;
+    const calls = [];
+    const labCalls = [];
+    // Both fronts share one runner, but a real lab host would be another
+    // runner: agents made through the lab front are hidden from the smoke
+    // front, or the plugin would rightly refuse them as another host's.
+    const labAgents = new Set();
+    /** A front that forwards to the runner, as `tailscale serve` does. */
+    const forward = (log, down, own) => async ({ method, path, body }) => {
+      log.push(`${method} ${path}`);
+      if (down()) return "drop";
+      const pubkey = /^\/v1\/agents\/([0-9a-f]{64})/.exec(path)?.[1];
+      if (pubkey && labAgents.has(pubkey) !== own) return { status: 404, body: JSON.stringify({ error: "not_found", message: "no such agent" }) };
+      const reply = await request(method, path, body);
+      if (own && method === "POST" && path === "/v1/agents" && reply.status === 200) labAgents.add(JSON.parse(reply.text).pubkey);
+      return { status: reply.status, body: reply.text };
+    };
+    const smokeFront = await startFront(tls, forward(calls, () => hostDown, false));
+    const labFront = await startFront(tls, forward(labCalls, () => false, true));
+    fronts.push(smokeFront, labFront);
+    const SMOKE_HOST = Object.freeze({ ...SMOKE_HOST_BASE, origin: smokeFront.origin });
+    const LAB_HOST = Object.freeze({ ...LAB_HOST_BASE, origin: labFront.origin });
     const hostsPath = join(buildDir, "hosts.json");
     writeFileSync(hostsPath, JSON.stringify({ hosts: [SMOKE_HOST] }));
     const { outDir } = buildPlugin({ hostsPath, outDir: join(buildDir, "dist") });
@@ -90,9 +118,31 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");
     const { act } = React;
-    let hostDown = false;
+    /** `host.spawn` as Desktop runs a declared process: program and leading
+     * arguments from the installed manifest, the caller's after them, no
+     * shell. NODE_EXTRA_CA_CERTS stands for the user's trust store, which
+     * trusts the certificate of `tailscale serve`. */
+    const desktopSpawn = (manifestPath) => async (id, { args = [], onStdout, onStderr } = {}) => {
+      helpers.spawns += 1;
+      if (helpers.failSpawn) throw new Error("spawn node ENOENT");
+      const entry = JSON.parse(readFileSync(manifestPath, "utf8")).host?.processes?.find((item) => item.id === id);
+      if (!entry || entry.program !== "node") throw new Error(`no declared process ${id}`);
+      const child = spawn(process.execPath, [...entry.args, ...args], { env: { ...process.env, NODE_EXTRA_CA_CERTS: tls.cert }, stdio: ["pipe", "pipe", "pipe"] });
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => onStdout?.(chunk));
+      child.stderr.on("data", (chunk) => onStderr?.(chunk));
+      const exited = new Promise((done) => child.once("exit", (code) => done(code)));
+      helpers.children.add(child);
+      void exited.then(() => helpers.children.delete(child));
+      return {
+        write: (data) => new Promise((done, fail) => child.stdin.write(data, (error) => (error ? fail(error) : done()))),
+        end: (data = "") => child.stdin.end(data),
+        kill: () => child.kill("SIGTERM"),
+        exited,
+      };
+    };
     const types = [];
-    const calls = [];
     const ctx = {
       react: React,
       agents: {
@@ -103,15 +153,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
           types.push(type);
         },
       },
-      host: {
-        async request({ url, method, body }) {
-          const { pathname } = new URL(url);
-          calls.push(`${method} ${pathname}`);
-          if (hostDown) throw new Error("connect ECONNREFUSED");
-          const reply = await request(method, pathname, body);
-          return { status: reply.status, body: reply.text };
-        },
-      },
+      host: { spawn: desktopSpawn(join(outDir, "manifest.json")) },
       effect(run) {
         cleanups.push(run());
       },
@@ -120,17 +162,21 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     localStorage.setItem(LEGACY_HARNESS_CACHE_KEY, JSON.stringify([{ id: "codex", title: "Codex" }]));
     // An agent an earlier build placed on this host.
     localStorage.setItem(EARLIER_HOST_KEY, SMOKE_HOST.id);
-    const unbuilt = await import(`${pathToFileURL(SOURCE_PLUGIN).href}?smoke=${Date.now()}`);
-    let unbuiltError;
-    try {
-      unbuilt.apply({ ...ctx, agents: { register() {} } });
-    } catch (error) {
-      unbuiltError = error;
-    }
-    check("plugin: the unbuilt source (no hosts) refuses to start", /No Tailscale hosts in this build/.test(String(unbuiltError?.message)), String(unbuiltError));
+    check("plugin: the source manifest grants no host access", JSON.parse(readFileSync(SOURCE_MANIFEST, "utf8")).host === undefined);
+    const grant = JSON.parse(readFileSync(join(outDir, "manifest.json"), "utf8")).host;
+    check(
+      "plugin: the build grants one host process, node on the helper with this hosts.json, and no network origin",
+      JSON.stringify(Object.keys(grant)) === JSON.stringify(["processes"]) &&
+        grant.processes.length === 1 &&
+        grant.processes[0].id === "hosts" &&
+        grant.processes[0].program === "node" &&
+        JSON.stringify(grant.processes[0].args) === JSON.stringify([HOSTS_HELPER, "--hosts", hostsPath]),
+      JSON.stringify(grant),
+    );
+    check("plugin: the build holds no host list", readFileSync(PLUGIN, "utf8") === readFileSync(resolve(HERE, "../../plugin/plugin.js"), "utf8"));
     const plugin = await import(`${pathToFileURL(PLUGIN).href}?smoke=${Date.now()}`);
     check("plugin: injects react, agents and host", JSON.stringify(plugin.inject) === JSON.stringify(["react", "agents", "host"]));
-    plugin.apply(ctx);
+    await plugin.apply(ctx);
     check(
       "plugin: one hosted type, registered at once, with the legacy id; New agent's picker names its one host",
       types.length === 1 && types[0].id === TYPE_ID_VALUE && types[0].title === `${TYPE_TITLE} · ${SMOKE_HOST.label}`,
@@ -516,7 +562,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await hosted.remote.remove({ pubkey: made.pubkey, community, signal });
     const gone = await request("GET", `/v1/agents/${made.pubkey}`);
     check("plugin: remove deletes the agent on the host", gone.status === 404, gone.text);
-    check("plugin: every call used the runner's v1 routes", calls.every((item) => / \/v1\//.test(item)), JSON.stringify([...new Set(calls)]));
+    check("plugin: every call used the runner's v1 routes", calls.length > 0 && calls.every((item) => / \/v1\//.test(item)), JSON.stringify([...new Set(calls)]));
 
     // ---- A second host that claims agents it does not hold ----------------
     // A build with two hosts, the rogue one first. It answers every agent
@@ -524,32 +570,23 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     // the plugin must keep that agent routed to the real host.
     const owned = await hosted.remote.provision({ name: "Plugin Owned", community, config, signal });
     const ownedKey = `${MIGRATED_HOST_KEY.split(":")[0]}:${owned.pubkey}`;
+    const rogueFront = await startFront(tls, async ({ method, path }) => {
+      if (rogueDown) return "drop";
+      if (path === "/v1/harnesses") return { status: 200, body: (await request("GET", path)).text };
+      if (method === "POST" && path === "/v1/agents") return { status: 200, body: JSON.stringify({ pubkey: owned.pubkey }) };
+      // Claims every agent, under a pubkey that is not the one asked for.
+      if (method === "GET" && path.startsWith("/v1/agents/")) return { status: 200, body: JSON.stringify({ pubkey: ROGUE_PUBKEY, config: {} }) };
+      return { status: 204 };
+    });
+    fronts.push(rogueFront);
+    const ROGUE_HOST = Object.freeze({ ...ROGUE_HOST_BASE, origin: rogueFront.origin });
     const twoHostsPath = join(buildDir, "hosts-two.json");
     writeFileSync(twoHostsPath, JSON.stringify({ hosts: [ROGUE_HOST, SMOKE_HOST] }));
     const { outDir: twoDir } = buildPlugin({ hostsPath: twoHostsPath, outDir: join(buildDir, "dist-two") });
-    let rogueDown = false;
     const rogueTypes = [];
-    const rogueCtx = {
-      ...ctx,
-      agents: { register: (type) => rogueTypes.push(type) },
-      host: {
-        async request({ url, method, body }) {
-          const { origin, pathname } = new URL(url);
-          if (origin !== ROGUE_HOST.origin) {
-            const reply = await request(method, pathname, body);
-            return { status: reply.status, body: reply.text };
-          }
-          if (rogueDown) throw new Error("connect ECONNREFUSED");
-          if (pathname === "/v1/harnesses") return { status: 200, body: (await request("GET", pathname)).text };
-          if (method === "POST" && pathname === "/v1/agents") return { status: 200, body: JSON.stringify({ pubkey: owned.pubkey }) };
-          // Claims every agent, under a pubkey that is not the one asked for.
-          if (method === "GET" && pathname.startsWith("/v1/agents/")) return { status: 200, body: JSON.stringify({ pubkey: ROGUE_PUBKEY, config: {} }) };
-          return { status: 204, body: "" };
-        },
-      },
-    };
+    const rogueCtx = { ...ctx, agents: { register: (type) => rogueTypes.push(type) }, host: { spawn: desktopSpawn(join(twoDir, "manifest.json")) } };
     const twoHosts = await import(`${pathToFileURL(join(twoDir, "plugin.js")).href}?smoke=${Date.now()}`);
-    twoHosts.apply(rogueCtx);
+    await twoHosts.apply(rogueCtx);
     const [rogueHosted] = rogueTypes;
     check("plugin: with several hosts, New agent's picker gives the host count", rogueHosted.title === `${TYPE_TITLE} · 2 hosts`, rogueHosted.title);
     const rogueConfig = { ...config, host: ROGUE_HOST.id };
@@ -585,62 +622,30 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
 
     // ---- The plugin's Settings page: hosts.json through the hosts helper --
     // A fresh load of the one-host build, with Desktop's optional
-    // settingsCards service injected as Desktop does it (ctx.inject), and
-    // `host.runCommand` run as Desktop runs a declared command: the real
-    // helper, with the manifest's fixed arguments, stdin, a deadline and
-    // output only on exit 0. Its saves change this smoke's hosts.json and
-    // dist, as they change the user's.
+    // settingsCards service injected as Desktop does it (ctx.inject). Its
+    // saves change this smoke's hosts.json, as they change the user's; the
+    // build must stay as it is, because no change needs Update any more.
     const cards = [];
     const settingsTypes = [];
-    let helperSilent = false;
-    const helperRuns = [];
-    const runCommand = async (id, input) => {
-      helperRuns.push(JSON.parse(input ?? "{}").op);
-      if (helperSilent) return null;
-      const { host } = JSON.parse(readFileSync(join(outDir, "manifest.json"), "utf8"));
-      const command = host.commands?.find((item) => item.id === id);
-      if (!command || (input !== undefined && Buffer.byteLength(input) > command.maxInputBytes)) return null;
-      return new Promise((done) => {
-        execFile(process.execPath, command.args, { timeout: DESKTOP_COMMAND_DEADLINE_MS, maxBuffer: command.maxOutputBytes }, (error, stdout) => done(error ? null : stdout)).stdin.end(
-          input ?? "",
-        );
-      });
-    };
     const settingsCtx = {
       ...ctx,
-      host: { ...ctx.host, runCommand },
       agents: { register: (type) => settingsTypes.push(type) },
       inject(names, run) {
         if (JSON.stringify(names) !== JSON.stringify(["settingsCards"])) throw new Error(`unexpected inject ${names}`);
         run({ settingsCards: { register: (card) => cards.push(card) } });
       },
     };
-    /** Loads dist/plugin.js as it is now, as Desktop does after Update. */
-    const loadSettingsBuild = async () => {
-      cards.length = 0;
-      settingsTypes.length = 0;
-      const module = await import(`${pathToFileURL(PLUGIN).href}?smoke=${Date.now()}-${Math.random()}`);
-      module.apply(settingsCtx);
-      return { card: cards[0], type: settingsTypes[0] };
-    };
+    const settingsModule = await import(`${pathToFileURL(PLUGIN).href}?smoke=${Date.now()}-settings`);
+    await settingsModule.apply(settingsCtx);
+    const [card] = cards;
+    const [settingsHosted] = settingsTypes;
     const fileList = () => JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
-    const grantOf = () => JSON.parse(readFileSync(join(outDir, "manifest.json"), "utf8")).host;
-    const { card, type: settingsHosted } = await loadSettingsBuild();
+    const builtFiles = () => ["manifest.json", "plugin.js"].map((name) => readFileSync(join(outDir, name), "utf8")).join("\n");
+    const buildBefore = builtFiles();
     check(
       "plugin: registers its own Settings page, Tailscale hosts, under Plugins",
       cards.length === 1 && card.id === "hosts" && card.title === "Tailscale hosts" && card.group === "Plugins" && typeof card.component === "function",
       JSON.stringify(cards.map((item) => [item.id, item.title, item.group])),
-    );
-    const grant = grantOf();
-    check(
-      "plugin: the build grants one host command: node on the helper with this hosts.json and dist, bounded",
-      grant.commands?.length === 1 &&
-        grant.commands[0].id === "hosts" &&
-        grant.commands[0].program === "node" &&
-        JSON.stringify(grant.commands[0].args) === JSON.stringify([HOSTS_HELPER, "--hosts", hostsPath, "--out", outDir]) &&
-        grant.commands[0].maxInputBytes > 0 &&
-        grant.commands[0].maxOutputBytes > 0,
-      JSON.stringify(grant.commands),
     );
     let page = mount();
     await page.render(React.createElement(card.component, { active: () => true }));
@@ -657,6 +662,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       return addForm().querySelector("[role=alert]")?.textContent ?? "";
     };
     const statusText = () => [...page.node.querySelectorAll("[role=status]")].map((item) => item.textContent).join(" | ");
+    const checkAgain = () => press([...page.node.querySelectorAll("button")].find((item) => item.textContent === "Check again"));
     await until(() => buttonFor(SMOKE_HOST.label, "Edit"), "hosts.json read");
     await until(() => rowFor(SMOKE_HOST.label)?.textContent.includes("Reachable"), "host status");
     check(
@@ -664,6 +670,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label]) && buttonFor(SMOKE_HOST.label, "Remove") && rowFor(SMOKE_HOST.label).textContent.includes(SMOKE_HOST.origin),
       rowFor(SMOKE_HOST.label)?.textContent,
     );
+    check("plugin: the page names no Build or Update step", !/\bUpdate\b|\bBuild\b/.test(page.node.textContent), page.node.textContent);
     await press(buttonFor(SMOKE_HOST.label, "Remove"));
     await settled();
     check(
@@ -671,9 +678,9 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       statusText().includes("must keep at least one host") && JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST]),
       statusText(),
     );
-    const noHttps = await addHost("lab/one", "http://lab-one.example.invalid:10000");
-    const withPath = await addHost("lab/one", "https://lab-one.example.invalid:10000/v1");
-    const sameAddress = await addHost("lab/one", SMOKE_HOST.origin);
+    const noHttps = await addHost(LAB_HOST.label, "http://lab-one.example.invalid:10000");
+    const withPath = await addHost(LAB_HOST.label, "https://lab-one.example.invalid:10000/v1");
+    const sameAddress = await addHost(LAB_HOST.label, SMOKE_HOST.origin);
     const sameName = await addHost(SMOKE_HOST.label.toUpperCase(), "https://lab-one.example.invalid:10000");
     check(
       "plugin: Add refuses http, a path, a used address and a used name, and says why",
@@ -681,93 +688,67 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       JSON.stringify([noHttps, withPath, sameAddress, sameName]),
     );
     check("plugin: a refused add leaves hosts.json as it was", JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST]), JSON.stringify(fileList()));
-    const labHost = { id: "lab-one", label: "lab/one", origin: "https://lab-one.example.invalid:10000" };
-    const added = await addHost(labHost.label, `${labHost.origin}/`);
+
+    // The owner's ask: a host added here works at once, with no build and no Update.
+    const added = await addHost(LAB_HOST.label, `${LAB_HOST.origin}/`);
     check(
       "plugin: Add writes hosts.json with a fixed id from the name and the address without the slash",
-      added === "" && JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, labHost]),
+      added === "" && JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, LAB_HOST]),
       `${added} ${JSON.stringify(fileList())}`,
     );
-    check(
-      "plugin: the save builds again: the manifest grants both origins and keeps the command",
-      JSON.stringify(grantOf().networkOrigins) === JSON.stringify([SMOKE_HOST.origin, labHost.origin]) && grantOf().commands?.length === 1,
-      JSON.stringify(grantOf()),
-    );
-    check(
-      "plugin: the new host waits for Update, and the page says where Update is",
-      rowFor(labHost.label)?.textContent.includes("Not in use until Update") && statusText().includes("Manage plugins, select Tailscale host agents, then select Update"),
-      `${rowFor(labHost.label)?.textContent} | ${statusText()}`,
-    );
+    check("plugin: a save leaves the build as it is: no rebuild, nothing for Update", builtFiles() === buildBefore);
+    await until(() => rowFor(LAB_HOST.label)?.textContent.includes("Reachable"), "new host status");
+    check("plugin: the new host answers at once on the page", rowFor(LAB_HOST.label).textContent.includes(`${LAB_HOST.origin} · Reachable`), rowFor(LAB_HOST.label)?.textContent);
     // A field Select names its trigger with aria-labelledby, as Desktop's.
     const labelledBy = (node, label) =>
       [...node.querySelectorAll("[role=combobox][aria-labelledby]")].find((item) => document.getElementById(item.getAttribute("aria-labelledby"))?.textContent === label);
-    const oneHost = mount();
-    await oneHost.render(React.createElement(settingsHosted.Create, { config: settingsHosted.defaults().config, disabled: false, onChange() {} }));
-    const onePill = await until(() => labelledBy(oneHost.node, "Host"), "one-host pill");
-    const oneList = await open(onePill);
-    check(
-      "plugin: before Update, New agent shows the Host choice with the build's one host",
-      JSON.stringify(labels(oneList)) === JSON.stringify([SMOKE_HOST.label]) && settingsHosted.defaults().config.host === SMOKE_HOST.id,
-      JSON.stringify(labels(oneList)),
-    );
-    await press(document.body);
-    collect(oneHost.node);
-    await oneHost.unmount();
-
-    // Edit keeps the id that agents carry.
-    await press(buttonFor(labHost.label, "Edit"));
-    const editForm = page.node.querySelector(`form[aria-label="Edit ${labHost.label}"]`);
-    await typeText(fieldControl(editForm, "Name"), "lab/renamed");
-    await submit(editForm);
-    await settled();
-    const renamedHost = { ...labHost, label: "lab/renamed" };
-    check("plugin: Edit renames the host in hosts.json and keeps its id", JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, renamedHost]) && rowFor(renamedHost.label), JSON.stringify(fileList()));
-
-    // The owner edits hosts.json by hand: the page shows it and builds it.
-    const handHost = { id: "lab-hand", label: "lab/hand", origin: "https://lab-hand.example.invalid:10000" };
-    writeFileSync(hostsPath, JSON.stringify({ hosts: [SMOKE_HOST, renamedHost, handHost] }));
-    await press([...page.node.querySelectorAll("button")].find((item) => item.textContent === "Check again"));
-    await until(() => rowFor(handHost.label), "hand edit read");
-    const buildButton = await until(() => [...page.node.querySelectorAll("button")].find((item) => item.textContent === "Build"), "Build button");
-    check("plugin: a hand edit shows on the page, which offers Build", page.node.textContent.includes("hosts.json differs from the hosts in use"), page.node.textContent);
-    await press(buildButton);
-    await until(() => statusText().includes("then select Update"), "build done");
-    check(
-      "plugin: Build makes the hand-edited list the manifest's grant",
-      JSON.stringify(grantOf().networkOrigins) === JSON.stringify([SMOKE_HOST.origin, renamedHost.origin, handHost.origin]),
-      JSON.stringify(grantOf().networkOrigins),
-    );
-    collect(page.node);
-    await page.unmount();
-
-    // Update: Desktop loads the new build. Its hosts are the file's, in use.
-    const updated = await loadSettingsBuild();
-    page = mount();
-    await page.render(React.createElement(updated.card.component, { active: () => true }));
-    await until(() => buttonFor(handHost.label, "Edit") && rowFor(handHost.label)?.textContent.includes("Reachable"), "updated hosts");
-    check(
-      "plugin: after Update, every host in hosts.json is in use and nothing waits",
-      JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label, renamedHost.label, handHost.label]) && !page.node.textContent.includes("Not in use") && !page.node.textContent.includes("differs"),
-      page.node.textContent,
-    );
     const pickHost = mount();
-    let picked = updated.type.defaults().config;
+    let picked = settingsHosted.defaults().config;
     function HostDialog() {
       const [draft, setDraft] = React.useState(picked);
       picked = draft;
-      return React.createElement(updated.type.Create, { config: draft, disabled: false, onChange: setDraft });
+      return React.createElement(settingsHosted.Create, { config: draft, disabled: false, onChange: setDraft });
     }
     await pickHost.render(React.createElement(HostDialog));
     const hostPill = await until(() => labelledBy(pickHost.node, "Host"), "host pill");
     const hostList = await open(hostPill);
     check(
-      "plugin: after Update, New agent offers the hosts in file order, the first as default",
-      JSON.stringify(labels(hostList)) === JSON.stringify([SMOKE_HOST.label, renamedHost.label, handHost.label]) && picked.host === SMOKE_HOST.id,
+      "plugin: New agent offers the new host at once, in file order, the first as default",
+      JSON.stringify(labels(hostList)) === JSON.stringify([SMOKE_HOST.label, LAB_HOST.label]) && picked.host === SMOKE_HOST.id,
       JSON.stringify(labels(hostList)),
     );
-    await press(document.body);
+    await press(optionsOf(hostList).find((option) => nameOf(option) === LAB_HOST.label));
+    check("plugin: the new host can be picked", picked.host === LAB_HOST.id, JSON.stringify(picked));
     collect(pickHost.node);
     await pickHost.unmount();
+    const labAgent = await settingsHosted.remote.provision({ name: "Plugin Lab", community, config: picked, signal });
+    check(
+      "plugin: an agent is made on the new host at once, through its own front",
+      /^[0-9a-f]{64}$/.test(labAgent.pubkey) && labCalls.includes("POST /v1/agents") && localStorage.getItem(`${MIGRATED_HOST_KEY.split(":")[0]}:${labAgent.pubkey}`) === LAB_HOST.id,
+      JSON.stringify(labCalls),
+    );
+    await settingsHosted.remote.remove({ pubkey: labAgent.pubkey, community, signal });
+    check("plugin: the agent on the new host is removed through its front", labCalls.includes(`DELETE /v1/agents/${labAgent.pubkey}`), JSON.stringify(labCalls));
+
+    // Edit keeps the id that agents carry.
+    await press(buttonFor(LAB_HOST.label, "Edit"));
+    const editForm = page.node.querySelector(`form[aria-label="Edit ${LAB_HOST.label}"]`);
+    await typeText(fieldControl(editForm, "Name"), "lab/renamed");
+    await submit(editForm);
+    await settled();
+    const renamedHost = { ...LAB_HOST, label: "lab/renamed" };
+    check("plugin: Edit renames the host in hosts.json and keeps its id", JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, renamedHost]) && rowFor(renamedHost.label), JSON.stringify(fileList()));
+
+    // The owner edits hosts.json by hand: Check again shows it, and it is in use.
+    const handHost = { id: "lab-hand", label: "lab/hand", origin: "https://lab-hand.example.invalid:10000" };
+    writeFileSync(hostsPath, JSON.stringify({ hosts: [SMOKE_HOST, renamedHost, handHost] }));
+    await checkAgain();
+    await until(() => rowFor(handHost.label)?.textContent.includes("Could not reach"), "hand edit read");
+    check(
+      "plugin: a hand edit is in use after Check again: its host is asked, and here it does not answer",
+      JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label, renamedHost.label, handHost.label]) && rowFor(handHost.label).textContent.includes("Could not reach lab/hand"),
+      rowFor(handHost.label)?.textContent,
+    );
 
     // Remove waits for its agents.
     const placedKey = `${MIGRATED_HOST_KEY.split(":")[0]}:${"ef".repeat(32)}`;
@@ -783,33 +764,65 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await press(buttonFor(handHost.label, "Remove"));
     await settled();
     check(
-      "plugin: Remove deletes a host without agents from hosts.json and builds",
-      JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, renamedHost]) && JSON.stringify(grantOf().networkOrigins) === JSON.stringify([SMOKE_HOST.origin, renamedHost.origin]),
+      "plugin: Remove deletes a host without agents from hosts.json, and the build stays as it is",
+      JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, renamedHost]) && !rowFor(handHost.label) && builtFiles() === buildBefore,
       JSON.stringify(fileList()),
     );
     await page.unmount();
 
-    // A broken file and a helper that does not answer: the page says so and
-    // shows the hosts in use, with nothing it could save over.
+    // A broken file: the page says so, and the hosts read last stay in use.
     writeFileSync(hostsPath, "{ broken");
     page = mount();
-    await page.render(React.createElement(updated.card.component, { active: () => true }));
+    await page.render(React.createElement(card.component, { active: () => true }));
+    await checkAgain();
     const brokenAlert = await until(() => page.node.querySelector("[role=alert]"), "broken file alert");
     check(
-      "plugin: a broken hosts.json shows the helper's reason; no Edit, Remove or Add",
-      brokenAlert.textContent.includes("not valid JSON") && !buttonFor(SMOKE_HOST.label, "Edit") && !addForm() && rowTitles(page.node).length === 3,
+      "plugin: a broken hosts.json shows the helper's reason; no Edit, Remove or Add; the last good hosts stay",
+      brokenAlert.textContent.includes("not valid JSON") && !buttonFor(SMOKE_HOST.label, "Edit") && !addForm() && JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label, renamedHost.label]),
       brokenAlert.textContent,
     );
-    await page.unmount();
-    helperSilent = true;
-    page = mount();
-    await page.render(React.createElement(updated.card.component, { active: () => true }));
-    const silentAlert = await until(() => page.node.querySelector("[role=alert]"), "silent helper alert");
-    check("plugin: a helper that does not answer names node on the login shell's PATH", silentAlert.textContent.includes("login shell's PATH"), silentAlert.textContent);
+    writeFileSync(hostsPath, JSON.stringify({ hosts: [SMOKE_HOST] }));
+    // A helper that stops, and cannot start again: every call says why.
+    helpers.failSpawn = true;
+    for (const child of helpers.children) child.kill("SIGTERM");
+    await until(() => helpers.children.size === 0, "helpers stopped");
+    await checkAgain();
+    const silentAlert = await until(() => page.node.querySelector("[role=alert]")?.textContent.includes("login shell's PATH") && page.node.querySelector("[role=alert]"), "silent helper alert");
+    check("plugin: a helper that cannot start names node on the login shell's PATH", Boolean(silentAlert), silentAlert?.textContent);
+    helpers.failSpawn = false;
+    const spawnsBefore = helpers.spawns;
+    await checkAgain();
+    await until(() => buttonFor(SMOKE_HOST.label, "Edit") && !page.node.querySelector("[role=alert]"), "helper back");
+    check("plugin: the next call starts the helper again, and the page recovers", helpers.spawns > spawnsBefore && JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label]), String(helpers.spawns));
     collect(page.node);
     await page.unmount();
-    helperSilent = false;
-    check("plugin: the page sent only read, save and build requests", helperRuns.length > 0 && helperRuns.every((op) => ["read", "save", "build"].includes(op)), JSON.stringify(helperRuns));
+
+    // ---- The helper's own refusals, as the plugin could send them --------
+    let rawOut = "";
+    const raw = await desktopSpawn(join(outDir, "manifest.json"))("hosts", { onStdout: (chunk) => (rawOut += chunk) });
+    const asks = [
+      { id: 1, op: "request", host: "nowhere", method: "GET", path: "/harnesses", timeoutMs: 5000 },
+      { id: 2, op: "request", host: SMOKE_HOST.id, method: "GET", path: "/../health", timeoutMs: 5000 },
+      { id: 3, op: "request", host: SMOKE_HOST.id, method: "PATCH", path: "/health", timeoutMs: 5000 },
+      { id: 4, op: "request", host: SMOKE_HOST.id, method: "GET", path: "/health", url: "https://example.invalid/", timeoutMs: 5000 },
+      { id: 5, op: "request", host: SMOKE_HOST.id, method: "GET", path: "/health", timeoutMs: 5000 },
+    ];
+    for (const ask of asks) await raw.write(`${JSON.stringify(ask)}\n`);
+    raw.end();
+    await raw.exited;
+    const answers = Object.fromEntries(rawOut.trim().split("\n").map((line) => JSON.parse(line)).map((item) => [item.id, item]));
+    check(
+      "helper: refuses a host not in hosts.json, a path out of the API, another method and a caller URL",
+      [1, 2, 3, 4].every((id) => answers[id]?.ok === false) &&
+        answers[1].error.includes("no host") &&
+        answers[2].error.includes("not a runner route") &&
+        answers[3].error.includes("method must be") &&
+        answers[4].error.includes("unknown request keys: url"),
+      JSON.stringify(answers),
+    );
+    check("helper: a listed host's route answers", answers[5]?.ok === true && answers[5].status === 200 && JSON.parse(answers[5].body).ok === true, JSON.stringify(answers[5]));
+    const extraArgs = await desktopSpawn(join(outDir, "manifest.json"))("hosts", { args: ["--hosts", "/dev/null"] });
+    check("helper: refuses arguments the caller adds after the declared ones", (await extraArgs.exited) === 64);
 
     // ---- Same classes as Desktop -----------------------------------------
     // Every class the plugin drew must be one Desktop's own markup uses
@@ -841,6 +854,8 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     }
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
     dom.window.close();
+    for (const child of helpers.children) child.kill("SIGTERM");
+    await Promise.all(fronts.map((front) => front.close()));
     rmSync(buildDir, { recursive: true, force: true });
   }
   // #lizard forgives: one end-to-end scenario through the plugin UI that must read in run order

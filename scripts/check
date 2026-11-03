@@ -201,33 +201,41 @@ if (typeof manifest.name !== "string" || !manifest.name.trim()) problems.push("n
 if (manifest.apiVersion !== Number(apiVersion)) problems.push(`apiVersion is not ${apiVersion}`);
 const bytes = Buffer.byteLength(manifest.description ?? "", "utf8");
 if (bytes < 1 || bytes > Number(maxBytes)) problems.push(`description is ${bytes} bytes (1-${maxBytes})`);
-if (manifest.host !== undefined) problems.push("the source manifest must not declare host: scripts/build-plugin.mjs writes it from hosts.json");
+if (manifest.host !== undefined) problems.push("the source manifest must not declare host: scripts/build-plugin.mjs writes it");
 for (const problem of problems) console.error(`  ${path}: ${problem}`);
 process.exit(problems.length ? 1 : 0);
 NODE
 }
 
 # The installable plugin is a build output; the example host list must build,
-# and the built manifest must grant exactly the example's origins and one
-# host command: node on this tree's hosts helper, the Settings page's only
-# way to save hosts.json. Any wider grant fails here.
+# and the built manifest must grant exactly one host process: node on this
+# tree's hosts helper with the hosts file, the plugin's only way to read and
+# save hosts.json and to reach a host. No network origin, command or other
+# grant: any wider grant fails here.
 check_plugin_build() {
 	has_file "$BUILD_PLUGIN" || return 0
 	has_file "$HOSTS_EXAMPLE" || fail "$BUILD_PLUGIN exists but $HOSTS_EXAMPLE is missing"
 	has_file "$HOSTS_HELPER" || fail "$BUILD_PLUGIN exists but $HOSTS_HELPER is missing"
 	require_node
 	node "$BUILD_PLUGIN" --hosts "$HOSTS_EXAMPLE" --out "$tmp/plugin" >/dev/null || fail "the plugin does not build from $HOSTS_EXAMPLE"
-	node --input-type=module - "$HOSTS_EXAMPLE" "$tmp/plugin/manifest.json" "$HOSTS_HELPER" <<'NODE' || fail "the built manifest does not grant exactly the example origins and the hosts helper"
+	node --input-type=module - "$HOSTS_EXAMPLE" "$tmp/plugin/manifest.json" "$HOSTS_HELPER" <<'NODE' || fail "the built manifest does not grant exactly the hosts helper process"
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 const [hostsPath, manifestPath, helper] = process.argv.slice(2);
-const want = JSON.parse(readFileSync(hostsPath, "utf8")).hosts.map((host) => host.origin);
 const { host = {} } = JSON.parse(readFileSync(manifestPath, "utf8"));
-const got = host.networkOrigins ?? [];
-const commands = host.commands ?? [];
-const [command] = commands;
-const helperOk = commands.length === 1 && command.id === "hosts" && command.program === "node" && command.args?.length === 5 && command.args[0].endsWith(`/${helper}`);
-const onlyKnown = Object.keys(host).every((key) => ["networkOrigins", "commands"].includes(key));
-process.exit(JSON.stringify(want) === JSON.stringify(got) && helperOk && onlyKnown ? 0 : 1);
+const processes = host.processes ?? [];
+const [entry] = processes;
+const helperOk =
+  processes.length === 1 &&
+  Object.keys(entry).sort().join() === "args,id,program" &&
+  entry.id === "hosts" &&
+  entry.program === "node" &&
+  entry.args?.length === 3 &&
+  entry.args[0].endsWith(`/${helper}`) &&
+  entry.args[1] === "--hosts" &&
+  entry.args[2] === resolve(hostsPath);
+const onlyProcesses = JSON.stringify(Object.keys(host)) === JSON.stringify(["processes"]);
+process.exit(helperOk && onlyProcesses ? 0 : 1);
 NODE
 }
 
