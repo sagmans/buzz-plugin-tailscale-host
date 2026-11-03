@@ -143,8 +143,8 @@ const LABELS = Object.freeze({
   // The plugin's Settings page.
   settingsIntro:
     "These hosts are in hosts.json. New agent of the type Tailscale host can run on each of them; the first is the default. A change here saves hosts.json and is in use at once. You can also edit hosts.json by hand, then select Check again.",
-  setupIntro:
-    "Installs buzz-runner on a Linux machine of your tailnet over Tailscale SSH, with root, and adds it to hosts.json. The machine needs an ACL tag, Tailscale SSH and Node 24 at /usr/bin/node.",
+  addIntro:
+    "Add host installs buzz-runner on the machine over Tailscale SSH, with root, or aligns the runner already there, then adds the machine to hosts.json. The machine needs Linux, an ACL tag, Tailscale SSH and Node 24 at /usr/bin/node.",
   noHosts: "No Tailscale hosts. Add one in Settings > Plugins > Tailscale hosts.",
   helperMissing: "This version of Buzz Desktop cannot run the hosts helper, which this plugin needs to reach its hosts.",
   helperSilent:
@@ -200,7 +200,7 @@ const ORIGIN_EXAMPLE = "https://runner-host.example.ts.net";
 // RUNNER_PORT). The owner knows the machine, not where the runner listens,
 // so an address is kept without it and the hosts helper adds it.
 const RUNNER_PORT = "10000";
-// The host setup on the Settings page (scripts/host-setup.mjs). The steps in
+// The host setup that Add host runs (scripts/host-setup.mjs). The steps in
 // order, with the words the page shows; the helper names each by its key.
 const SETUP_STEPS = Object.freeze([
   ["machine", "Check the machine"],
@@ -216,15 +216,10 @@ const SETUP_STATES = Object.freeze(["running", "waiting", "done", "failed"]);
 // The longest a setup step may run without a progress line: the helper's
 // own longest step timeout (install and build, 10 min), with a margin.
 const SETUP_IDLE_MS = 660000;
-// `tailscale status` on this device; the helper gives it 15 s.
-const MACHINES_TIMEOUT_MS = 20000;
 // The only links a setup shows: a Tailscale SSH check, which the user opens
 // to approve the connection (scripts/host-setup.mjs CHECK_LINK_RE).
 const CHECK_LINK = /^https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.-]{1,200}$/;
-// Bounds for what the helper reports about the tailnet and a setup.
-const MACHINES_MAX = 256;
-const MACHINE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const DNS_MAX = 253;
+// Bounds for what the helper reports about a setup.
 const DETAIL_MAX = 500;
 const MANUAL_MAX = 8;
 const COMMAND_MAX = 300;
@@ -983,45 +978,20 @@ export async function apply(ctx) {
   const agentsOn = (hostId) => placedHostIds().filter((id) => id === hostId).length;
 
   // ---- Host setup -----------------------------------------------------------
-  // Settings > Tailscale hosts > Set up a machine: the tailnet's Linux
-  // machines, and the one setup that may run. Kept here, not in the view, so
-  // a setup's progress is still shown when the owner opens the page again:
-  // the helper runs the setup on, whatever page is open.
+  // Settings > Tailscale hosts > Add a host: the one setup that may run, which
+  // installs or aligns buzz-runner on the machine and lists it. Kept here, not
+  // in the view, so a setup's progress is still shown when the owner opens the
+  // page again: the helper runs the setup on, whatever page is open.
 
   // Desktop's community reader, if any (injected at the end of apply): it
   // names the owner and the relay a new host's config gets.
   let communityReader;
-  let machines = Object.freeze({ state: "idle", list: Object.freeze([]), error: undefined });
   const SETUP_IDLE = Object.freeze({ state: "idle", steps: Object.freeze({}), result: undefined, error: undefined });
   let setupRun = SETUP_IDLE;
-  const setMachines = (change) => {
-    machines = Object.freeze({ ...machines, ...change });
-    emit();
-  };
   const setSetupRun = (change) => {
     setupRun = Object.freeze({ ...setupRun, ...change });
     emit();
   };
-
-  /** The machines as the helper reports them, checked as any input. */
-  function parseMachines(list) {
-    if (!Array.isArray(list)) throw new HostConfigError("The hosts helper returned no machine list.", { op: "machines" });
-    return Object.freeze(
-      list
-        .slice(0, MACHINES_MAX)
-        .filter((entry) => entry && typeof entry.machine === "string" && MACHINE_NAME.test(entry.machine))
-        .map((entry) =>
-          Object.freeze({
-            machine: entry.machine,
-            name: text(entry.name, LABEL_MAX) || entry.machine,
-            dnsName: text(entry.dnsName, DNS_MAX) || entry.machine,
-            online: entry.online === true,
-            tagged: entry.tagged === true,
-            ssh: entry.ssh === true,
-          }),
-        ),
-    );
-  }
 
   /** One progress event as the page keeps it, or undefined for one it does
    * not know. A link is kept only when it is a Tailscale SSH check. */
@@ -1047,16 +1017,6 @@ export async function apply(ctx) {
     });
   }
 
-  async function loadMachines() {
-    setMachines({ state: "loading", error: undefined });
-    try {
-      const reply = await helper.call({ op: "machines" }, MACHINES_TIMEOUT_MS);
-      if (!disposed) setMachines({ state: "ready", list: parseMachines(reply.machines) });
-    } catch (error) {
-      if (!disposed) setMachines({ state: "error", error: errorText(error) });
-    }
-  }
-
   /** The owner key and relay the runner's config gets, from the identity and
    * community open in Desktop; the page shows them for the owner to check. */
   function communityDefaults() {
@@ -1079,12 +1039,13 @@ export async function apply(ctx) {
 
   /** Runs one setup through the helper. The password goes into the request
    * and nowhere else: not into the store, a log or an error. */
-  async function startSetup({ machine, sshUser, sudoPassword, ownerPubkey, relay, label }) {
+  async function startSetup({ address, sshUser, sudoPassword, ownerPubkey, relay, label }) {
     if (setupRun.state === "running") throw new HostConfigError("A setup is already running.", { op: "setup" });
     setSetupRun({ ...SETUP_IDLE, state: "running" });
-    // Ids that agents on this device still name stay taken (see addHost).
+    // Ids that agents on this device still name stay taken, so a new host
+    // never takes over the agents of a host removed by hand.
     const reservedIds = [...new Set(placedHostIds().filter((id) => typeof id === "string" && HOST_ID.test(id)))];
-    const setup = { machine, sshUser, sudoPassword, ownerPubkey, relay, reservedIds, ...(label ? { label } : {}) };
+    const setup = { address, sshUser, sudoPassword, ownerPubkey, relay, reservedIds, label };
     try {
       const reply = await helper.call({ op: "setup", setup }, SETUP_IDLE_MS, (event) => {
         const entry = parseProgress(event);
@@ -1104,17 +1065,20 @@ export async function apply(ctx) {
     return host;
   }
 
-  async function addHost({ label, origin }) {
+  /** The add form's values as a setup takes them. A host already listed for
+   * the same machine (with or without the runner's port) is the one the
+   * setup aligns, so only its own name may repeat. */
+  function checkNewHost({ label, origin, sshUser, ownerPubkey, relay }) {
     const list = fileHosts();
-    if (list.length >= HOSTS_MAX) throw new HostConfigError(`hosts.json can hold at most ${HOSTS_MAX} hosts.`, { field: "label" });
-    const clean = { label: checkHostLabel(label), origin: checkHostOrigin(origin) };
-    // Ids that agents on this device still name stay taken too, so a new
-    // host never takes over the agents of a host removed by hand.
-    const taken = new Set([...list.map((entry) => entry.id), ...placedHostIds()]);
-    const host = Object.freeze({ id: hostIdFor(clean.label, taken), ...clean });
-    checkUnique(host, list);
-    await saveHostsFile([...list, host]);
-    return host;
+    const clean = { label: checkHostLabel(label), address: checkHostOrigin(origin) };
+    const machine = new URL(clean.address).hostname;
+    const same = list.find((entry) => new URL(entry.origin).hostname === machine);
+    if (!same && list.length >= HOSTS_MAX) throw new HostConfigError(`hosts.json can hold at most ${HOSTS_MAX} hosts.`, { field: "label" });
+    const named = list.find((entry) => entry !== same && entry.label.toLowerCase() === clean.label.toLowerCase());
+    if (named) throw new HostConfigError(`A host is already named ${named.label}.`, { field: "label" });
+    if (!HEX64.test(ownerPubkey.trim())) throw new HostConfigError("The owner key must be 64 lowercase hex characters.", { field: "ownerPubkey" });
+    if (!relay.trim().startsWith("wss://")) throw new HostConfigError(`The relay must be a wss:// address, for example ${RELAY_EXAMPLE}.`, { field: "relay" });
+    return { ...clean, sshUser: sshUser.trim(), ownerPubkey: ownerPubkey.trim(), relay: relay.trim() };
   }
 
   /** Keeps the id, which each agent's config names, so agents stay on the
@@ -2116,24 +2080,21 @@ export async function apply(ctx) {
 
   // ---- The plugin's Settings page -------------------------------------------
 
-  /** Add or edit form for one host. `host` is the host to edit, or none for
-   * a new one. Errors stay beside the form until the owner types again. */
+  /** Edit form for one listed host: a plain save of hosts.json, with no
+   * setup. Errors stay beside the form until the owner types again. */
   function HostForm({ host, disabled, onDone, onCancel }) {
     const labelId = React.useId();
     const originId = React.useId();
-    const [label, setLabel] = React.useState(host ? host.label : "");
-    const [origin, setOrigin] = React.useState(host ? host.origin : "");
+    const [label, setLabel] = React.useState(host.label);
+    const [origin, setOrigin] = React.useState(host.origin);
     const [error, setError] = React.useState("");
     const [saving, setSaving] = React.useState(false);
-    const editing = Boolean(host);
     const submit = async (event) => {
       event.preventDefault();
       if (saving) return;
       setSaving(true);
       try {
-        const saved = editing ? await updateHost(host.id, { label, origin }) : await addHost({ label, origin });
-        setLabel("");
-        setOrigin("");
+        const saved = await updateHost(host.id, { label, origin });
         setError("");
         onDone(saved);
       } catch (cause) {
@@ -2148,7 +2109,7 @@ export async function apply(ctx) {
     };
     return h(
       "form",
-      { "aria-label": editing ? `Edit ${host.label}` : "Add a host", className: "grid gap-3", onSubmit: submit },
+      { "aria-label": `Edit ${host.label}`, className: "grid gap-3", onSubmit: submit },
       h(
         Field,
         { label: "Name", controlId: labelId, description: "Shown in New agent and in each agent's settings." },
@@ -2173,21 +2134,11 @@ export async function apply(ctx) {
       h(
         "div",
         { className: "flex items-center gap-2" },
-        h(Button, { type: "submit", variant: "prominent", loading: saving, disabled: disabled && !saving }, editing ? LABELS.save : "Add host"),
-        onCancel ? h(Button, { onClick: onCancel, disabled: saving }, LABELS.cancel) : null,
+        h(Button, { type: "submit", variant: "prominent", loading: saving, disabled: disabled && !saving }, LABELS.save),
+        h(Button, { onClick: onCancel, disabled: saving }, LABELS.cancel),
       ),
     );
   }
-
-  /** Why a machine can or cannot be set up, so the owner knows what to
-   * fix in the Tailscale admin console first. */
-  function machineNote(entry) {
-    if (!entry.online) return "Offline";
-    if (!entry.tagged) return "No ACL tag: add one in the Tailscale admin console";
-    if (!entry.ssh) return "Tailscale SSH is off: run tailscale set --ssh there";
-    return entry.dnsName;
-  }
-  const machineReady = (entry) => entry.online && entry.tagged && entry.ssh;
 
   const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for you", done: "Done", failed: "Failed" });
 
@@ -2245,75 +2196,55 @@ export async function apply(ctx) {
     );
   }
 
-  /** Settings > Tailscale hosts > Set up a machine: installs buzz-runner on
-   * a tailnet machine and adds it to hosts.json, with each step shown here. */
-  function SetupSection({ active }) {
-    const found = useStore(() => machines);
+  /** Settings > Tailscale hosts > Add a host. Add host runs a setup: it
+   * installs buzz-runner on the machine the address names, or aligns the
+   * runner already there, then lists the host; each step shows here. */
+  function AddHostForm({ active, disabled }) {
     const run = useStore(() => setupRun);
     const defaults = React.useMemo(communityDefaults, []);
-    const [machine, setMachine] = React.useState("");
-    const [sshUser, setSshUser] = React.useState("");
-    const [password, setPassword] = React.useState("");
-    const [ownerPubkey, setOwnerPubkey] = React.useState(defaults.ownerPubkey);
-    const [relay, setRelay] = React.useState(defaults.relay);
-    const [label, setLabel] = React.useState("");
+    const [values, setValues] = React.useState({ label: "", origin: "", sshUser: "", password: "", ...defaults });
     const [error, setError] = React.useState("");
-    const ids = { user: React.useId(), password: React.useId(), owner: React.useId(), relay: React.useId(), label: React.useId() };
+    const ids = { label: React.useId(), origin: React.useId(), user: React.useId(), password: React.useId(), owner: React.useId(), relay: React.useId() };
     const running = run.state === "running";
-    const typed = (set) => (event) => {
-      set(event.target.value);
+    const typed = (key) => (event) => {
+      const { value } = event.target;
+      setValues((now) => ({ ...now, [key]: value }));
       setError("");
     };
     const submit = (event) => {
       event.preventDefault();
       if (!active() || running) return;
-      if (!machine) return setError("Choose a machine.");
-      if (!HEX64.test(ownerPubkey.trim())) return setError("The owner key must be 64 lowercase hex characters.");
-      if (!relay.trim().startsWith("wss://")) return setError(`The relay must be a wss:// address, for example ${RELAY_EXAMPLE}.`);
+      let setup;
+      try {
+        setup = checkNewHost(values);
+      } catch (cause) {
+        return setError(errorText(cause));
+      }
       // The password leaves the view with the request; the field is empty
       // again, so it is not kept while the setup runs.
-      const sudoPassword = password;
-      setPassword("");
+      const sudoPassword = values.password;
+      setValues((now) => ({ ...now, password: "" }));
       setError("");
-      void startSetup({ machine, sshUser: sshUser.trim(), sudoPassword, ownerPubkey: ownerPubkey.trim(), relay: relay.trim(), label: label.trim() });
+      void startSetup({ ...setup, sudoPassword });
     };
-    const field = (id, name, description, input) => h(Field, { label: name, controlId: id, description }, h(Input, { id, autoComplete: "off", autoCapitalize: "none", spellCheck: false, disabled: running, ...input }));
+    const field = (id, key, name, description, input = {}) =>
+      h(
+        Field,
+        { label: name, controlId: id, description },
+        h(Input, { id, value: values[key], autoComplete: "off", autoCapitalize: "none", spellCheck: false, disabled: running, onChange: typed(key), ...input }),
+      );
     return h(
       "form",
-      { "aria-label": "Set up a machine", className: "grid gap-3", onSubmit: submit },
-      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.setupIntro),
-      h(
-        "div",
-        { className: "flex items-end gap-2" },
-        h(Select, {
-          label: "Machine",
-          variant: "field",
-          value: machine,
-          disabled: running,
-          // The list is asked for on a press, not when the page opens: it
-          // runs `tailscale status` on this device.
-          placeholder: found.state === "loading" ? "Finding machines…" : found.state === "ready" ? "Choose a machine" : "Select Find machines",
-          options: found.list.map((entry) => ({ value: entry.machine, label: entry.name, description: machineNote(entry), disabled: !machineReady(entry) })),
-          onValueChange: (value) => {
-            setMachine(value);
-            setError("");
-          },
-        }),
-        h(Button, { size: "sm", loading: found.state === "loading", disabled: running, onClick: () => void loadMachines() }, found.state === "idle" ? "Find machines" : "Find again"),
-      ),
-      found.state === "error" ? h("p", { role: "alert", className: "buzz-field-error" }, found.error) : null,
-      field(ids.user, "SSH login", "The Linux user that Tailscale SSH signs you in as. Empty: your user name here.", { value: sshUser, maxLength: SSH_USER_MAX, onChange: typed(setSshUser) }),
-      field(ids.password, "sudo password", "Only for a login that sudo asks a password of. It goes to sudo on the machine, and is not saved.", {
-        type: "password",
-        value: password,
-        maxLength: PASSWORD_MAX,
-        onChange: typed(setPassword),
-      }),
-      field(ids.owner, "Owner key", "Your key in hex. Only you can make agents on this runner.", { value: ownerPubkey, maxLength: 64, onChange: typed(setOwnerPubkey) }),
-      field(ids.relay, "Relay", `The relay the agents connect to. Example: ${RELAY_EXAMPLE}`, { value: relay, maxLength: RELAY_MAX, inputMode: "url", onChange: typed(setRelay) }),
-      field(ids.label, "Name", "Shown in New agent. Empty: the machine's name.", { value: label, maxLength: LABEL_MAX, onChange: typed(setLabel) }),
+      { "aria-label": "Add a host", className: "grid gap-3", onSubmit: submit },
+      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.addIntro),
+      field(ids.label, "label", "Name", "Shown in New agent and in each agent's settings.", { maxLength: LABEL_MAX }),
+      field(ids.origin, "origin", "Address", `The machine's https:// MagicDNS name. Example: ${ORIGIN_EXAMPLE}`, { maxLength: ORIGIN_MAX, inputMode: "url", placeholder: ORIGIN_EXAMPLE }),
+      field(ids.user, "sshUser", "SSH login", "The Linux user that Tailscale SSH signs you in as. Empty: your user name here.", { maxLength: SSH_USER_MAX }),
+      field(ids.password, "password", "sudo password", "Only for a login that sudo asks a password of. It goes to sudo on the machine, and is not saved.", { type: "password", maxLength: PASSWORD_MAX }),
+      field(ids.owner, "ownerPubkey", "Owner key", "Your key in hex. Only you can make agents on this runner.", { maxLength: 64 }),
+      field(ids.relay, "relay", "Relay", `The relay the agents connect to. Example: ${RELAY_EXAMPLE}`, { maxLength: RELAY_MAX, inputMode: "url" }),
       error ? h("p", { role: "alert", className: "buzz-field-error" }, error) : null,
-      h("div", null, h(Button, { type: "submit", variant: "prominent", loading: running }, "Install runner")),
+      h("div", null, h(Button, { type: "submit", variant: "prominent", loading: running, disabled: disabled && !running }, "Add host")),
       run.state === "idle" ? null : h(SetupSteps, { run }),
       run.state === "failed" ? h("p", { role: "alert", className: "buzz-field-error" }, run.error) : null,
       run.state === "done" && run.result ? h(SetupResult, { result: run.result }) : null,
@@ -2398,18 +2329,8 @@ export async function apply(ctx) {
         ),
       ),
       notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, notice) : null,
-      h("h3", { className: "text-label-sm" }, "Set up a machine"),
-      h(SetupSection, { active }),
       ready ? h("h3", { className: "text-label-sm" }, "Add a host") : null,
-      ready
-        ? h(HostForm, {
-            disabled: file.busy,
-            onDone: (saved) => {
-              setNotice(`Added ${saved.label}.`);
-              void refresh();
-            },
-          })
-        : null,
+      ready ? h(AddHostForm, { active, disabled: file.busy }) : null,
       h(
         "div",
         null,

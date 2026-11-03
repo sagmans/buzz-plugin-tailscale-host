@@ -85,8 +85,9 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
   const cleanups = [];
   const buildDir = mkdtempSync(join(tmpdir(), "buzz-plugin-smoke-"));
   const fronts = [];
-  // Every helper process the stand-in started, so none outlives the run.
-  const helpers = { children: new Set(), spawns: 0, failSpawn: false };
+  // Every helper process the stand-in started, so none outlives the run, and
+  // every line the plugin wrote to one, so a scenario can tell what it asked.
+  const helpers = { children: new Set(), spawns: 0, failSpawn: false, lines: [] };
   try {
     const tls = await makeCertificate(buildDir);
     let hostDown = false;
@@ -137,7 +138,10 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       helpers.children.add(child);
       void exited.then(() => helpers.children.delete(child));
       return {
-        write: (data) => new Promise((done, fail) => child.stdin.write(data, (error) => (error ? fail(error) : done()))),
+        write: (data) => {
+          helpers.lines.push(String(data));
+          return new Promise((done, fail) => child.stdin.write(data, (error) => (error ? fail(error) : done())));
+        },
         end: (data = "") => child.stdin.end(data),
         kill: () => child.kill("SIGTERM"),
         exited,
@@ -649,8 +653,8 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       ...ctx,
       agents: { register: (type) => settingsTypes.push(type) },
       inject(names, run) {
-        // communityReader stays out here, as on a Desktop without it: the
-        // setup's owner and relay fields then start empty.
+        // communityReader stays out here, as on a Desktop without it: Add
+        // host's owner and relay fields then start empty.
         if (JSON.stringify(names) === JSON.stringify(["communityReader"])) return;
         if (JSON.stringify(names) !== JSON.stringify(["settingsCards"])) throw new Error(`unexpected inject ${names}`);
         run({ settingsCards: { register: (card) => cards.push(card) } });
@@ -701,23 +705,26 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     );
     const noHttps = await addHost(LAB_HOST.label, "http://lab-one.example.invalid");
     const withPath = await addHost(LAB_HOST.label, `https://lab-one.example.invalid:${RUNNER_PORT}/v1`);
-    const sameAddress = await addHost(LAB_HOST.label, SMOKE_HOST.origin);
     const sameName = await addHost(SMOKE_HOST.label.toUpperCase(), "https://lab-one.example.invalid");
+    // Without Desktop's community reader the owner key starts empty.
+    const noOwner = await addHost(LAB_HOST.label, "https://lab-one.example.invalid");
     check(
-      "plugin: Add refuses http, a path, a used address and a used name, and says why, with the address to write and no runner port",
-      /https:\/\//.test(noHttps) && withPath.endsWith("Write it as https://lab-one.example.invalid") && sameAddress.includes("already uses this address") && sameName.includes("already named"),
-      JSON.stringify([noHttps, withPath, sameAddress, sameName]),
+      "plugin: Add host refuses http, a path, a used name and a missing owner key before any setup, and says why, with the address to write and no runner port",
+      /https:\/\//.test(noHttps) &&
+        withPath.endsWith("Write it as https://lab-one.example.invalid") &&
+        sameName.includes("already named") &&
+        noOwner.includes("owner key") &&
+        !helpers.lines.some((line) => line.includes('"op":"setup"')),
+      JSON.stringify([noHttps, withPath, sameName, noOwner]),
     );
     check("plugin: a refused add leaves hosts.json as it was", JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST]), JSON.stringify(fileList()));
 
-    // The owner's ask: a host added here works at once, with no build and no Update.
-    const added = await addHost(LAB_HOST.label, `${LAB_HOST.origin}/`);
-    check(
-      "plugin: Add writes hosts.json with a fixed id from the name and the address without the slash",
-      added === "" && JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, LAB_HOST]),
-      `${added} ${JSON.stringify(fileList())}`,
-    );
-    check("plugin: a save leaves the build as it is: no rebuild, nothing for Update", builtFiles() === buildBefore);
+    // A host that a setup (or the owner by hand) puts in hosts.json works at
+    // once, with no build and no Update. The setup itself is the fake-helper
+    // scenario below and setup.mjs.
+    writeFileSync(hostsPath, JSON.stringify({ hosts: [SMOKE_HOST, LAB_HOST] }));
+    await checkAgain();
+    await until(() => rowFor(LAB_HOST.label), "listed host read");
     await until(() => rowFor(LAB_HOST.label)?.textContent.includes("Reachable"), "new host status");
     check("plugin: the new host answers at once on the page", rowFor(LAB_HOST.label).textContent.includes(`${LAB_HOST.origin} · Reachable`), rowFor(LAB_HOST.label)?.textContent);
     // A field Select names its trigger with aria-labelledby, as Desktop's.
@@ -759,6 +766,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await settled();
     const renamedHost = { ...LAB_HOST, label: "lab/renamed" };
     check("plugin: Edit renames the host in hosts.json and keeps its id", JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, renamedHost]) && rowFor(renamedHost.label), JSON.stringify(fileList()));
+    check("plugin: a save leaves the build as it is: no rebuild, nothing for Update", builtFiles() === buildBefore);
 
     // The owner edits hosts.json by hand: Check again shows it, and it is in use.
     // An address from before the runner port was internal: it has the port.
@@ -776,12 +784,20 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       rowFor(handHost.label).textContent.includes("https://lab-hand.example.invalid · ") && !rowFor(handHost.label).textContent.includes(`:${RUNNER_PORT}`),
       rowFor(handHost.label)?.textContent,
     );
-    const handAgain = await addHost("lab/hand-two", "https://lab-hand.example.invalid");
+    // Add with a listed machine aligns it (setup.mjs), so Edit is where a
+    // second entry for one machine can be typed.
+    await press(buttonFor(renamedHost.label, "Edit"));
+    const moveForm = page.node.querySelector(`form[aria-label="Edit ${renamedHost.label}"]`);
+    await typeText(fieldControl(moveForm, "Address"), "https://lab-hand.example.invalid");
+    await submit(moveForm);
+    await settled();
+    const handAgain = moveForm.querySelector("[role=alert]")?.textContent ?? "";
     check(
-      "plugin: Add refuses the machine of a host saved with the runner port",
+      "plugin: Edit refuses the machine of a host saved with the runner port",
       handAgain.includes(`${handHost.label} already uses this address`) && fileList().length === 3,
       handAgain,
     );
+    await press([...moveForm.querySelectorAll("button")].find((item) => item.textContent === "Cancel"));
 
     // Remove waits for its agents.
     const placedKey = `${MIGRATED_HOST_KEY.split(":")[0]}:${"ef".repeat(32)}`;
@@ -830,7 +846,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     collect(page.node);
     await page.unmount();
 
-    // ---- Set up a machine: the page side of a host setup -----------------
+    // ---- Add host: the page side of a host setup ----------------------------
     // The helper's setup itself is setup.mjs; here an in-process stand-in
     // answers as the helper does, so the page's steps, link, result and
     // password handling are checked without a machine.
@@ -847,11 +863,6 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
           setupLines.push(ask);
           if (ask.op === "read") return answer({ id: ask.id, ok: true, hosts: [SMOKE_HOST] });
           if (ask.op === "request") return answer({ id: ask.id, ok: false, error: "no runner here" });
-          if (ask.op === "machines")
-            return answer({ id: ask.id, ok: true, machines: [
-              { machine: "lab-box", name: "Lab Box", dnsName: "lab-box.example.ts.net", online: true, tagged: true, ssh: true },
-              { machine: "bare-box", name: "Bare Box", dnsName: "bare-box.example.ts.net", online: true, tagged: false, ssh: true },
-            ] });
           const steps = ["machine", "bundle", "connect", "copy", "install", "serve", "hosts", "health"];
           answer({ id: ask.id, progress: { step: "connect", state: "waiting", link: "https://login.tailscale.com/a/page-check" } });
           answer({ id: ask.id, progress: { step: "copy", state: "waiting", link: "javascript:alert(1)" } });
@@ -880,18 +891,15 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await setupModule.apply(setupCtx);
     const setupPage = mount();
     await setupPage.render(React.createElement(setupCards[0].component, { active: () => true }));
-    const setupForm = () => setupPage.node.querySelector('form[aria-label="Set up a machine"]');
-    check("plugin: the page asks for no machine list until Find machines", !setupLines.some((ask) => ask.op === "machines"));
+    const setupForm = () => setupPage.node.querySelector('form[aria-label="Add a host"]');
+    await until(setupForm, "add form");
+    check("plugin: the page has no separate setup step: Add host is the setup", !/Install runner|Set up a machine|Find machines/.test(setupPage.node.textContent), setupPage.node.textContent.slice(0, 300));
     check(
-      "plugin: the setup's owner key and relay start as Desktop's identity and community",
+      "plugin: Add host's owner key and relay start as Desktop's identity and community",
       fieldControl(setupForm(), "Owner key")?.value === VIEWER && fieldControl(setupForm(), "Relay")?.value === "wss://relay.example.ts.net",
     );
-    await press([...setupForm().querySelectorAll("button")].find((item) => item.textContent === "Find machines"));
-    const machineTrigger = await until(() => setupLines.some((ask) => ask.op === "machines") && setupForm().querySelector("[role=combobox]"), "machine list");
-    const machinePopup = await open(machineTrigger);
-    const bare = optionsOf(machinePopup).find((item) => nameOf(item) === "Bare Box");
-    check("plugin: an untagged machine is listed but cannot be chosen, and says why", bare?.getAttribute("aria-disabled") === "true" && bare.textContent.includes("No ACL tag"), bare?.outerHTML.slice(0, 200));
-    await press(optionsOf(machinePopup).find((item) => nameOf(item) === "Lab Box"));
+    await typeText(fieldControl(setupForm(), "Name"), "Lab Box");
+    await typeText(fieldControl(setupForm(), "Address"), `https://${LAB_DNS}/`);
     await typeText(fieldControl(setupForm(), "SSH login"), "owner");
     await typeText(fieldControl(setupForm(), "sudo password"), "page pass");
     await act(async () => setupForm().requestSubmit());
@@ -902,8 +910,8 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await until(() => setupPage.node.textContent.includes("Still to do on the host"), "setup result");
     const sent = setupLines.find((ask) => ask.op === "setup");
     check(
-      "plugin: Install runner sends the chosen machine, login, password, owner, relay and reserved ids",
-      sent?.setup.machine === "lab-box" && sent.setup.sshUser === "owner" && sent.setup.sudoPassword === "page pass" && sent.setup.ownerPubkey === VIEWER && sent.setup.relay === "wss://relay.example.ts.net" && Array.isArray(sent.setup.reservedIds),
+      "plugin: Add host sends the address, name, login, password, owner, relay and reserved ids as one setup",
+      sent?.setup.address === `https://${LAB_DNS}` && sent.setup.label === "Lab Box" && sent.setup.sshUser === "owner" && sent.setup.sudoPassword === "page pass" && sent.setup.ownerPubkey === VIEWER && sent.setup.relay === "wss://relay.example.ts.net" && Array.isArray(sent.setup.reservedIds),
       JSON.stringify({ ...sent?.setup, sudoPassword: sent?.setup.sudoPassword ? "<set>" : "" }),
     );
     check("plugin: the password field is empty once the setup starts", fieldControl(setupForm(), "sudo password")?.value === "" && !setupPage.node.innerHTML.includes("page pass"));
