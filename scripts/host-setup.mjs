@@ -1,7 +1,8 @@
-// Installs buzz-runner on one machine of the user's tailnet, for the
-// plugin's Settings page. The page cannot reach a machine itself, so the
-// hosts helper (scripts/hosts-helper.mjs) runs this module and streams each
-// step back as progress. The steps repeat runner/README.md, "Deploy": copy a
+// Installs buzz-runner on one machine of the user's tailnet, or aligns the
+// runner already there, when the plugin's Settings page adds the machine as a
+// host (Add host). The page cannot reach a machine itself, so the hosts
+// helper (scripts/hosts-helper.mjs) runs this module and streams each step
+// back as progress. The steps repeat runner/README.md, "Deploy": copy a
 // runner tree to the machine, run install.sh as root, then `tailscale serve`,
 // and add the machine to hosts.json, the one host list.
 //
@@ -9,8 +10,9 @@
 // SSH access. So every value that reaches the machine is checked here, the
 // machine must be a Linux peer that `tailscale status` lists, and ssh accepts
 // only the host keys that Tailscale reports for that peer (no trust on first
-// use). The sudo password goes only to the stdin of sudo on the machine; it
-// is never in an argument, a file, a log line or a progress event.
+// use). Only committed runner code goes, in a bundle built for this setup.
+// The sudo password goes only to the stdin of sudo on the machine; it is
+// never in an argument, a file, a log line or a progress event.
 //
 // The steps that need the user's own hands stay manual and are returned as a
 // list: the harness installs and sign-ins (a browser or a key), and the port
@@ -18,15 +20,16 @@
 // tag is refused before any change: on an untagged machine, a harness could
 // call the runner as its owner (runner/README.md, "Security notes").
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readJson, validateHosts, writeAtomic } from "./build-plugin.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-/** The system ssh, by path: a program on PATH could be anything. */
+/** The system ssh and git, by path: a program on PATH could be anything. */
 const SSH_BIN = "/usr/bin/ssh";
+const GIT_BIN = "/usr/bin/git";
 /** Where the Tailscale CLI is on macOS (Homebrew, the standalone package,
  * the App Store app) and on Linux; the first that exists is used. */
 const TAILSCALE_BINS = Object.freeze([
@@ -46,7 +49,6 @@ const STAGE_RE = /^\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}$/;
 /** The runner tree install.sh needs ("run from a full checkout"), relative
  * to the checkout, with the mode each file gets on the machine. */
 const STAGE_FILES = Object.freeze([
-  ["runner/dist/buzz-runner.mjs", 0o644],
   ["runner/README.md", 0o644],
   ["runner/buzz-runner.service", 0o644],
   ["runner/config.example.json", 0o644],
@@ -60,8 +62,14 @@ const STAGE_FILES = Object.freeze([
   ["runner/deploy/buzz-login.mjs", 0o644],
   ["runner/deploy/pi-launch.mjs", 0o644],
 ]);
+/** Where the bundle goes in the stage (install.sh reads it there), and its
+ * mode on the machine. */
 const BUNDLE = "runner/dist/buzz-runner.mjs";
-const RUNNER_SRC = "runner/src";
+const BUNDLE_MODE = 0o644;
+/** The checkout paths that the stage and the bundle come from. Root runs
+ * them on the machine, so each must be as committed: no edit, no new file
+ * (git leaves out what .gitignore names: the build output and the links). */
+const TREE_PATHS = Object.freeze(["runner", "scripts/build-runner.mjs"]);
 const CONFIG_EXAMPLE = "runner/config.example.json";
 const BUILD_RUNNER = "scripts/build-runner.mjs";
 /** The page's step list, in order (plugin.js SETUP_STEPS). */
@@ -70,8 +78,9 @@ export const SETUP_STEPS = Object.freeze(["machine", "bundle", "connect", "copy"
 /** A Linux login name, as install.sh's USER_RE allows. Empty means ssh's
  * default, the local user name. */
 const SSH_USER_RE = /^[a-z_][a-z0-9_.-]{0,31}$/;
-/** A machine as the page names it: the first label of its MagicDNS name. */
+/** One label of a MagicDNS name; the first one names the machine. */
 const MACHINE_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const DNS_MAX = 253;
 const HEX64 = /^[0-9a-f]{64}$/;
 /** A host id (scripts/build-plugin.mjs HOST_ID), and how many ids the page
  * may reserve: the hosts that agents on its device still name. */
@@ -95,6 +104,7 @@ const SUDO_REFUSED_RE = /incorrect password|Sorry, try again|no password was pro
  * first certificate, which can take a minute. */
 const STATUS_TIMEOUT_MS = 15_000;
 const BUILD_TIMEOUT_MS = 600_000;
+const GIT_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 300_000;
 const COPY_TIMEOUT_MS = 120_000;
 const INSTALL_TIMEOUT_MS = 600_000;
@@ -119,7 +129,10 @@ export class HostSetupError extends Error {
   }
 }
 
-const clip = (value, max = LINE_MAX) => String(value).replace(CONTROL_CHARS, " ").slice(0, max);
+/** Every control character, for clip: one left in would break a log line
+ * or a progress event. */
+const CONTROL_CHARS_ALL = new RegExp(CONTROL_CHARS.source, "g");
+const clip = (value, max = LINE_MAX) => String(value).replace(CONTROL_CHARS_ALL, " ").slice(0, max);
 
 /** A relay URL as the runner config takes it: wss://, no credentials, no
  * query or fragment. */
@@ -132,11 +145,31 @@ function isRelay(value) {
     return false;
   }
 }
+/** The host address as the page saves it: an https origin whose host is a
+ * MagicDNS name, with no port or the runner's port. The name, not an IP, is
+ * what finds the peer and what serve's certificate holds. */
+function isAddress(value) {
+  if (typeof value !== "string" || value.length > DNS_MAX + 20) return false;
+  try {
+    const url = new URL(value);
+    const labels = url.hostname.split(".");
+    return (
+      url.protocol === "https:" &&
+      value === url.origin &&
+      (url.port === "" || url.port === String(RUNNER_PORT)) &&
+      url.hostname.length <= DNS_MAX &&
+      labels.length > 1 &&
+      labels.every((label) => MACHINE_RE.test(label))
+    );
+  } catch {
+    return false;
+  }
+}
 const isLabel = (value) => typeof value === "string" && !!value.trim() && value === value.trim() && value.length <= LABEL_MAX && !CONTROL_CHARS.test(value);
 
 /** Each setup field's rule and the reason the page shows when it fails. */
 const SETUP_RULES = Object.freeze({
-  machine: [(value) => typeof value === "string" && MACHINE_RE.test(value), "choose a machine from the list"],
+  address: [isAddress, `the address must be the machine's https:// MagicDNS name, with no port or port ${RUNNER_PORT}`],
   sshUser: [(value) => typeof value === "string" && (!value || SSH_USER_RE.test(value)), "the SSH login must be a Linux user name"],
   sudoPassword: [
     (value) => typeof value === "string" && value.length <= PASSWORD_MAX && !/[\n\r\u0000]/.test(value),
@@ -161,8 +194,8 @@ export function parseSetupRequest(raw) {
   if (extra.length) throw fail(`unknown setup keys: ${extra.join(", ")}`);
   const setup = { sshUser: "", sudoPassword: "", ...raw };
   for (const [key, [ok, message]] of Object.entries(SETUP_RULES)) if (!ok(setup[key])) throw fail(message);
-  const { machine, sshUser, sudoPassword, ownerPubkey, relay, label, reservedIds } = setup;
-  return { machine, sshUser, sudoPassword, ownerPubkey, relay, label, reservedIds };
+  const { address, sshUser, sudoPassword, ownerPubkey, relay, label, reservedIds } = setup;
+  return { address, sshUser, sudoPassword, ownerPubkey, relay, label, reservedIds };
 }
 
 /** Runs a program with a deadline; resolves with its exit and bounded output.
@@ -234,26 +267,14 @@ export async function tailscaleStatus() {
 const dnsOf = (peer) => String(peer.DNSName ?? "").replace(/\.$/, "").toLowerCase();
 const machineOf = (peer) => dnsOf(peer).split(".")[0];
 
-/** The Linux machines of the tailnet that a setup can reach, for the page. */
-export function listMachines(status) {
-  return Object.values(status?.Peer ?? {})
-    .filter((peer) => peer.OS === "linux" && MACHINE_RE.test(machineOf(peer)))
-    .map((peer) => ({
-      machine: machineOf(peer),
-      name: clip(peer.HostName ?? machineOf(peer), LABEL_MAX),
-      dnsName: dnsOf(peer),
-      online: peer.Online === true,
-      tagged: Array.isArray(peer.Tags) && peer.Tags.length > 0,
-      ssh: Array.isArray(peer.sshHostKeys) && peer.sshHostKeys.length > 0,
-    }))
-    .sort((a, b) => a.machine.localeCompare(b.machine));
-}
-
-/** The chosen peer, checked for every rule before anything else runs. */
-function findPeer(status, machine) {
-  const peer = Object.values(status?.Peer ?? {}).find((entry) => machineOf(entry) === machine);
+/** The peer that the address names, checked for every rule before anything
+ * else runs. */
+function findPeer(status, hostAddress) {
+  const dnsName = new URL(hostAddress).hostname;
+  const peer = Object.values(status?.Peer ?? {}).find((entry) => dnsOf(entry) === dnsName);
   const fail = (message) => new HostSetupError(message, { step: "machine" });
-  if (!peer) throw fail(`${machine} is not a machine of this tailnet`);
+  if (!peer) throw fail(`${dnsName} is not a machine of this tailnet. Use its MagicDNS name from the Tailscale admin console, Machines.`);
+  const machine = machineOf(peer);
   if (peer.OS !== "linux") throw fail(`${machine} runs ${clip(peer.OS, 20)}; the runner needs Linux`);
   if (peer.Online !== true) throw fail(`${machine} is offline`);
   if (!Array.isArray(peer.Tags) || !peer.Tags.length)
@@ -273,25 +294,34 @@ function selfLogin(status) {
   return login;
 }
 
-/** The newest file time under a folder, to tell a stale bundle. */
-function newestMtime(dir) {
-  let newest = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    newest = Math.max(newest, entry.isDirectory() ? newestMtime(path) : statSync(path).mtimeMs);
-  }
-  return newest;
+/** Refuses a checkout whose runner tree differs from its commit: the setup
+ * would put code nobody committed on the machine, as root. Resolves with
+ * the commit, which the page shows. */
+async function cleanCommit(root) {
+  const git = (args) => run(GIT_BIN, ["-C", root, ...args], { timeoutMs: GIT_TIMEOUT_MS });
+  const fail = (message) => new HostSetupError(message, { step: "bundle" });
+  const top = await git(["rev-parse", "--show-toplevel", "HEAD"]);
+  const [topLevel, commit] = top.stdout.trim().split("\n");
+  if (top.code !== 0 || !topLevel || realpathSync(topLevel) !== realpathSync(root))
+    throw fail(`the plugin folder ${root} is not a git checkout with a commit, so its runner code cannot be checked`);
+  const changes = await git(["status", "--porcelain=v1", "--untracked-files=all", "--", ...TREE_PATHS]);
+  if (changes.code !== 0) throw fail(`git status failed: ${clip(changes.stderr.trim() || changes.code)}`);
+  if (changes.stdout.trim())
+    throw fail(`the runner code has changes that are not committed; commit or discard them, then run the setup again: ${clip(changes.stdout.trim().split("\n").slice(0, 3).join(", "))}`);
+  return commit.slice(0, 12);
 }
 
-/** The runner bundle, built when it is missing or older than its source. */
-async function ensureBundle(root, progress) {
-  const bundle = join(root, BUNDLE);
-  if (existsSync(bundle) && statSync(bundle).mtimeMs >= newestMtime(join(root, RUNNER_SRC))) return "up to date";
-  progress("running", "Building the runner bundle");
-  const result = await run(process.execPath, [join(root, BUILD_RUNNER)], { cwd: root, timeoutMs: BUILD_TIMEOUT_MS });
+/** A fresh runner bundle of the clean commit, in the setup's own folder: a
+ * bundle left in the checkout may come from code that is no longer there. */
+async function buildBundle(root, work, progress) {
+  const commit = await cleanCommit(root);
+  progress("running", `Building the runner bundle of ${commit}`);
+  const out = join(work, "bundle");
+  const result = await run(process.execPath, [join(root, BUILD_RUNNER), "--out", out], { cwd: root, timeoutMs: BUILD_TIMEOUT_MS });
+  const bundle = join(out, BUNDLE.split("/").pop());
   if (result.code !== 0 || !existsSync(bundle))
     throw new HostSetupError(`the runner build failed (see runner/README.md, "Build"): ${clip(result.stderr.trim().split("\n").pop() ?? result.code)}`, { step: "bundle" });
-  return "built";
+  return { bundle, commit };
 }
 
 /** The runner config for a first install: the example, with this owner, this
@@ -375,13 +405,14 @@ const tail = (text) =>
     .map((line) => clip(line))
     .join("\n");
 
-/** The new host entry, or the one hosts.json already has for this origin.
+/** The new host entry, or the one hosts.json already has for this machine
+ * (with or without the runner's port), which a setup aligns and keeps.
  * A reserved id (a host removed by hand that agents still name) is never
  * given out, so the new host does not take over those agents. */
 function addHost(hostsPath, peer, { label, reservedIds = [] }) {
   const origin = `https://${peer.dnsName}:${RUNNER_PORT}`;
   const hosts = existsSync(hostsPath) ? validateHosts(readJson(hostsPath, "hosts file"), hostsPath) : [];
-  const known = hosts.find((host) => host.origin === origin);
+  const known = hosts.find((host) => new URL(host.origin).hostname === peer.dnsName);
   if (known) return { host: known, added: false };
   const taken = new Set([...hosts.map((host) => host.id), ...reservedIds]);
   let id = peer.machine.slice(0, 32).replace(/-+$/, "");
@@ -446,12 +477,13 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     begin("machine");
     const setup = parseSetupRequest(request);
     const status = await getStatus();
-    const peer = findPeer(status, setup.machine);
+    const peer = findPeer(status, setup.address);
     const login = selfLogin(status);
     progress("done", `${peer.dnsName}, ${peer.tags.join(", ")}`);
 
     begin("bundle");
-    progress("done", await ensureBundle(root, progress));
+    const built = await buildBundle(root, work, progress);
+    progress("done", `built from ${built.commit}`);
 
     begin("connect");
     const knownHosts = join(work, "known_hosts");
@@ -478,6 +510,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
 
     begin("copy");
     const files = STAGE_FILES.map(([path, mode]) => ({ path, mode, data: readFileSync(join(root, path)).toString("base64") }));
+    files.push({ path: BUNDLE, mode: BUNDLE_MODE, data: readFileSync(built.bundle).toString("base64") });
     files.push({ path: "config.json", mode: 0o644, data: Buffer.from(runnerConfig(root, { ...setup, login })).toString("base64") });
     const copy = await run(ssh, sshArgs(peer, session, unpackCommand()), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });
     const stage = /^@@stage (\S+)$/m.exec(copy.stdout)?.[1];

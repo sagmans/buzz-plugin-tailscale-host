@@ -8,8 +8,9 @@
 // hosts.json at each call. The plugin never sends a URL, so it can reach only
 // the hosts the user listed, and only their runner API.
 //
-// The Settings page also sets up a new host here (scripts/host-setup.mjs):
-// the page cannot reach a machine, and a setup runs for minutes, far past a
+// The Settings page also adds a host here through a setup
+// (scripts/host-setup.mjs), which installs or aligns buzz-runner on it: the
+// page cannot reach a machine, and a setup runs for minutes, far past a
 // command's limit. It is the one call that takes a secret (the sudo
 // password), so the request is never logged and the password only goes on
 // to sudo's stdin on the machine.
@@ -25,28 +26,27 @@
 //   {"id":2,"op":"save","hosts":[...]}           write the file
 //   {"id":3,"op":"request","host":"<id>","method":"GET","path":"/harnesses","timeoutMs":45000}
 //                                                one runner call; body is a JSON text
-//   {"id":4,"op":"machines"}                     the tailnet's Linux machines
-//   {"id":5,"op":"setup","setup":{"machine":"…","sshUser":"…","sudoPassword":"…",
+//   {"id":4,"op":"setup","setup":{"address":"https://…","sshUser":"…","sudoPassword":"…",
 //     "ownerPubkey":"<hex>","relay":"wss://…","label":"…","reservedIds":["…"]}}
-//                                                install buzz-runner there, one at a time
+//                                                install or align buzz-runner there and
+//                                                list it, one setup at a time
 // stdout: one JSON reply per line, with the request's id:
 //   {"id":1,"ok":true,"hosts":[...]}  {"id":3,"ok":true,"status":200,"body":"..."}
 //   {"id":2,"ok":false,"error":"..."}
-//   {"id":5,"progress":{"step":"copy","state":"running"}}  before a setup's reply
+//   {"id":4,"progress":{"step":"copy","state":"running"}}  before a setup's reply
 //   A line that cannot be read gets id null. Replies to runner calls come in
 //   the order the calls end, not the order they came.
 // Exit: 0 when stdin ends and every call is answered; 64 for wrong arguments.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PluginBuildError, readJson, runnerOrigin, validateHosts, writeAtomic } from "./build-plugin.mjs";
-import { listMachines, parseSetupRequest, setupHost, tailscaleStatus } from "./host-setup.mjs";
+import { parseSetupRequest, setupHost } from "./host-setup.mjs";
 
-const OPS = ["read", "save", "request", "machines", "setup"];
+const OPS = ["read", "save", "request", "setup"];
 const REQUEST_KEYS = Object.freeze({
   read: ["id", "op"],
   save: ["id", "op", "hosts"],
   request: ["id", "op", "host", "method", "path", "body", "timeoutMs"],
-  machines: ["id", "op"],
   setup: ["id", "op", "setup"],
 });
 /** The runner contract's routes (docs/RUNNER_CONTRACT.md): every call stays
@@ -191,7 +191,6 @@ async function setup(request, paths, emit) {
  * command line never sets it. */
 export async function handle(request, paths, emit = () => {}) {
   if (request.op === "read") return { hosts: validateHosts(readJson(paths.hostsPath, "hosts file"), paths.hostsPath) };
-  if (request.op === "machines") return { machines: listMachines(await (paths.setupDeps?.status ?? tailscaleStatus)()) };
   if (request.op === "setup") return setup(request, paths, emit);
   if (request.op === "save") {
     // The setup's own add would write over a save made while it runs.

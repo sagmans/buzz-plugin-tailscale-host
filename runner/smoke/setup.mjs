@@ -7,7 +7,8 @@
 // The real install on a systemd machine is a host test (runner/README.md).
 //
 // Called from run.mjs with its `check`; adds PASS/FAIL lines.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +18,8 @@ import { handle } from "../../scripts/hosts-helper.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const FAKE_SSH = resolve(HERE, "fake-ssh.mjs");
-/** The files the setup copies (host-setup.mjs STAGE_FILES), less the bundle,
- * which the scenario writes itself so no runner build is needed. */
+/** The files the setup copies (host-setup.mjs STAGE_FILES); the bundle
+ * comes from FAKE_BUILD, so no runner build is needed. */
 const TREE = ["runner/README.md", "runner/buzz-runner.service", "runner/config.example.json", "runner/deploy/install.sh", "runner/deploy/setup.sh", "runner/deploy/check-config.mjs", "runner/deploy/sudoers.template", "runner/deploy/claude-wrapper", "runner/deploy/harness-wrapper", "runner/deploy/buzz-login", "runner/deploy/buzz-login.mjs", "runner/deploy/pi-launch.mjs"];
 const HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISmokeHostKeySmokeHostKeySmokeHostKeySmoke";
 const OTHER_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherHostKeyOtherHostKeyOtherHostKeyOther";
@@ -27,6 +28,20 @@ const LOGIN = "owner@example.com";
 const MACHINE = "smoke-box";
 const DNS = `${MACHINE}.example.ts.net`;
 const ORIGIN = `https://${DNS}:10000`;
+/** The address as the owner types it: the runner port is the setup's own. */
+const ADDRESS = `https://${DNS}`;
+/** Stands in for scripts/build-runner.mjs: writes a bundle where --out says. */
+const FAKE_BUILD = `import { mkdirSync, writeFileSync } from "node:fs";
+const out = process.argv[process.argv.indexOf("--out") + 1];
+mkdirSync(out, { recursive: true });
+writeFileSync(out + "/buzz-runner.mjs", "// bundle\\n");
+`;
+/** git for the fixture checkout only, without the user's own git config. */
+const fixtureGit = (root, args) =>
+  execFileSync("/usr/bin/git", ["-C", root, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "smoke", GIT_AUTHOR_EMAIL: "smoke@example.invalid", GIT_COMMITTER_NAME: "smoke", GIT_COMMITTER_EMAIL: "smoke@example.invalid" },
+  });
 const OWNER = "ef".repeat(32);
 const RELAY = "wss://relay.example.ts.net";
 const FACTS = Object.freeze({ os: "Linux", uid: "1000", node: "24.1.0", systemd: "1", tailscale: "1", sudo: "1" });
@@ -52,12 +67,11 @@ export async function setupSmoke({ check, temp }) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     copyFileSync(join(REPO, file), join(root, file));
   }
-  mkdirSync(join(root, "runner/dist"), { recursive: true });
-  mkdirSync(join(root, "runner/src"), { recursive: true });
-  writeFileSync(join(root, "runner/src/main.ts"), "// source\n");
-  const past = new Date(Date.now() - 60_000);
-  utimesSync(join(root, "runner/src/main.ts"), past, past);
-  writeFileSync(join(root, "runner/dist/buzz-runner.mjs"), "// bundle\n");
+  mkdirSync(join(root, "scripts"), { recursive: true });
+  writeFileSync(join(root, "scripts/build-runner.mjs"), FAKE_BUILD);
+  fixtureGit(root, ["init", "-q", "--template="]);
+  fixtureGit(root, ["add", "-A"]);
+  fixtureGit(root, ["commit", "-q", "--no-gpg-sign", "-m", "fixture"]);
   const hostsPath = join(temp, "setup-hosts.json");
   writeFileSync(hostsPath, `${JSON.stringify({ hosts: [{ id: "first", label: "first/host", origin: "https://first.example.ts.net:10000" }] }, null, 2)}\n`);
   const log = join(temp, "fake-ssh.log");
@@ -77,7 +91,7 @@ export async function setupSmoke({ check, temp }) {
     let error;
     try {
       result = await setupHost(
-        { machine: MACHINE, sshUser: "owner", sudoPassword: PASSWORD, ownerPubkey: OWNER, relay: RELAY, ...request },
+        { address: ADDRESS, sshUser: "owner", sudoPassword: PASSWORD, ownerPubkey: OWNER, relay: RELAY, ...request },
         { hostsPath, onProgress: (event) => events.push(event), deps: { status: async () => statusWith(entry), ssh: FAKE_SSH, fetch: fakeFetch, root } },
       );
     } catch (caught) {
@@ -92,10 +106,24 @@ export async function setupSmoke({ check, temp }) {
   check("setup: an untagged machine is refused before any ssh call", failedAt(untagged, "machine") && untagged.calls.length === 0 && /no ACL tag.*Edit ACL tags/.test(untagged.error.message), untagged.error?.message);
   const mac = await attempt({}, { entry: peer({ OS: "macOS" }) });
   check("setup: a machine that is not Linux is refused", failedAt(mac, "machine") && mac.calls.length === 0 && /needs Linux/.test(mac.error.message), mac.error?.message);
-  const unknown = await attempt({ machine: "elsewhere" });
-  check("setup: a name that is not a tailnet peer is refused", failedAt(unknown, "machine") && unknown.calls.length === 0, unknown.error?.message);
-  const bad = await Promise.all([{ ownerPubkey: "npub1x" }, { relay: "https://relay.example.ts.net" }, { sudoPassword: "a\nb" }, { sshUser: "root;id" }, { extra: 1 }].map((request) => attempt(request)));
-  check("setup: a bad owner key, relay, password, login or key is refused", bad.every((outcome) => failedAt(outcome, "machine") && outcome.calls.length === 0), bad.map((outcome) => outcome.error?.message).join(" | "));
+  const unknown = await Promise.all(["https://elsewhere.example.ts.net", "https://100.64.0.7"].map((address) => attempt({ address })));
+  check("setup: an address that is no tailnet peer's MagicDNS name is refused", unknown.every((outcome) => failedAt(outcome, "machine") && outcome.calls.length === 0 && /not a machine of this tailnet/.test(outcome.error.message)), unknown.map((outcome) => outcome.error?.message).join(" | "));
+  const bad = await Promise.all(
+    [{ address: `${ADDRESS}:8443` }, { address: `${ADDRESS}/v1` }, { address: `http://${DNS}` }, { ownerPubkey: "npub1x" }, { relay: "https://relay.example.ts.net" }, { sudoPassword: "a\nb" }, { sshUser: "root;id" }, { extra: 1 }].map((request) => attempt(request)),
+  );
+  check("setup: a bad address, owner key, relay, password, login or key is refused", bad.every((outcome) => failedAt(outcome, "machine") && outcome.calls.length === 0), bad.map((outcome) => outcome.error?.message).join(" | "));
+  // Root runs the copied code, so only committed code may go.
+  writeFileSync(join(root, "runner/deploy/install.sh"), `${readFileSync(join(root, "runner/deploy/install.sh"), "utf8")}\n# edit\n`);
+  const edited = await attempt({});
+  fixtureGit(root, ["checkout", "--", "runner/deploy/install.sh"]);
+  writeFileSync(join(root, "runner/deploy/extra.sh"), "id\n");
+  const added = await attempt({});
+  rmSync(join(root, "runner/deploy/extra.sh"));
+  check(
+    "setup: an edit or a new file in the runner code stops the setup before any ssh call",
+    [edited, added].every((outcome) => failedAt(outcome, "bundle") && outcome.calls.length === 0 && /not committed/.test(outcome.error.message)),
+    [edited, added].map((outcome) => outcome.error?.message).join(" | "),
+  );
 
   const pinned = await attempt({}, { env: { FAKE_SSH_HOST_KEY: OTHER_KEY } });
   check("setup: ssh refuses a machine whose key Tailscale does not report", failedAt(pinned, "connect") && /Host key verification failed/.test(pinned.error.message), pinned.error?.message);
@@ -126,8 +154,8 @@ export async function setupSmoke({ check, temp }) {
   check("setup: the manual steps name the sign-in command and the tag's port rule", done.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)), JSON.stringify(done.result?.manual));
   check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));
 
-  const again = await attempt({});
-  check("setup: a second setup of the same machine keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
+  const again = await attempt({ address: ORIGIN });
+  check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
   const passwordless = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, sudon: "1" } });
   check("setup: sudo without a password runs `sudo -n` with nothing on stdin", !passwordless.error && passwordless.calls.at(-1)?.argv.at(-1).startsWith("sudo -n -- /bin/bash ") && passwordless.calls.at(-1)?.stdin === "", passwordless.error?.message);
   const asRoot = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, uid: "0" } });
@@ -135,20 +163,14 @@ export async function setupSmoke({ check, temp }) {
 
   // A host removed by hand whose id agents still name: the page reserves it.
   const OTHER = "other-box";
-  const reserved = await attempt({ machine: OTHER, reservedIds: [OTHER] }, { entry: peer({ DNSName: `${OTHER}.example.ts.net.` }) });
+  const reserved = await attempt({ address: `https://${OTHER}.example.ts.net`, reservedIds: [OTHER] }, { entry: peer({ DNSName: `${OTHER}.example.ts.net.` }) });
   const otherHost = JSON.parse(readFileSync(hostsPath, "utf8")).hosts.find((host) => host.origin === `https://${OTHER}.example.ts.net:10000`);
   check("setup: a reserved host id is not given to the new host", !reserved.error && otherHost?.id === `${OTHER}-2`, reserved.error?.message ?? JSON.stringify(otherHost));
 
   // The same setup through the hosts helper, as the page sends it.
   const setupDeps = { status: async () => statusWith(peer()), ssh: FAKE_SSH, fetch: fakeFetch, root };
   const helperPaths = { hostsPath, setupDeps };
-  const listed = await handle({ id: 1, op: "machines" }, helperPaths);
-  check(
-    "setup: the helper lists the tailnet's Linux machines with their tag, SSH and online marks",
-    JSON.stringify(listed.machines) === JSON.stringify([{ machine: MACHINE, name: "Smoke Box", dnsName: DNS, online: true, tagged: true, ssh: true }]),
-    JSON.stringify(listed),
-  );
-  const request = { id: 2, op: "setup", setup: { machine: MACHINE, sshUser: "owner", sudoPassword: PASSWORD, ownerPubkey: OWNER, relay: RELAY } };
+  const request = { id: 2, op: "setup", setup: { address: ADDRESS, sshUser: "owner", sudoPassword: PASSWORD, ownerPubkey: OWNER, relay: RELAY } };
   const streamed = [];
   const first = handle(request, helperPaths, (event) => streamed.push(event));
   const second = await handle({ ...request, id: 3 }, helperPaths).then(
