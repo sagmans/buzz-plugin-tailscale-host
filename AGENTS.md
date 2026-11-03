@@ -50,8 +50,10 @@ settings. Do not edit the files that come from the hook template:
   fixed in the build, accept only the hosts in `hosts.json` and the `/v1`
   paths, and check every request before a write or a call.
 - The helper's `setup` op (`scripts/host-setup.mjs`) runs root commands on
-  a host and is security-relevant. Keep these rules: a tagged Linux peer
-  from `tailscale status` only; `ssh` pinned to Tailscale's host keys with
+  a host and is security-relevant. **Add host** on the Settings page is its
+  only caller. Keep these rules: a tagged Linux peer from `tailscale status`
+  only, found by the address's MagicDNS name; committed runner code only,
+  with a new bundle per setup; `ssh` pinned to Tailscale's host keys with
   no trust on first use; the sudo password on sudo's stdin only, never in
   argv, a file, a log, a progress event or plugin storage; one setup at a
   time; the stage folder removed on every exit. Add a smoke check for each

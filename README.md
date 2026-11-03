@@ -107,8 +107,8 @@ hosts** to see its hosts with their address and status, and to change it:
 
 | Action | Rule |
 | --- | --- |
-| Add | A name (at most 40 characters) and the `https://` address of the machine on the tailnet, with no path and no port. |
-| Edit | Changes the name or the address. The host keeps its id, so its agents keep it. |
+| Add | A name (at most 40 characters) and the machine's `https://` MagicDNS name, with no path and no port. **Add host** installs `buzz-runner` there, or aligns it, then adds the host (see "Add a host from the app"). |
+| Edit | Changes the name or the address in `hosts.json` only; no setup runs. The host keeps its id, so its agents keep it. |
 | Remove | Only when no agent of this device runs on the host. One host must stay. |
 
 Each change writes `hosts.json` and is in use at once: **New agent**
@@ -117,31 +117,38 @@ offers a new host with no build and no Update.
 You can also edit `hosts.json` by hand or with a tool. Then select **Check
 again** on the page, or open **New agent**.
 
-### Set up a machine from the app
+### Add a host from the app
 
-The same page can install `buzz-runner` on a Linux machine of your tailnet
-and add it to `hosts.json`. Before you start, make sure that the machine:
+**Add host** installs `buzz-runner` on a Linux machine of your tailnet, or
+aligns the runner that is already there, and adds the machine to
+`hosts.json`. There is no separate install step. Before you start, make sure
+that the machine:
 
 - has an ACL tag (Tailscale admin console > Machines > Edit ACL tags),
 - has Tailscale SSH on (`tailscale set --ssh`), and your login may use it,
-- has Node 24 or later at `/usr/bin/node`, and systemd.
+- has Node 24 or later at `/usr/bin/node`, root-owned (a system package, not
+  a version manager in a user's home), and systemd.
 
 Then:
 
-1. Select **Find machines**, then select the machine. A machine that is
-   offline, has no tag or has no Tailscale SSH is shown with the reason and
-   cannot be selected.
+1. Type a name and the machine's address: its MagicDNS name, for example
+   `https://runner-host.example.ts.net`. The runner port is not needed.
 2. Type the SSH login and, if sudo asks for one, the sudo password. Check
    the owner key and the relay: they come from the identity and community
    that are open in the app.
-3. Select **Install runner**. The page shows each step: check the machine,
-   build the runner, connect, copy, install, `tailscale serve`, add to
+3. Select **Add host**. The page shows each step: check the machine, build
+   the runner, connect, copy, install, `tailscale serve`, add to
    `hosts.json`, check the runner. If Tailscale SSH asks for a check, the
    page shows the link to open.
 4. Do the steps that the page lists at the end: install and sign in each
    harness, and let only your login reach port 10000 in the tailnet policy.
 
-A setup runs again safely: it keeps the config on the machine and the
+The setup copies only committed runner code: if `runner/` in this folder
+has changes that are not committed, it stops before it connects. It builds
+a new runner bundle from that commit for each setup.
+
+**Add host** for a machine that is already in `hosts.json` aligns it: the
+setup updates the runner, keeps the config on the machine, and keeps the
 entry in `hosts.json`.
 
 The plugin reads and saves `hosts.json` and calls the hosts through
@@ -193,12 +200,13 @@ The Buzz mobile app runs no plugins, but hosted agents do not need them:
   checks each request before it writes or calls. A change to the helper in
   this folder runs at the next plugin start without a new review in
   Desktop, so review changes before you pull them.
-- **Set up a machine** runs root commands on the machine that you select,
+- **Add host** runs root commands on the machine that the address names,
   with your own SSH access. The helper accepts only a tagged Linux peer
   that `tailscale status` lists, and `ssh` accepts only the host keys that
-  Tailscale reports for it. The sudo password goes only to the stdin of
-  `sudo` on the machine. It is not in an argument, a file, a log or the
-  page, and it is not saved.
+  Tailscale reports for it. Only committed runner code goes to the
+  machine. The sudo password goes only to the stdin of `sudo` on the
+  machine. It is not in an argument, a file, a log or the page, and it is
+  not saved.
 - The runner API has no TCP port. It listens on a Unix socket that only
   `tailscale serve` reaches, and it accepts only the Tailscale logins in its
   `allowedLogins`. Allow only your own devices to reach the host in the

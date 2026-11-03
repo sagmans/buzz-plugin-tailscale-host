@@ -67,10 +67,10 @@ BUZZ_RUNNER_BUNDLE=<dir>/buzz-runner.mjs node runner/smoke/run.mjs
 `deploy/install.sh` installs or updates everything as root. Run it again after
 each build; it is idempotent.
 
-The plugin's Settings page can do the install and step 4 below (`tailscale
-serve`) for you, over Tailscale SSH (see the root README, "Set up a machine
-from the app"). It runs `deploy/setup.sh` as root from a stage folder in
-`/tmp`. The manual steps here stay the reference.
+The plugin's Settings page does the install and step 4 below (`tailscale
+serve`) for you when you add a host, over Tailscale SSH (see the root
+README, "Add a host from the app"). It runs `deploy/setup.sh` as root from
+a stage folder in `/tmp`. The manual steps here stay the reference.
 
 ```sh
 sudo runner/deploy/install.sh --dry-run                     # show every step, change nothing
