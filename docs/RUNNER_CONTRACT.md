@@ -82,10 +82,13 @@ scope, so the membership REQ gets them at connect only. A join or leave after
 the connect reaches the runner as a relay-signed membership notice (kind
 44100 added, 44101 removed; buzz-relay `side_effects.rs`
 `emit_membership_notification`). The runner subscribes to them live
-(`limit: 0`, plus a `#t:["system"]` filter for system channels), and each
-notice loads all rosters again. The new rosters replace the old ones, so a
-left channel leaves the scope. buzz-acp and Desktop also act on these
-notices.
+(`limit: 0`, plus a `#t:["system"]` filter for system channels). The
+notice's channel joins or leaves the mention scope at once, as in buzz-acp
+and Desktop. The relay sends the add notice before it stores the new roster,
+and it answers a REQ without `#h` from a member-channel cache that lives
+10 s. So the runner loads all rosters again 12 s after the last notice, for
+the full rosters that one-to-one DMs need. The new rosters replace the old
+ones. A roster load that gets no EOSE in 15 s replaces the socket.
 
 ## 4. Security design
 

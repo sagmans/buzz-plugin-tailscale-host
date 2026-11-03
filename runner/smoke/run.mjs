@@ -55,6 +55,11 @@ const PROVISION_RATE_MAX = 10;
 const MEDIA_TOTAL_MAX_BYTES = 200 * 1024 * 1024;
 const FAILURE_MESSAGE = "⚠️ I couldn't finish that. The host logged the details.";
 const FUTURE_SKEW_S = 60;
+/** The runner's roster timings (src/constants.ts ROSTER_SETTLE_MS,
+ * ROSTER_LOAD_TIMEOUT_MS) and its first reconnect delay with jitter. */
+const ROSTER_SETTLE_MS = 12_000;
+const ROSTER_LOAD_TIMEOUT_MS = 15_000;
+const RECONNECT_WAIT_MS = 10_000;
 /** Working signals: Desktop typing (buzz-app typing.ts) and observer
  * telemetry (buzz-acp, src/constants.ts). */
 const KIND_TYPING = 20002;
@@ -551,41 +556,56 @@ async function main() {
     });
 
     // The agent joins both channels after it connected. As on the real relay,
-    // the rosters do not reach the open membership REQ; only the notices do.
+    // a roster never reaches the open membership REQ, and the add notice can
+    // come before the relay stores the new roster.
     const membershipReqs = () => relay.reqs.filter((item) => item.agent === agent && item.subId === "membership").length;
     const mentionScopes = () => relay.reqs.filter((item) => item.agent === agent && item.subId === "mentions").map((item) => item.filters[0]["#h"] ?? []);
     const scopeIs = (ids) => JSON.stringify(mentionScopes().at(-1)) === JSON.stringify([...ids].sort());
     const loadsBefore = membershipReqs();
-    relay.inject(relay.relaySigned(39002, [["d", channel], ["p", owner], ["p", agent], ["p", getPublicKey(strangerSecret)]]));
-    relay.inject(relay.relaySigned(39002, [["d", dm], ["p", owner], ["p", agent]]));
-    await step("live: a join after connect scopes mentions after the notice", async () => {
+    await step("live: a join after connect scopes mentions at the notice", async () => {
+      relay.inject(relay.relaySigned(39002, [["d", channel], ["p", owner], ["p", agent], ["p", getPublicKey(strangerSecret)]]));
       await new Promise((done) => setTimeout(done, POLL_MS * 4));
-      check("live: a roster alone does not reach the membership REQ", membershipReqs() === loadsBefore && !scopeIs([channel, dm]), JSON.stringify(mentionScopes()));
+      check("live: a roster alone does not reach the membership REQ", membershipReqs() === loadsBefore && !scopeIs([channel]), JSON.stringify(mentionScopes()));
       relay.notice(agent, channel);
+      await waitFor(() => scopeIs([channel]), "mentions REQ scoped to the joined channel");
+      // The relay's order: the notice first, the stored roster after it.
       relay.notice(agent, dm, 44100, "dm");
-      await waitFor(() => scopeIs([channel, dm]), "mentions REQ scoped to the joined channels");
-      check("live: notices reload the rosters, mentions REQ #h = joined channels", membershipReqs() > loadsBefore, JSON.stringify(mentionScopes().at(-1)));
+      relay.inject(relay.relaySigned(39002, [["d", dm], ["p", owner], ["p", agent]]));
+      await waitFor(() => scopeIs([channel, dm]), "mentions REQ with the DM");
+      check("live: notice puts its channel in the mentions REQ #h before any roster load", membershipReqs() === loadsBefore, `${loadsBefore} -> ${membershipReqs()}`);
     });
-    await step("live: a forged notice does not reload the rosters", async () => {
-      const loads = membershipReqs();
-      relay.inject(sign(strangerSecret, 44100, [["p", agent], ["h", channel], ["t", "stream"]]));
+    await step("live: a forged notice changes nothing", async () => {
+      const scopes = mentionScopes().length;
+      relay.inject(sign(strangerSecret, 44100, [["p", agent], ["h", randomUUID()], ["t", "stream"]]));
       await waitFor(() => lines(runnerLog).some((line) => line.msg === "event dropped" && line.reason === "bad-notice"), "bad-notice drop");
-      check("live: notice not signed by the relay is dropped", membershipReqs() === loads, `${loads} -> ${membershipReqs()}`);
+      check("live: notice not signed by the relay is dropped", mentionScopes().length === scopes && scopeIs([channel, dm]), JSON.stringify(mentionScopes().at(-1)));
     });
+    await step("live: DM REQ", async () => {
+      // A DM needs its full roster: it comes with the settled roster load.
+      const dms = await waitFor(() => relay.reqs.find((item) => item.agent === agent && item.subId === "dms"), "dms REQ", ROSTER_SETTLE_MS + WAIT_MS);
+      check("live: settled roster load follows the notices", membershipReqs() === loadsBefore + 1, `${loadsBefore} -> ${membershipReqs()}`);
+      check("live: one-to-one DM found from relay roster, dms REQ {kinds:[9], #h:[dm]}", dms.filters[0]["#h"]?.length === 1 && dms.filters[0]["#h"][0] === dm, JSON.stringify(dms.filters));
+    });
+
     await step("live: a leave after connect drops the channel from the scope", async () => {
       const late = randomUUID();
       relay.inject(relay.relaySigned(39000, [["d", late], ["t", "stream"], ["name", "late"]]));
-      relay.inject(relay.relaySigned(39002, [["d", late], ["p", owner], ["p", agent]]));
       relay.notice(agent, late);
+      relay.inject(relay.relaySigned(39002, [["d", late], ["p", owner], ["p", agent]]));
       await waitFor(() => scopeIs([channel, dm, late]), "mentions REQ with the late channel");
-      relay.inject(relay.relaySigned(39002, [["d", late], ["p", owner]]));
       relay.notice(agent, late, 44101);
+      relay.inject(relay.relaySigned(39002, [["d", late], ["p", owner]]));
       await waitFor(() => scopeIs([channel, dm]), "mentions REQ without the left channel");
       check("live: join adds and leave removes a channel in the mentions REQ", scopeIs([channel, dm]), JSON.stringify(mentionScopes().slice(-2)));
     });
-    await step("live: DM REQ", async () => {
-      const dms = await waitFor(() => relay.reqs.find((item) => item.agent === agent && item.subId === "dms"), "dms REQ");
-      check("live: one-to-one DM found from relay roster, dms REQ {kinds:[9], #h:[dm]}", dms.filters[0]["#h"]?.length === 1 && dms.filters[0]["#h"][0] === dm, JSON.stringify(dms.filters));
+    await step("live: a roster load without EOSE ends the socket, and the next one loads", async () => {
+      const sessions = () => lines(runnerLog).filter((line) => line.msg === "relay session ended" && JSON.stringify(line.error ?? "").includes("roster load timed out")).length;
+      relay.withholdEose(agent, "membership");
+      relay.drop(agent);
+      await waitFor(() => sessions() === 1, "roster load timeout", ROSTER_LOAD_TIMEOUT_MS + WAIT_MS);
+      const after = mentionScopes().length;
+      await waitFor(() => mentionScopes().length > after && scopeIs([channel, dm]), "mentions REQ after the reconnect", RECONNECT_WAIT_MS);
+      check("live: roster load timeout reconnects and restores the scope", scopeIs([channel, dm]), JSON.stringify(mentionScopes().at(-1)));
     });
 
     const repeat = await api("POST", `/v1/agents/${agent}/activate`, { body: { name: "Smoke", community: relayUrl, auth: tag } });

@@ -70,6 +70,9 @@ export class MockRelay {
     // a scenario can keep an activate busy past the runner's deadline.
     this.holding = new Set();
     this.held = []; // { author, answer }
+    // "<agent>:<subId>" pairs whose next REQ gets its events but no EOSE,
+    // so a scenario can make the runner wait out a load deadline.
+    this.unfinished = new Set();
     this.server = createServer((req, res) => this.http(req, res));
     this.server.on("upgrade", (req, socket) => this.upgrade(req, socket));
   }
@@ -133,6 +136,16 @@ export class MockRelay {
 
   dropAll() {
     for (const connection of this.connections) connection.socket.destroy();
+  }
+
+  /** Drops only `agent`'s sockets, so other runners on this relay go on. */
+  drop(agent) {
+    for (const connection of this.connections) if (connection.authed === agent) connection.socket.destroy();
+  }
+
+  /** The next `subId` REQ of `agent` gets no EOSE. */
+  withholdEose(agent, subId) {
+    this.unfinished.add(`${agent}:${subId}`);
   }
 
   query(filters) {
@@ -285,6 +298,7 @@ export class MockRelay {
       this.reqs.push({ subId, filters, agent: connection.authed });
       connection.subs.set(subId, filters);
       for (const event of this.query(filters)) this.send(connection, ["EVENT", subId, event]);
+      if (this.unfinished.delete(`${connection.authed}:${subId}`)) return;
       this.send(connection, ["EOSE", subId]);
       return;
     }

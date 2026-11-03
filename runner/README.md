@@ -388,10 +388,13 @@ routing). A missing and a wrong login get the same 403 body. Bodies must be
   more than one channel, is renewed on every probe tick, as Desktop does. The
   relay sends no roster live to the membership REQ. A join or leave after the
   connect arrives as a relay-signed membership notice (kind 44100 or 44101,
-  `limit: 0`, also with `#t:["system"]`), and each notice loads the rosters
-  again. A notice that the relay did not sign is dropped. The probe is
-  Desktop's `{kinds:[44100], "#p":[agent], limit:0}`, with a fresh id each
-  time.
+  `limit: 0`, also with `#t:["system"]`). The notice's channel joins or leaves
+  the mention REQ at once. The relay sends the notice before it stores the
+  roster and serves a cached channel list for 10 s, so the runner loads the
+  rosters again 12 s after the last notice; a load has 15 s to finish, or the
+  socket is replaced. A notice that the relay did not sign is dropped. The
+  probe is Desktop's `{kinds:[44100], "#p":[agent], limit:0}`, with a fresh
+  id each time.
 - **Working signals:** while a turn runs, the agent sends typing (kind 20002,
   empty content, every 3 s, at most 30 min) where its reply goes, over `POST
   /events` like a reply, so it has the owner `auth` tag exactly when replies do.

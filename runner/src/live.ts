@@ -13,6 +13,7 @@ import { eventDto, type RelayEvent } from "@buzz/features/relay/events";
 import type { BuzzEvent, Template } from "@buzz/buzz-mcp/client";
 import {
   CATCHUP_MAX_S,
+  CHANNEL_ID,
   DEDUPE_LIMIT,
   FUTURE_SKEW_S,
   KIND_AUTH,
@@ -25,6 +26,8 @@ import {
   RECONNECT_BASE_MS,
   RECONNECT_MAX_MS,
   RESUBSCRIBE_SKEW_S,
+  ROSTER_LOAD_TIMEOUT_MS,
+  ROSTER_SETTLE_MS,
   SUB_DMS,
   SUB_MEMBERSHIP,
   SUB_MENTIONS,
@@ -79,6 +82,19 @@ export class LiveListener {
   private loading: Map<string, readonly string[]> | undefined;
   /** A notice came while a load was in flight: load once more after it. */
   private reloadQueued = false;
+  /** Channels a relay-signed add notice named that no roster load has shown
+   * yet. They are in the scope at once: the relay stores the roster after
+   * the notice and serves a cached channel list for a while (see
+   * `ROSTER_SETTLE_MS`), so a load right after the notice misses the join.
+   * Desktop (`relay/live.ts` `grant`) and buzz-acp also act on the notice's
+   * channel. Kept across reconnects; a remove notice takes one out. */
+  private readonly granted = new Set<string>();
+  /** The pending load deadline and the confirming load after a notice; both
+   * belong to the open socket and end with it. */
+  private loadDeadline: ReturnType<typeof setTimeout> | undefined;
+  private settleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Ends the open socket with a reason; unset while none is authenticated. */
+  private failSession: ((error: Error) => void) | undefined;
   private readonly types = new Map<string, string | undefined>();
   /** One-to-one DMs the agent is in, which wake it without a mention. */
   private dms = new Set<string>();
@@ -211,6 +227,9 @@ export class LiveListener {
         clearTimeout(deadline);
         clearTimeout(probeTimer);
         clearTimeout(probeDeadline);
+        clearTimeout(this.loadDeadline);
+        clearTimeout(this.settleTimer);
+        if (this.failSession === fail) this.failSession = undefined;
         this.abort.signal.removeEventListener("abort", stop);
         if (this.socket === ws) this.socket = undefined;
         if (outbox) {
@@ -253,6 +272,7 @@ export class LiveListener {
           onAuthenticated();
           outbox = { send, waiting: new Map() };
           this.outbox = outbox;
+          this.failSession = fail;
           log.info("relay authenticated");
           this.subscribe(send);
           probe();
@@ -330,13 +350,18 @@ export class LiveListener {
       return;
     }
     this.loading = new Map();
+    // A load without EOSE would hold every later notice in `reloadQueued`.
+    this.loadDeadline = setTimeout(() => this.failSession?.(new RelayError("relay roster load timed out")), ROSTER_LOAD_TIMEOUT_MS);
     send(["REQ", SUB_MEMBERSHIP, { kinds: [KIND_CHANNEL_MEMBERS], "#p": [this.options.agent] }]);
   }
 
   /** The roster load is complete: scope the wake subscriptions to it. */
   private rostersLoaded(send: (message: unknown) => void) {
+    clearTimeout(this.loadDeadline);
     if (this.loading) this.rosters = this.loading;
     this.loading = undefined;
+    const { agent } = this.options;
+    for (const channel of this.granted) if (this.rosters.get(channel)?.includes(agent)) this.granted.delete(channel);
     this.membershipLoaded = true;
     this.subscribeMentions(send);
     void this.refreshDms(send);
@@ -353,10 +378,8 @@ export class LiveListener {
    * replace the old REQ; the dedupe set drops events the new one replays. */
   private subscribeMentions(send: (message: unknown) => void) {
     const { agent } = this.options;
-    const channels = [...this.rosters]
-      .filter(([, members]) => members.includes(agent))
-      .map(([channel]) => channel)
-      .sort();
+    const joined = [...this.rosters].filter(([, members]) => members.includes(agent)).map(([channel]) => channel);
+    const channels = [...new Set([...joined, ...this.granted])].sort();
     const scope = channels.join(",");
     if (this.mentionScope && scope === this.mentionScope) return;
     this.mentionScope = scope || "global";
@@ -451,20 +474,31 @@ export class LiveListener {
       .catch((error) => log.error("event handler failed", { event: event.id.slice(0, 12), error }));
   }
 
-  /** A relay-signed notice that the agent gained or lost a channel. Its
-   * channel is not trusted for the scope: the roster load decides. A notice
-   * signed by anyone else is dropped, so a stranger cannot make it reload. */
+  /** A relay-signed notice that the agent gained or lost a channel. The
+   * relay is already trusted for rosters, so its notice changes the scope at
+   * once; a roster load after `ROSTER_SETTLE_MS` then brings the full
+   * roster (one-to-one DMs need it). A notice signed by anyone else, or
+   * without one valid channel id, is dropped. */
   private notice(event: RelayEvent, send: (message: unknown) => void) {
     const { agent, log } = this.options;
     const kinds: readonly number[] = [KIND_MEMBER_ADDED, KIND_MEMBER_REMOVED];
     const forAgent = event.tags.some(([name, value]) => name === "p" && value === agent);
-    if (!kinds.includes(event.kind) || event.pubkey !== this.options.relayAuthor() || !forAgent) {
+    const channel = event.tags.find((item) => item[0] === "h")?.[1] ?? "";
+    if (!kinds.includes(event.kind) || event.pubkey !== this.options.relayAuthor() || !forAgent || !CHANNEL_ID.test(channel)) {
       log.warn("event dropped", { reason: "bad-notice", subscription: SUB_NOTICES, event: event.id.slice(0, 12) });
       return;
     }
-    const channel = event.tags.find((item) => item[0] === "h")?.[1];
-    log.info("membership notice", { kind: event.kind, channel, reloading: Boolean(this.loading) });
-    this.loadRosters(send);
+    log.info("membership notice", { kind: event.kind, channel });
+    if (event.kind === KIND_MEMBER_ADDED) this.granted.add(channel);
+    else {
+      this.granted.delete(channel);
+      this.rosters.delete(channel);
+    }
+    if (this.membershipLoaded) this.subscribeMentions(send);
+    void this.refreshDms(send);
+    // One confirming load after the last notice of a burst.
+    clearTimeout(this.settleTimer);
+    this.settleTimer = setTimeout(() => this.loadRosters(send), ROSTER_SETTLE_MS);
   }
 
   /** Recomputes the one-to-one DMs from the rosters and resubscribes when

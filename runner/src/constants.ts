@@ -89,6 +89,15 @@ export const WS_AUTH_TIMEOUT_MS = 10_000;
 /** A REQ probe proves a quiet socket still reaches the relay. */
 export const WS_PROBE_INTERVAL_MS = 60_000;
 export const WS_PROBE_TIMEOUT_MS = 15_000;
+/** Bound on one roster load (membership REQ to its EOSE); past it the
+ * socket is replaced, as for an unanswered probe. */
+export const ROSTER_LOAD_TIMEOUT_MS = 15_000;
+/** Wait after a membership notice before the confirming roster load. The
+ * relay sends the notice before it stores the new roster, and it answers a
+ * REQ without `#h` from a member-channel cache that lives 10 s (buzz-relay
+ * `side_effects.rs` add-members path, `state.rs`
+ * `get_accessible_channel_ids_cached`); 12 s is past both. */
+export const ROSTER_SETTLE_MS = 12_000;
 export const WS_FRAME_LIMIT = 1024 * 1024;
 export const RECONNECT_BASE_MS = 1_000;
 export const RECONNECT_MAX_MS = 60_000;
