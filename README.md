@@ -117,6 +117,33 @@ offers a new host with no build and no Update.
 You can also edit `hosts.json` by hand or with a tool. Then select **Check
 again** on the page, or open **New agent**.
 
+### Set up a machine from the app
+
+The same page can install `buzz-runner` on a Linux machine of your tailnet
+and add it to `hosts.json`. Before you start, make sure that the machine:
+
+- has an ACL tag (Tailscale admin console > Machines > Edit ACL tags),
+- has Tailscale SSH on (`tailscale set --ssh`), and your login may use it,
+- has Node 24 or later at `/usr/bin/node`, and systemd.
+
+Then:
+
+1. Select **Find machines**, then select the machine. A machine that is
+   offline, has no tag or has no Tailscale SSH is shown with the reason and
+   cannot be selected.
+2. Type the SSH login and, if sudo asks for one, the sudo password. Check
+   the owner key and the relay: they come from the identity and community
+   that are open in the app.
+3. Select **Install runner**. The page shows each step: check the machine,
+   build the runner, connect, copy, install, `tailscale serve`, add to
+   `hosts.json`, check the runner. If Tailscale SSH asks for a check, the
+   page shows the link to open.
+4. Do the steps that the page lists at the end: install and sign in each
+   harness, and let only your login reach port 10000 in the tailnet policy.
+
+A setup runs again safely: it keeps the config on the machine and the
+entry in `hosts.json`.
+
 The plugin reads and saves `hosts.json` and calls the hosts through
 `scripts/hosts-helper.mjs`. The build grants the plugin one host process:
 `node` on that script, with this `hosts.json` as a fixed argument. Desktop
@@ -166,6 +193,12 @@ The Buzz mobile app runs no plugins, but hosted agents do not need them:
   checks each request before it writes or calls. A change to the helper in
   this folder runs at the next plugin start without a new review in
   Desktop, so review changes before you pull them.
+- **Set up a machine** runs root commands on the machine that you select,
+  with your own SSH access. The helper accepts only a tagged Linux peer
+  that `tailscale status` lists, and `ssh` accepts only the host keys that
+  Tailscale reports for it. The sudo password goes only to the stdin of
+  `sudo` on the machine. It is not in an argument, a file, a log or the
+  page, and it is not saved.
 - The runner API has no TCP port. It listens on a Unix socket that only
   `tailscale serve` reaches, and it accepts only the Tailscale logins in its
   `allowedLogins`. Allow only your own devices to reach the host in the

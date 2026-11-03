@@ -49,6 +49,13 @@ settings. Do not edit the files that come from the hook template:
   rejects it. The helper's grant is security-relevant: keep its arguments
   fixed in the build, accept only the hosts in `hosts.json` and the `/v1`
   paths, and check every request before a write or a call.
+- The helper's `setup` op (`scripts/host-setup.mjs`) runs root commands on
+  a host and is security-relevant. Keep these rules: a tagged Linux peer
+  from `tailscale status` only; `ssh` pinned to Tailscale's host keys with
+  no trust on first use; the sudo password on sudo's stdin only, never in
+  argv, a file, a log, a progress event or plugin storage; one setup at a
+  time; the stage folder removed on every exit. Add a smoke check for each
+  rule you change (`runner/smoke/setup.mjs`).
 - Do not change the manifest `id` (`sagmans.tailscale-host`), the type id
   (`tailscale-host`) or the storage key shapes. Saved agents match on them.
   A new storage shape needs a new key suffix and a migration.
