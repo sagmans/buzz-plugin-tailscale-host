@@ -1,0 +1,14 @@
+# Build outputs: the installable plugin and the runner bundle are made from
+# each user's own host list and toolchain, so they never ship in the source.
+/dist/
+/runner/dist/
+# The user's host list: real host names and tailnet names stay local
+# (hosts.example.json shows the shape).
+/hosts.json
+# Links to a local buzz-app clone (scripts/link-toolchain).
+/runner/buzz-app
+/runner/node_modules
+# Local clutter.
+.DS_Store
+*.log
+/.scratch/
