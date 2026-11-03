@@ -800,10 +800,21 @@ export async function apply(ctx) {
   const useStore = (read) => React.useSyncExternalStore(subscribe, read);
 
   let refreshing;
+  let refreshAgain;
   /** Reads hosts.json again, then asks every host in it for its harnesses,
-   * one round at a time. The read picks up an edit by hand. */
+   * one round at a time. The read picks up an edit by hand. A call while a
+   * round runs gets one more round after it: the running round may have read
+   * hosts.json before the change that the caller (Check again, a save, a
+   * setup) wants seen. */
   function refresh() {
-    refreshing ??= readHostsFile().then(() =>
+    if (refreshing) {
+      refreshAgain ??= refreshing.catch(() => undefined).then(() => {
+        refreshAgain = undefined;
+        return refresh();
+      });
+      return refreshAgain;
+    }
+    refreshing = readHostsFile().then(() =>
       Promise.all(
       HOSTS.map(async (host) => {
         try {
