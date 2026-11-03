@@ -36,6 +36,11 @@ const HOST_ID = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const LABEL_MAX = 40;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const HOST_KEYS = ["id", "label", "origin"];
+/** The port of the runner's `tailscale serve` (runner/README.md, Deploy).
+ * The user enters only the machine's address; the port is an internal fact
+ * of the runner install, so the helper adds it to an origin without one
+ * (plugin.js RUNNER_PORT). */
+export const RUNNER_PORT = 10000;
 /** The host process the plugin starts (plugin.js HOSTS_PROCESS). */
 export const HOSTS_PROCESS = "hosts";
 /** Desktop resolves a process's program by name on the login shell's PATH;
@@ -79,6 +84,16 @@ function checkOrigin(value, where) {
   return value;
 }
 
+/** The origin a host's runner answers on: the host's origin, with
+ * RUNNER_PORT when it names no port. A port that the user wrote stays, so a
+ * runner served on another port can still be listed. The origin is already
+ * checked, so `new URL` cannot fail here. */
+export function runnerOrigin(origin) {
+  const url = new URL(origin);
+  if (!url.port) url.port = String(RUNNER_PORT);
+  return url.origin;
+}
+
 /** Validates the parsed hosts file and returns the host list in file order. */
 export function validateHosts(raw, source = "hosts.json") {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw invalid(source, 'must be an object: { "hosts": [ ... ] }');
@@ -101,9 +116,10 @@ export function validateHosts(raw, source = "hosts.json") {
     if (typeof label !== "string" || !label.trim() || label !== label.trim() || label.length > LABEL_MAX || CONTROL_CHARS.test(label))
       throw invalid(where, `label must be 1-${LABEL_MAX} printable characters without leading or trailing spaces`);
     checkOrigin(origin, where);
-    if (origins.has(origin)) throw invalid(where, `duplicate origin ${origin}`);
+    // Two spellings of one runner (with and without RUNNER_PORT) are one host.
+    if (origins.has(runnerOrigin(origin))) throw invalid(where, `duplicate origin ${origin}`);
     ids.add(id);
-    origins.add(origin);
+    origins.add(runnerOrigin(origin));
     return { id, label, origin };
   });
 }

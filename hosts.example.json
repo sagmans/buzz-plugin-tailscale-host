@@ -3,7 +3,7 @@
     {
       "id": "example-host",
       "label": "example/host",
-      "origin": "https://runner-host.example.ts.net:10000"
+      "origin": "https://runner-host.example.ts.net"
     }
   ]
 }

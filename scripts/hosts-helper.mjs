@@ -27,7 +27,7 @@
 // Exit: 0 when stdin ends and every call is answered; 64 for wrong arguments.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { PluginBuildError, readJson, validateHosts, writeAtomic } from "./build-plugin.mjs";
+import { PluginBuildError, readJson, runnerOrigin, validateHosts, writeAtomic } from "./build-plugin.mjs";
 
 const OPS = ["read", "save", "request"];
 const REQUEST_KEYS = Object.freeze({
@@ -95,7 +95,8 @@ export function parseRequest(line) {
 }
 
 /** The runner URL for one call: the origin comes from hosts.json, never from
- * the caller, and the path stays under the contract's prefix. */
+ * the caller, with the runner port when the user gave only the machine's
+ * address, and the path stays under the contract's prefix. */
 export function runnerUrl(hosts, request) {
   const host = hosts.find((entry) => entry.id === request.host);
   if (typeof request.host !== "string" || !host) throw new HostsHelperError(`no host ${JSON.stringify(String(request.host).slice(0, 40))} in hosts.json`);
@@ -105,9 +106,10 @@ export function runnerUrl(hosts, request) {
     throw new HostsHelperError(`a body must be text, and only ${BODY_METHODS.join(" or ")} take one`);
   if (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1 || request.timeoutMs > TIMEOUT_MAX_MS)
     throw new HostsHelperError(`timeoutMs must be 1-${TIMEOUT_MAX_MS}`);
-  const url = new URL(`${host.origin}${API_PREFIX}${request.path}`);
+  const origin = runnerOrigin(host.origin);
+  const url = new URL(`${origin}${API_PREFIX}${request.path}`);
   // validateHosts and PATH_RE make this hold; the check keeps it so if either changes.
-  if (url.origin !== host.origin || url.pathname !== `${API_PREFIX}${request.path}`) throw new HostsHelperError("path leaves the runner API");
+  if (url.origin !== origin || url.pathname !== `${API_PREFIX}${request.path}`) throw new HostsHelperError("path leaves the runner API");
   return url;
 }
 

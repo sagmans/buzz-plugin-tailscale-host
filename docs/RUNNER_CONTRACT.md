@@ -111,7 +111,8 @@ ones. A roster load that gets no EOSE in 15 s replaces the socket.
 Transport: the plugin sends each call to its hosts helper
 (`scripts/hosts-helper.mjs`, a Desktop host process). The helper sends it to
 the host's origin in `hosts.json` (for example
-`https://runner-host.example.ts.net:10000`), then
+`https://runner-host.example.ts.net`), on port 10000 when the origin names
+no port, then
 `tailscale serve`, then the runner's Unix socket. JSON bodies,
 `Content-Type: application/json`. Errors are
 `{ "error": "<code>", "message": "<text>" }` with 4xx or 5xx.

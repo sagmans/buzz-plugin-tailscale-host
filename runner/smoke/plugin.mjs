@@ -15,7 +15,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildPlugin } from "../../scripts/build-plugin.mjs";
+import { PluginBuildError, RUNNER_PORT, buildPlugin, validateHosts } from "../../scripts/build-plugin.mjs";
+import { runnerUrl } from "../../scripts/hosts-helper.mjs";
 import { makeCertificate, startFront } from "./https-front.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -163,6 +164,23 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     // An agent an earlier build placed on this host.
     localStorage.setItem(EARLIER_HOST_KEY, SMOKE_HOST.id);
     check("plugin: the source manifest grants no host access", JSON.parse(readFileSync(SOURCE_MANIFEST, "utf8")).host === undefined);
+    // The owner's ask: the address names the machine, and the runner port is
+    // the helper's to add. A port that the user wrote stays.
+    const callTo = (origin) => runnerUrl([{ id: "a", label: "a", origin }], { host: "a", method: "GET", path: "/health", timeoutMs: 1000 }).href;
+    check(
+      "plugin: the helper calls the runner port when the address has none, and keeps a written port",
+      callTo("https://machine.example.invalid") === `https://machine.example.invalid:${RUNNER_PORT}/v1/health` &&
+        callTo(`https://machine.example.invalid:${RUNNER_PORT}`) === `https://machine.example.invalid:${RUNNER_PORT}/v1/health` &&
+        callTo("https://machine.example.invalid:8443") === "https://machine.example.invalid:8443/v1/health",
+      callTo("https://machine.example.invalid"),
+    );
+    let samePort;
+    try {
+      validateHosts({ hosts: [{ id: "a", label: "a", origin: "https://machine.example.invalid" }, { id: "b", label: "b", origin: `https://machine.example.invalid:${RUNNER_PORT}` }] });
+    } catch (error) {
+      samePort = error;
+    }
+    check("plugin: hosts.json refuses one machine twice, with and without the runner port", samePort instanceof PluginBuildError && /duplicate origin/.test(samePort.message), String(samePort));
     const grant = JSON.parse(readFileSync(join(outDir, "manifest.json"), "utf8")).host;
     check(
       "plugin: the build grants one host process, node on the helper with this hosts.json, and no network origin",
@@ -678,13 +696,13 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       statusText().includes("must keep at least one host") && JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST]),
       statusText(),
     );
-    const noHttps = await addHost(LAB_HOST.label, "http://lab-one.example.invalid:10000");
-    const withPath = await addHost(LAB_HOST.label, "https://lab-one.example.invalid:10000/v1");
+    const noHttps = await addHost(LAB_HOST.label, "http://lab-one.example.invalid");
+    const withPath = await addHost(LAB_HOST.label, `https://lab-one.example.invalid:${RUNNER_PORT}/v1`);
     const sameAddress = await addHost(LAB_HOST.label, SMOKE_HOST.origin);
-    const sameName = await addHost(SMOKE_HOST.label.toUpperCase(), "https://lab-one.example.invalid:10000");
+    const sameName = await addHost(SMOKE_HOST.label.toUpperCase(), "https://lab-one.example.invalid");
     check(
-      "plugin: Add refuses http, a path, a used address and a used name, and says why",
-      /https:\/\//.test(noHttps) && withPath.includes("Write it as https://lab-one.example.invalid:10000") && sameAddress.includes("already uses this address") && sameName.includes("already named"),
+      "plugin: Add refuses http, a path, a used address and a used name, and says why, with the address to write and no runner port",
+      /https:\/\//.test(noHttps) && withPath.endsWith("Write it as https://lab-one.example.invalid") && sameAddress.includes("already uses this address") && sameName.includes("already named"),
       JSON.stringify([noHttps, withPath, sameAddress, sameName]),
     );
     check("plugin: a refused add leaves hosts.json as it was", JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST]), JSON.stringify(fileList()));
@@ -740,7 +758,8 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     check("plugin: Edit renames the host in hosts.json and keeps its id", JSON.stringify(fileList()) === JSON.stringify([SMOKE_HOST, renamedHost]) && rowFor(renamedHost.label), JSON.stringify(fileList()));
 
     // The owner edits hosts.json by hand: Check again shows it, and it is in use.
-    const handHost = { id: "lab-hand", label: "lab/hand", origin: "https://lab-hand.example.invalid:10000" };
+    // An address from before the runner port was internal: it has the port.
+    const handHost = { id: "lab-hand", label: "lab/hand", origin: `https://lab-hand.example.invalid:${RUNNER_PORT}` };
     writeFileSync(hostsPath, JSON.stringify({ hosts: [SMOKE_HOST, renamedHost, handHost] }));
     await checkAgain();
     await until(() => rowFor(handHost.label)?.textContent.includes("Could not reach"), "hand edit read");
@@ -748,6 +767,17 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       "plugin: a hand edit is in use after Check again: its host is asked, and here it does not answer",
       JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label, renamedHost.label, handHost.label]) && rowFor(handHost.label).textContent.includes("Could not reach lab/hand"),
       rowFor(handHost.label)?.textContent,
+    );
+    check(
+      "plugin: an address with the runner port shows without it",
+      rowFor(handHost.label).textContent.includes("https://lab-hand.example.invalid · ") && !rowFor(handHost.label).textContent.includes(`:${RUNNER_PORT}`),
+      rowFor(handHost.label)?.textContent,
+    );
+    const handAgain = await addHost("lab/hand-two", "https://lab-hand.example.invalid");
+    check(
+      "plugin: Add refuses the machine of a host saved with the runner port",
+      handAgain.includes(`${handHost.label} already uses this address`) && fileList().length === 3,
+      handAgain,
     );
 
     // Remove waits for its agents.

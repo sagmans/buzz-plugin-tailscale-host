@@ -193,7 +193,11 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const SETTINGS_CARD_ID = "hosts";
 const SETTINGS_TITLE = "Tailscale hosts";
 const SETTINGS_GROUP = "Plugins";
-const ORIGIN_EXAMPLE = "https://runner-host.example.ts.net:10000";
+const ORIGIN_EXAMPLE = "https://runner-host.example.ts.net";
+// The port of the runner's tailscale serve (scripts/build-plugin.mjs
+// RUNNER_PORT). The owner knows the machine, not where the runner listens,
+// so an address is kept without it and the hosts helper adds it.
+const RUNNER_PORT = "10000";
 
 /** A failed runner call, carrying what is needed to diagnose it in one pass. */
 class RunnerError extends Error {
@@ -224,7 +228,9 @@ function checkHostLabel(value) {
 
 /** An origin exactly as Buzz and the build compare it (HTTPS, no
  * credentials, path, query or fragment). One trailing slash is accepted,
- * because a pasted address often has it. */
+ * because a pasted address often has it. RUNNER_PORT is dropped, so an
+ * address from an older hosts.json and a typed one are the same host and
+ * read the same on the page. */
 function checkHostOrigin(value) {
   const typed = typeof value === "string" ? value.trim() : "";
   if (!typed || typed.length > ORIGIN_MAX) throw new HostConfigError("Enter the host's https:// address.", { field: "origin" });
@@ -236,7 +242,9 @@ function checkHostOrigin(value) {
   }
   if (url.protocol !== "https:") throw new HostConfigError("Address must start with https://.", { field: "origin" });
   if (url.username || url.password) throw new HostConfigError("Address must not hold a user name or password.", { field: "origin" });
-  if (typed !== url.origin && typed !== `${url.origin}/`)
+  const typedOrigin = url.origin;
+  if (url.port === RUNNER_PORT) url.port = "";
+  if (typed !== typedOrigin && typed !== `${typedOrigin}/`)
     throw new HostConfigError(`Address must have no path. Write it as ${url.origin}`, { field: "origin" });
   return url.origin;
 }
@@ -1970,7 +1978,7 @@ export async function apply(ctx) {
       ),
       h(
         Field,
-        { label: "Address", controlId: originId, description: `The https:// address of the host's tailscale serve, with no path. Example: ${ORIGIN_EXAMPLE}` },
+        { label: "Address", controlId: originId, description: `The machine's https:// address on your tailnet, with no path. Example: ${ORIGIN_EXAMPLE}` },
         h(Input, {
           id: originId,
           value: origin,
