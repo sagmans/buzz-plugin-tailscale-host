@@ -1,0 +1,26 @@
+{
+  "ownerPubkey": "0000000000000000000000000000000000000000000000000000000000000000",
+  "allowedLogins": ["owner@example.com"],
+  "allowedSenders": [],
+  "relays": ["wss://relay.example.ts.net"],
+  "socket": "/run/buzz-runner/api.sock",
+  "wrapper": "/usr/local/libexec/buzz-runner/claude-wrapper",
+  "harnessWrapper": "/usr/local/libexec/buzz-runner/harness-wrapper",
+  "sudo": "/usr/bin/sudo",
+  "runAsUser": "buzz-agent",
+  "workspaceRoot": "/home/buzz-agent/agents",
+  "stateDir": "/var/lib/buzz-runner",
+  "maxParallelTurns": 2,
+  "maxLiveSessions": 4,
+  "harnesses": {
+    "claude-code": {},
+    "codex": { "path": "/usr/local/lib/buzz-harness/codex/0.164.0/bin/codex" },
+    "goose": { "path": "/usr/local/lib/buzz-harness/goose/1.57.0/goose-acp" },
+    "pi": { "path": "/usr/local/lib/buzz-harness/pi/1.4.0/node_modules" }
+  },
+  "attestEvents": true,
+  "acceptAttested": true,
+  "replyWake": true,
+  "publishTelemetry": true,
+  "logLevel": "info"
+}

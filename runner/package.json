@@ -1,0 +1,8 @@
+{
+  "name": "buzz-runner",
+  "private": true,
+  "type": "module",
+  "description": "Headless runner for Buzz agents on a Tailscale host. Built with a pinned buzz-app clone's toolchain (scripts/link-toolchain); has no dependencies of its own.",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=24" }
+}

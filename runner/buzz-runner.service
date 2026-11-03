@@ -1,0 +1,101 @@
+# buzz-runner: hosts Buzz agents on this machine for the tailscale-host plugin.
+# Installed as /etc/systemd/system/buzz-runner.service by deploy/install.sh,
+# which rewrites User, Group, ExecStart, the directory names and the harness
+# home below for the host; the values here are its defaults.
+#
+# The sandbox below applies to the whole service cgroup and mount namespace,
+# which includes every `claude` the runner starts through sudo. Paths that
+# claude (as the harness user) must write are therefore listed in
+# ReadWritePaths too.
+[Unit]
+Description=Buzz agent runner (headless Claude harness)
+Documentation=file:///usr/local/lib/buzz-runner/README.md
+Wants=network-online.target
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+# A dedicated system user (no login shell, not in any sudo or docker group):
+# it owns the agent keys and nothing else. install.sh creates it.
+User=buzz-runner
+Group=buzz-runner
+ExecStart=/usr/bin/node /usr/local/lib/buzz-runner/buzz-runner.mjs --config /etc/buzz-runner/config.json
+# Keys, records and saved sessions are created owner-only.
+UMask=0077
+
+# systemd creates these with the runner user as owner on every start:
+#   /var/lib/buzz-runner   keys, records, sessions, cursor (runner default)
+#   /run/buzz-runner       the API socket; the runner refuses to start unless
+#                         this dir is 0700 and owned by its uid
+#   /etc/buzz-runner       config.json; pre-create it root:buzz-runner 0750 so
+#                         the runner can read but not change its config
+StateDirectory=buzz-runner
+StateDirectoryMode=0700
+RuntimeDirectory=buzz-runner
+RuntimeDirectoryMode=0700
+ConfigurationDirectory=buzz-runner
+ConfigurationDirectoryMode=0750
+
+# Restart on crashes, but not on a config error (exit 78, EX_CONFIG): a typo
+# must stop the service, not loop it.
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+# The runner's own graceful stop takes up to 20 s; SIGKILL after that.
+# KillMode=mixed: the final SIGKILL goes to the whole cgroup, so a claude the
+# runner could not stop (sudo EPERM) still ends with the service.
+TimeoutStopSec=30
+KillMode=mixed
+
+# Memory: the runner plus every live claude (one per active thread, kept for
+# 15 minutes idle). Sized for a 2 GB host; measure and adjust (systemctl
+# edit buzz-runner keeps a local override across reinstalls).
+MemoryHigh=1400M
+MemoryMax=1700M
+TasksMax=512
+# Under memory pressure the kernel must pick a claude (the wrapper sets 1000)
+# before the runner, which holds every agent's connection and turn state.
+OOMScoreAdjust=-900
+# A core dump of the runner would hold agent keys in plain bytes.
+LimitCORE=0
+
+# No separate cgroup (scope or slice) per claude: moving buzz-agent processes
+# into sub-cgroups needs Delegate=yes plus cgroup management in the runner
+# (and systemd-run --scope needs root or polkit). Every claude stays in this
+# unit's cgroup, so MemoryMax, TasksMax and the stop above cover them all,
+# and the wrapper's oom_score_adj makes claude the first OOM victim.
+
+# NoNewPrivileges stays OFF: the runner must start each agent's claude as the
+# unprivileged buzz-agent user through sudo, and sudo is setuid root. With
+# no_new_privs set the kernel ignores the setuid bit and every turn fails.
+# The privilege is bounded instead by the one sudoers rule
+# (/etc/sudoers.d/buzz-runner), which allows only the wrapper, as buzz-agent.
+#
+# Do NOT add seccomp-based hardening here (SystemCallFilter,
+# SystemCallArchitectures, RestrictAddressFamilies, RestrictNamespaces,
+# PrivateDevices, ProtectKernelTunables, ProtectKernelModules,
+# ProtectKernelLogs, ProtectClock, ProtectHostname, LockPersonality,
+# RestrictRealtime, RestrictSUIDSGID, MemoryDenyWriteExecute): with User= set,
+# systemd may force no_new_privs for them, which silently breaks sudo.
+# CapabilityBoundingSet is not narrowed either: sudo needs CAP_SETUID,
+# CAP_SETGID and CAP_AUDIT_WRITE inside the bounding set.
+# After install, check: grep NoNewPrivs /proc/$(systemctl show -p MainPID --value buzz-runner)/status
+# must print 0.
+NoNewPrivileges=no
+
+# Filesystem (mount namespace only, no no_new_privs): read-only system and
+# homes, except what must be written. State and runtime dirs above are
+# writable without a listing here.
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+# The harness user's home: claude's sign-in and the agent workspaces. Must
+# exist before start (install.sh creates the user with its home).
+ReadWritePaths=/home/buzz-agent
+# sudo keeps timestamp records here; with NOPASSWD it works without them,
+# but writable avoids log noise. "-" ignores it when absent.
+ReadWritePaths=-/run/sudo
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

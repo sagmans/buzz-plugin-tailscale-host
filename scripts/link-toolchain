@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Links the runner to a buzz-app clone, the only place its toolchain comes
+# from. The runner imports buzz-app harness modules unchanged and builds with
+# buzz-app's locked vite and TypeScript, so it has no lockfile of its own.
+# The clone path differs per machine, so it is never written into a tracked
+# file: two gitignored links carry it.
+#
+#   runner/buzz-app      -> <clone>               (tsconfig paths, vite alias)
+#   runner/node_modules  -> <clone>/node_modules  (Node and vite resolution)
+#
+# Usage: scripts/link-toolchain <buzz-app clone>   (or set BUZZ_APP_DIR)
+# Prepare the clone first: check out the revision in
+# runner/src/constants.ts (BUZZ_APP_REV), then `pnpm install --frozen-lockfile`.
+set -euo pipefail
+
+readonly EX_USAGE=64
+readonly EX_CONFIG=78
+readonly CLONE_LINK=buzz-app
+readonly MODULES_LINK=node_modules
+# buzz-app's root package name; anything else is not the clone the runner
+# was written against.
+readonly EXPECTED_PACKAGE='"name": "buzz-foundation"'
+
+die() {
+	echo "link-toolchain: $2" >&2
+	exit "$1"
+}
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+runner_dir="$repo_root/runner"
+clone=${1:-${BUZZ_APP_DIR:-}}
+[ -n "$clone" ] || die "$EX_USAGE" "usage: scripts/link-toolchain <buzz-app clone> (or set BUZZ_APP_DIR)"
+[ -d "$clone" ] || die "$EX_CONFIG" "not a directory: $clone"
+clone=$(cd -- "$clone" && pwd -P)
+
+if ! { [ -f "$clone/package.json" ] && grep -qF "$EXPECTED_PACKAGE" "$clone/package.json"; }; then
+	die "$EX_CONFIG" "$clone is not a buzz-app clone (package.json name is not buzz-foundation)"
+fi
+[ -d "$clone/src" ] || die "$EX_CONFIG" "$clone has no src/ folder"
+[ -d "$clone/node_modules" ] ||
+	die "$EX_CONFIG" "$clone has no node_modules: run 'pnpm install --frozen-lockfile' there first"
+
+# A real folder at a link path is someone's work, never replaced.
+link() {
+	local target=$1 path=$2
+	if [ -e "$path" ] && [ ! -L "$path" ]; then
+		die "$EX_CONFIG" "$path exists and is not a link; move it away first"
+	fi
+	ln -sfn -- "$target" "$path"
+	echo "linked $path -> $target"
+}
+
+link "$clone" "$runner_dir/$CLONE_LINK"
+link "$clone/node_modules" "$runner_dir/$MODULES_LINK"
