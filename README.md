@@ -142,9 +142,9 @@ public issue for it.
 
 1. After you clone, run `scripts/setup-hooks` once. It turns on the Git
    hooks of this repository.
-2. Install the tools that the hooks use: `gitleaks`, `node`, `shellcheck`,
-   `shfmt`, `markdownlint-cli2`, `lizard`, `semgrep`, `trivy` and
-   `osv-scanner`.
+2. Install the tools that the hooks use: `gitleaks`, `node`, `pnpm`,
+   `shellcheck`, `shfmt`, `markdownlint-cli2`, `lizard`, `semgrep`, `trivy`
+   and `osv-scanner`.
 3. Set up the runner toolchain once (a buzz-app clone at the pinned
    revision). [runner/README.md](runner/README.md), section "Build", has the
    steps.

@@ -22,21 +22,28 @@ design: [`../docs/HARNESSES.md`](../docs/HARNESSES.md).
 
 ## Build
 
-The runner has no dependencies of its own. It builds with the TypeScript and
-Vite of a buzz-app clone at the revision in `src/constants.ts` (`BUZZ_APP_REV`),
-with that clone's lockfile.
+The runner has its own pinned build tools and libraries: `package.json` and
+`pnpm-lock.yaml` in this directory. pnpm takes only versions that have been
+public for 14 days (`pnpm-workspace.yaml`). The harness modules come from a
+buzz-app clone at the revision in `src/constants.ts` (`BUZZ_APP_REV`). The
+type check also reads the types of buzz-app's own packages, so the clone needs
+its dependencies too.
 
 ```sh
 git clone https://github.com/block/buzz-app.git <clone>
 git -C <clone> checkout <BUZZ_APP_REV>
 (cd <clone> && pnpm install --frozen-lockfile)
-scripts/link-toolchain <clone>          # links runner/buzz-app and runner/node_modules (both gitignored)
+scripts/link-toolchain <clone>          # links runner/buzz-app (gitignored)
+(cd runner && pnpm install --frozen-lockfile)
 node scripts/build-runner.mjs           # type check, then runner/dist/buzz-runner.mjs (one file, Node >= 24)
 node scripts/build-runner.mjs --out <dir>   # build somewhere else
 node scripts/build-runner.mjs --check-only  # type check only
 ```
 
 The build stops when the clone is at another revision or has local changes.
+It also stops when a buzz-app module imports a package that `package.json`
+does not declare. Add the package with a pinned version, then
+`pnpm install` in this directory to update the lockfile.
 
 ## Smoke test (local, no real relay, no real harness)
 

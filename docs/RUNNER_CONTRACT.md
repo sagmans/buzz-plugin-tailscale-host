@@ -90,7 +90,7 @@ channels (Desktop does the same, `relay/live.ts`).
 | Strangers wake an agent | The sender gate admits the owner, `allowedSenders`, and (with `acceptAttested`) agents with a valid owner `auth` tag |
 | Runaway process | systemd `Restart=on-failure`, `ProtectSystem=strict`, `MemoryMax`, `TasksMax`; per-turn time limit; `maxParallelTurns`, `maxLiveSessions` |
 | Privilege gain from a harness | Wrappers run `setpriv --no-new-privs --inh-caps=-all`, `prlimit --core=0 --nproc`, `oom_score_adj` 1000, with an environment rebuilt from nothing |
-| Supply chain | Pinned buzz-app revision and its lockfile. Pinned harness versions at fixed paths, installed by root. No runtime package installs |
+| Supply chain | Pinned buzz-app revision. The runner's own lockfile for its build tools and bundled libraries, with a 14-day minimum release age; the build refuses a buzz-app import that the runner does not declare. Pinned harness versions at fixed paths, installed by root. No runtime package installs |
 | Key loss on host rebuild | Accepted. The agent is created again. A key never leaves the host |
 
 ## 5. Runner contract v1 (plugin to runner)

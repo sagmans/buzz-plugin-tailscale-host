@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# Links the runner to a buzz-app clone, the only place its toolchain comes
-# from. The runner imports buzz-app harness modules unchanged and builds with
-# buzz-app's locked vite and TypeScript, so it has no lockfile of its own.
-# The clone path differs per machine, so it is never written into a tracked
-# file: two gitignored links carry it.
+# Links the runner to a buzz-app clone, the source of the harness modules the
+# runner imports unchanged. Build tools and bundled libraries are the runner's
+# own (runner/package.json and runner/pnpm-lock.yaml, installed with
+# `pnpm install --frozen-lockfile` in runner/). The clone path differs per
+# machine, so it is never written into a tracked file: a gitignored link
+# carries it.
 #
-#   runner/buzz-app      -> <clone>               (tsconfig paths, vite alias)
-#   runner/node_modules  -> <clone>/node_modules  (Node and vite resolution)
+#   runner/buzz-app  -> <clone>   (tsconfig paths, vite alias)
 #
 # Usage: scripts/link-toolchain <buzz-app clone>   (or set BUZZ_APP_DIR)
 # Prepare the clone first: check out the revision in
-# runner/src/constants.ts (BUZZ_APP_REV), then `pnpm install --frozen-lockfile`.
+# runner/src/constants.ts (BUZZ_APP_REV), then `pnpm install --frozen-lockfile`
+# there too: the type check reads the types of buzz-app's own packages.
 set -euo pipefail
 
 readonly EX_USAGE=64
 readonly EX_CONFIG=78
 readonly CLONE_LINK=buzz-app
-readonly MODULES_LINK=node_modules
+# Earlier builds linked the runner's node_modules to the clone's. That link
+# is removed, so the runner's own install can take its place.
+readonly MODULES_DIR=node_modules
 # buzz-app's root package name; anything else is not the clone the runner
 # was written against.
 readonly EXPECTED_PACKAGE='"name": "buzz-foundation"'
@@ -51,4 +54,7 @@ link() {
 }
 
 link "$clone" "$runner_dir/$CLONE_LINK"
-link "$clone/node_modules" "$runner_dir/$MODULES_LINK"
+if [ -L "$runner_dir/$MODULES_DIR" ]; then
+	rm -- "$runner_dir/$MODULES_DIR"
+	echo "removed the old link $runner_dir/$MODULES_DIR: run 'pnpm install --frozen-lockfile' in $runner_dir"
+fi

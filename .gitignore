@@ -5,7 +5,8 @@
 # The user's host list: real host names and tailnet names stay local
 # (hosts.example.json shows the shape).
 /hosts.json
-# Links to a local buzz-app clone (scripts/link-toolchain).
+# Link to a local buzz-app clone (scripts/link-toolchain), and the runner's
+# installed packages (pnpm install --frozen-lockfile in runner/).
 /runner/buzz-app
 /runner/node_modules
 # Local clutter.

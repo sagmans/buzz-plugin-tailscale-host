@@ -1,9 +1,12 @@
 #!/usr/bin/env node
-// Type-checks and bundles buzz-runner with the linked buzz-app toolchain
-// (scripts/link-toolchain). The bundle embeds buzz-app modules, so it is only
-// built from the exact buzz-app revision the runner names (BUZZ_APP_REV in
-// runner/src/constants.ts) with no local edits: /v1/health then tells the
-// truth about which Desktop behavior a host runs.
+// Type-checks and bundles buzz-runner with the runner's own build tools and
+// libraries (runner/package.json, runner/pnpm-lock.yaml, installed in
+// runner/node_modules). The bundle embeds buzz-app modules from the linked
+// clone (scripts/link-toolchain), so it is only built from the exact buzz-app
+// revision the runner names (BUZZ_APP_REV in runner/src/constants.ts) with no
+// local edits: /v1/health then tells the truth about which Desktop behavior a
+// host runs. The type check also reads the types of buzz-app's own packages,
+// so the clone needs its dependencies installed too.
 //
 // Usage: node scripts/build-runner.mjs [--out <dir>] [--check-only]
 //   --out <dir>     write buzz-runner.mjs there instead of runner/dist
@@ -16,7 +19,11 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RUNNER = join(ROOT, "runner");
 const CLONE_LINK = join(RUNNER, "buzz-app");
-const MODULES_LINK = join(RUNNER, "node_modules");
+const RUNNER_MODULES = join(RUNNER, "node_modules");
+/** The clone's installed packages: the type check of buzz-app modules reads them. */
+const CLONE_MODULES = join(CLONE_LINK, "node_modules");
+/** The runner's own tools; any other copy is outside its lockfile. */
+const TOOLS = ["tsc", "vite"];
 const CONSTANTS = join(RUNNER, "src", "constants.ts");
 const REV_PATTERN = /export const BUZZ_APP_REV = "([0-9a-f]{7,40})";/;
 /** Read by runner/vite.config.ts. */
@@ -71,17 +78,31 @@ function run(label, command, args, { cwd = ROOT, env = process.env, timeout, cap
   return capture ? result.stdout.trim() : "";
 }
 
-function checkLinks() {
-  for (const path of [CLONE_LINK, MODULES_LINK]) {
-    let isLink = false;
-    try {
-      isLink = lstatSync(path).isSymbolicLink();
-    } catch {
-      isLink = false;
-    }
-    if (!isLink || !existsSync(path))
-      throw new BuildError(`${path} is missing: run scripts/link-toolchain <buzz-app clone> first`, { exit: EXIT_CONFIG });
+function checkLink() {
+  let isLink = false;
+  try {
+    isLink = lstatSync(CLONE_LINK).isSymbolicLink();
+  } catch {
+    isLink = false;
   }
+  if (!isLink || !existsSync(CLONE_LINK))
+    throw new BuildError(`${CLONE_LINK} is missing: run scripts/link-toolchain <buzz-app clone> first`, { exit: EXIT_CONFIG });
+  if (!existsSync(CLONE_MODULES))
+    throw new BuildError(`the buzz-app clone has no node_modules: run 'pnpm install --frozen-lockfile' in the clone`, { exit: EXIT_CONFIG });
+}
+
+/** The runner's packages must be a real install from its own lockfile. A
+ * link here is the old layout that borrowed the clone's packages. */
+function checkInstall() {
+  let isDir = false;
+  try {
+    isDir = lstatSync(RUNNER_MODULES).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  const missing = TOOLS.filter((name) => !existsSync(join(RUNNER_MODULES, ".bin", name)));
+  if (!isDir || missing.length)
+    throw new BuildError(`${RUNNER_MODULES} is not installed: run 'pnpm install --frozen-lockfile' in runner/`, { exit: EXIT_CONFIG });
 }
 
 /** The clone must be at the runner's pinned revision with no tracked edits. */
@@ -102,18 +123,20 @@ function checkRevision() {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
-  checkLinks();
+  checkLink();
+  checkInstall();
   const rev = checkRevision();
-  const bin = (name) => join(MODULES_LINK, ".bin", name);
+  const bin = (name) => join(RUNNER_MODULES, ".bin", name);
   run("tsc", bin("tsc"), ["-p", join(RUNNER, "tsconfig.json")], { timeout: TSC_TIMEOUT_MS });
   console.log(`typecheck ok (buzz-app ${rev})`);
   if (options.checkOnly) return;
   const env = { ...process.env };
   if (options.out) env[OUT_DIR_ENV] = options.out;
   else delete env[OUT_DIR_ENV];
-  // From the clone, as buzz-app builds: the bundle names each module by its
-  // path relative to the working directory, so no local path leaks into it.
-  run("vite build", bin("vite"), ["build", "--config", join(RUNNER, "vite.config.ts")], { cwd: CLONE_LINK, env, timeout: VITE_TIMEOUT_MS });
+  // From runner/: the bundle names each module by its path relative to the
+  // working directory (runner/buzz-app/..., node_modules/...), so no local
+  // path leaks into it.
+  run("vite build", bin("vite"), ["build", "--config", join(RUNNER, "vite.config.ts")], { cwd: RUNNER, env, timeout: VITE_TIMEOUT_MS });
   console.log(`bundle: ${join(options.out ?? join(RUNNER, "dist"), "buzz-runner.mjs")}`);
 }
 

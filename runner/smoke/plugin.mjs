@@ -7,9 +7,8 @@
 // way Desktop sends them through Tailscale. It checks what the owner sees in
 // the New agent dialog and in Settings, without Buzz Desktop.
 //
-// React, react-dom and jsdom come from buzz-app's own dependencies (the
-// runner's node_modules link, scripts/link-toolchain); nothing is installed
-// for this.
+// React, react-dom and jsdom are the runner's own pinned dev dependencies
+// (runner/package.json), at the versions Desktop uses.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";

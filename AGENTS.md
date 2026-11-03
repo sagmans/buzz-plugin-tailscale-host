@@ -18,6 +18,7 @@ the behavior, the install and the mobile behavior. Keep the README and
 | `runner/smoke/` | End-to-end smoke scenarios: mock relay, fake harnesses, the built plugin. |
 | `runner/deploy/` | Host install: `install.sh`, wrappers, sudoers template, `buzz-login`. |
 | `scripts/build-runner.mjs`, `scripts/link-toolchain` | Runner build with a buzz-app clone at `BUZZ_APP_REV`. |
+| `runner/package.json`, `runner/pnpm-lock.yaml`, `runner/pnpm-workspace.yaml` | The runner's own pinned packages and the 14-day minimum release age. |
 | `docs/` | Runner contract (`RUNNER_CONTRACT.md`) and harness design (`HARNESSES.md`). |
 | `scripts/check` | All repository checks. The Git hooks call it. |
 | `scripts/setup-hooks`, `.githooks/` | Generic hooks and helpers, copied from a template. |
@@ -53,7 +54,9 @@ settings. Do not edit the files that come from the hook template:
 
 - Import buzz-app modules unchanged. Do not edit the buzz-app clone. A
   revision change goes through `BUZZ_APP_REV` and the smoke run.
-- No new runtime dependencies. The runner is one bundled file.
+- No new runtime dependencies. The runner is one bundled file. A package
+  that a buzz-app module needs goes into `runner/package.json` with an exact
+  version that is at least 14 days old; never lower the minimum release age.
 - Every subprocess, socket and relay wait has a timeout. Each failure is
   logged once, as JSON, with its context and without secrets.
 - The harness process never gets an agent key. Keep tools in the runner.

@@ -47,6 +47,7 @@ RUNNER_BUNDLE_NAME=buzz-runner.mjs
 INSTALL_SH="$RUNNER_DIR/deploy/install.sh"
 CONFIG_EXAMPLE="$RUNNER_DIR/config.example.json"
 TOOLCHAIN_LINK="$RUNNER_DIR/buzz-app"
+RUNNER_LOCKFILE="$RUNNER_DIR/pnpm-lock.yaml"
 # Buzz manifest limits (buzz-app crates/plugin-manager): id shape and length,
 # description size in bytes.
 MANIFEST_ID_RE='^[a-z][a-z0-9.-]{0,79}$'
@@ -60,9 +61,16 @@ LIZARD_MAX_LENGTH=100
 SEMGREP_TIMEOUT_SECONDS=300
 TRIVY_TIMEOUT_SECONDS=300
 SMOKE_TIMEOUT_SECONDS=600
+# The runner install may fetch packages missing from the local pnpm store.
+PNPM_INSTALL_TIMEOUT_SECONDS=300
 SEMGREP_REGISTRY_CONFIG=p/javascript
 # Minimum versions: the releases these flags and rule sets were verified with.
 NODE_MIN_VERSION=24.0.0
+# The release the runner lockfile was made with. Older pnpm reads the minimum
+# release age settings differently. No packageManager field pins it: pnpm 12
+# then writes a second YAML document into the lockfile, and osv-scanner reads
+# only the first, so the dependency scan would miss every runner package.
+PNPM_MIN_VERSION=12.4.2
 SHELLCHECK_MIN_VERSION=0.10.0
 SHFMT_MIN_VERSION=3.8.0
 MARKDOWNLINT_MIN_VERSION=0.23.2
@@ -268,6 +276,15 @@ check_private_data() {
 	[ "$found" -eq 0 ] || fail "remove the private data above (use neutral words such as \"the user\" or example.com)"
 }
 
+# The runner's own packages, exactly as its lockfile pins them: the judged
+# tree is built and smoke-tested with them, never with whatever is installed.
+install_runner_packages() {
+	has_file "$RUNNER_LOCKFILE" || return 0
+	require_tool "$CHECK" pnpm "$PNPM_MIN_VERSION" 'install pnpm (https://pnpm.io/installation)' pnpm --version
+	run_with_timeout "$PNPM_INSTALL_TIMEOUT_SECONDS" pnpm --dir "$RUNNER_DIR" install --frozen-lockfile --reporter=silent ||
+		fail "cannot install the runner packages from $RUNNER_LOCKFILE"
+}
+
 # The buzz-app clone the runner builds with: BUZZ_APP_DIR, else this
 # checkout's link. A full check without it cannot judge the runner.
 toolchain_clone() {
@@ -293,6 +310,7 @@ check_runner() {
 	if [ "$(cd "$target/$TOOLCHAIN_LINK" 2>/dev/null && pwd -P)" != "$(cd "$clone" && pwd -P)" ]; then
 		"./$LINK_TOOLCHAIN" "$clone" >/dev/null || fail "cannot link the buzz-app clone $clone"
 	fi
+	install_runner_packages
 	node "$BUILD_RUNNER" --out "$tmp/runner" || fail "the runner does not type check or build"
 	BUZZ_RUNNER_BUNDLE="$tmp/runner/$RUNNER_BUNDLE_NAME" run_with_timeout "$SMOKE_TIMEOUT_SECONDS" node "$RUNNER_SMOKE" ||
 		fail "runner smoke run failed"

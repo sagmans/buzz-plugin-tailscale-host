@@ -1,0 +1,16 @@
+# pnpm settings for the runner's own dependencies (package.json, pnpm-lock.yaml).
+
+# Supply-chain guard: a version must be public for 14 days (in minutes)
+# before pnpm resolves it, so a hijacked release is usually found and pulled
+# first. Strict: resolution fails instead of picking an older version quietly.
+minimumReleaseAge: 20160
+minimumReleaseAgeStrict: true
+
+# A flat node_modules: the bundle build keeps symlinks (vite.config.ts), so
+# every package, also a dependency of a dependency, must be found by a plain
+# walk up from runner/node_modules.
+nodeLinker: hoisted
+
+# Install scripts stay off, and a package that asks for one stops the install:
+# none of these packages needs one to build or test.
+strictDepBuilds: true
