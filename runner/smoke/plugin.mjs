@@ -649,6 +649,9 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       ...ctx,
       agents: { register: (type) => settingsTypes.push(type) },
       inject(names, run) {
+        // communityReader stays out here, as on a Desktop without it: the
+        // setup's owner and relay fields then start empty.
+        if (JSON.stringify(names) === JSON.stringify(["communityReader"])) return;
         if (JSON.stringify(names) !== JSON.stringify(["settingsCards"])) throw new Error(`unexpected inject ${names}`);
         run({ settingsCards: { register: (card) => cards.push(card) } });
       },
@@ -826,6 +829,92 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     check("plugin: the next call starts the helper again, and the page recovers", helpers.spawns > spawnsBefore && JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label]), String(helpers.spawns));
     collect(page.node);
     await page.unmount();
+
+    // ---- Set up a machine: the page side of a host setup -----------------
+    // The helper's setup itself is setup.mjs; here an in-process stand-in
+    // answers as the helper does, so the page's steps, link, result and
+    // password handling are checked without a machine.
+    const LAB_DNS = "lab-box.example.ts.net";
+    const setupLines = [];
+    // The setup waits at its check link until the scenario has looked.
+    let releaseSetup;
+    const setupHeld = new Promise((done) => (releaseSetup = done));
+    const fakeHelper = async (id, { onStdout }) => {
+      const answer = (value) => onStdout(`${JSON.stringify(value)}\n`);
+      return {
+        write: async (line) => {
+          const ask = JSON.parse(line);
+          setupLines.push(ask);
+          if (ask.op === "read") return answer({ id: ask.id, ok: true, hosts: [SMOKE_HOST] });
+          if (ask.op === "request") return answer({ id: ask.id, ok: false, error: "no runner here" });
+          if (ask.op === "machines")
+            return answer({ id: ask.id, ok: true, machines: [
+              { machine: "lab-box", name: "Lab Box", dnsName: "lab-box.example.ts.net", online: true, tagged: true, ssh: true },
+              { machine: "bare-box", name: "Bare Box", dnsName: "bare-box.example.ts.net", online: true, tagged: false, ssh: true },
+            ] });
+          const steps = ["machine", "bundle", "connect", "copy", "install", "serve", "hosts", "health"];
+          answer({ id: ask.id, progress: { step: "connect", state: "waiting", link: "https://login.tailscale.com/a/page-check" } });
+          answer({ id: ask.id, progress: { step: "copy", state: "waiting", link: "javascript:alert(1)" } });
+          await setupHeld;
+          for (const step of steps) answer({ id: ask.id, progress: { step, state: "done", detail: step === "health" ? "buzz-runner 0.0.0-page" : undefined } });
+          answer({ id: ask.id, ok: true, added: true, version: "0.0.0-page", host: { id: "lab-box", label: "Lab Box", origin: "https://lab-box.example.ts.net:10000" },
+            manual: [{ id: "sign-in", text: "Sign each harness in.", command: `ssh -t owner@${LAB_DNS} sudo -u buzz-agent /usr/local/bin/buzz-login` }] });
+        },
+        end: () => {},
+        kill: () => {},
+        exited: new Promise(() => {}),
+      };
+    };
+    const VIEWER = "ab".repeat(32);
+    const setupCards = [];
+    const setupCtx = {
+      ...ctx,
+      agents: { register: () => {} },
+      host: { spawn: fakeHelper },
+      inject(names, run) {
+        if (names[0] === "communityReader") run({ communityReader: { snapshot: () => ({ viewer: VIEWER, selected: "https://relay.example.ts.net" }), subscribe: () => () => {} } });
+        else run({ settingsCards: { register: (card) => setupCards.push(card) } });
+      },
+    };
+    const setupModule = await import(`${pathToFileURL(PLUGIN).href}?smoke=${Date.now()}-setup`);
+    await setupModule.apply(setupCtx);
+    const setupPage = mount();
+    await setupPage.render(React.createElement(setupCards[0].component, { active: () => true }));
+    const setupForm = () => setupPage.node.querySelector('form[aria-label="Set up a machine"]');
+    check("plugin: the page asks for no machine list until Find machines", !setupLines.some((ask) => ask.op === "machines"));
+    check(
+      "plugin: the setup's owner key and relay start as Desktop's identity and community",
+      fieldControl(setupForm(), "Owner key")?.value === VIEWER && fieldControl(setupForm(), "Relay")?.value === "wss://relay.example.ts.net",
+    );
+    await press([...setupForm().querySelectorAll("button")].find((item) => item.textContent === "Find machines"));
+    const machineTrigger = await until(() => setupLines.some((ask) => ask.op === "machines") && setupForm().querySelector("[role=combobox]"), "machine list");
+    const machinePopup = await open(machineTrigger);
+    const bare = optionsOf(machinePopup).find((item) => nameOf(item) === "Bare Box");
+    check("plugin: an untagged machine is listed but cannot be chosen, and says why", bare?.getAttribute("aria-disabled") === "true" && bare.textContent.includes("No ACL tag"), bare?.outerHTML.slice(0, 200));
+    await press(optionsOf(machinePopup).find((item) => nameOf(item) === "Lab Box"));
+    await typeText(fieldControl(setupForm(), "SSH login"), "owner");
+    await typeText(fieldControl(setupForm(), "sudo password"), "page pass");
+    await act(async () => setupForm().requestSubmit());
+    await until(() => setupPage.node.querySelector('li[data-step="connect"][data-state="waiting"]'), "waiting step");
+    const links = [...setupPage.node.querySelectorAll("li[data-step] a")].map((item) => item.getAttribute("href"));
+    check("plugin: a waiting step shows its Tailscale check link, and no other URL", JSON.stringify(links) === JSON.stringify(["https://login.tailscale.com/a/page-check"]), JSON.stringify(links));
+    releaseSetup();
+    await until(() => setupPage.node.textContent.includes("Still to do on the host"), "setup result");
+    const sent = setupLines.find((ask) => ask.op === "setup");
+    check(
+      "plugin: Install runner sends the chosen machine, login, password, owner, relay and reserved ids",
+      sent?.setup.machine === "lab-box" && sent.setup.sshUser === "owner" && sent.setup.sudoPassword === "page pass" && sent.setup.ownerPubkey === VIEWER && sent.setup.relay === "wss://relay.example.ts.net" && Array.isArray(sent.setup.reservedIds),
+      JSON.stringify({ ...sent?.setup, sudoPassword: sent?.setup.sudoPassword ? "<set>" : "" }),
+    );
+    check("plugin: the password field is empty once the setup starts", fieldControl(setupForm(), "sudo password")?.value === "" && !setupPage.node.innerHTML.includes("page pass"));
+    const stepStates = [...setupPage.node.querySelectorAll("li[data-step]")].map((item) => `${item.dataset.step}:${item.dataset.state}`);
+    check("plugin: the page shows every setup step, in order, as done", JSON.stringify(stepStates) === JSON.stringify(["machine", "bundle", "connect", "copy", "install", "serve", "hosts", "health"].map((step) => `${step}:done`)), JSON.stringify(stepStates));
+    check(
+      "plugin: a finished setup names the host and the sign-in command to copy",
+      setupPage.node.textContent.includes("Added Lab Box (buzz-runner 0.0.0-page)") && setupPage.node.querySelector("code")?.textContent === `ssh -t owner@${LAB_DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`,
+    );
+    collect(setupPage.node);
+    await setupPage.unmount();
 
     // ---- The helper's own refusals, as the plugin could send them --------
     let rawOut = "";
