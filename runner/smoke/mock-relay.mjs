@@ -58,6 +58,10 @@ export class MockRelay {
     this.reqs = []; // { connection, subId, filters }
     this.connections = new Set();
     this.blobs = new Map(); // media name -> Buffer, served at GET /media/<name>
+    // Authors whose profile (kind 0) writes get no answer until released, so
+    // a scenario can keep an activate busy past the runner's deadline.
+    this.holding = new Set();
+    this.held = []; // { author, answer }
     this.server = createServer((req, res) => this.http(req, res));
     this.server.on("upgrade", (req, socket) => this.upgrade(req, socket));
   }
@@ -91,6 +95,19 @@ export class MockRelay {
   pushRaw(event) {
     for (const connection of this.connections)
       for (const subId of connection.subs.keys()) this.send(connection, ["EVENT", subId, event]);
+  }
+
+  /** Leaves `author`'s profile writes unanswered until `releaseProfiles`. */
+  holdProfiles(author) {
+    this.holding.add(author);
+  }
+
+  /** Accepts every held profile write of `author`, and the next ones at once. */
+  releaseProfiles(author) {
+    this.holding.delete(author);
+    const mine = this.held.filter((item) => item.author === author);
+    this.held = this.held.filter((item) => item.author !== author);
+    for (const item of mine) item.answer();
   }
 
   dropAll() {
@@ -150,9 +167,15 @@ export class MockRelay {
       if (req.method === "POST" && req.url === "/events") {
         const event = JSON.parse(body);
         if (!verifyEvent(event)) return reply(200, { accepted: false, message: "invalid: bad signature" });
-        this.published.push({ event, authTag, at: Date.now() });
-        this.inject(event);
-        return reply(200, { accepted: true, message: "", event_id: event.id });
+        const accept = () => {
+          // A held write whose caller gave up has no one to answer.
+          if (res.destroyed || res.writableEnded) return;
+          this.published.push({ event, authTag, at: Date.now() });
+          this.inject(event);
+          reply(200, { accepted: true, message: "", event_id: event.id });
+        };
+        if (event.kind === 0 && this.holding.has(event.pubkey)) return void this.held.push({ author: event.pubkey, answer: accept });
+        return accept();
       }
       if (req.method === "POST" && req.url === "/profiles/search") return reply(404, {});
       reply(404, { error: "not found" });

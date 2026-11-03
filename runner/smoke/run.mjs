@@ -41,6 +41,11 @@ const BODY_LIMIT = 64 * 1024;
 const INSTRUCTIONS_MAX = 20_000;
 const EXIT_CONFIG = 78;
 const SHUTDOWN_WAIT_MS = 25_000;
+/** The runner's activate deadline (ACTIVATE_DEADLINE_MS) plus room for its
+ * answer: the late-activate scenario waits it out. */
+const LATE_ACTIVATE_WAIT_MS = 120_000;
+/** How long a DELETE behind a timed-out activate must stay unanswered. */
+const LATE_DELETE_GRACE_MS = 1_000;
 const ATTENTION_TOOLS = ["interest_set", "watch_add", "attention_sources"];
 /** Buzz memory entry kind (buzz-app buzz-mcp/node.ts). */
 const MEMORY_KIND = 30174;
@@ -122,9 +127,9 @@ async function step(name, run) {
 
 /** One HTTP call over the runner's Unix socket (fetch cannot use one
  * without undici's Agent, which is not a dependency here). */
-function socketRequest(socketPath, method, path, headers, body) {
+function socketRequest(socketPath, method, path, headers, body, timeout = WAIT_MS) {
   return new Promise((resolve, reject) => {
-    const req = request({ socketPath, method, path, headers, timeout: WAIT_MS }, (res) => {
+    const req = request({ socketPath, method, path, headers, timeout }, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString("utf8") }));
@@ -282,6 +287,49 @@ async function main() {
     // Channels: a group stream and a one-to-one DM, signed by the relay key.
     const channel = randomUUID();
     const dm = randomUUID();
+
+    // --- activate past its deadline, then DELETE -----------------------------
+    // Runs beside the other scenarios on its own runner: it waits out the
+    // runner's activate deadline, which alone is longer than the rest of the run.
+    const lateActivate = step("activate: a DELETE after the activate deadline stays deleted", async () => {
+      const dir = join(temp, "late-sudo");
+      mkdirSync(dir, { mode: 0o700 });
+      const sudo = join(dir, "fake-sudo");
+      writeFileSync(sudo, readFileSync(fakeSudo, "utf8").replace(sudoLog, join(dir, "sudo-argv.log")), { mode: 0o755 });
+      const extra = await startExtra("late", 0, { publishTelemetry: false, sudo });
+      try {
+        const made = await extra.api("POST", "/v1/agents", { name: "Late", community: relayUrl });
+        const pk = made.json?.pubkey;
+        relay.holdProfiles(pk);
+        const late = await extra.api("POST", `/v1/agents/${pk}/activate`, { name: "Late", community: relayUrl, auth: authTag(ownerSecret, pk) }, LATE_ACTIVATE_WAIT_MS);
+        check("activate: a profile write held past the deadline gives 502 to the caller", late.status === 502 && /did not finish within/.test(late.text), late.text);
+        let deletedAt;
+        const removing = extra.api("DELETE", `/v1/agents/${pk}`, undefined, LATE_ACTIVATE_WAIT_MS).then((reply) => {
+          deletedAt = Date.now();
+          return reply;
+        });
+        await sleep(LATE_DELETE_GRACE_MS);
+        check("activate: the DELETE waits while the timed-out activate still runs", deletedAt === undefined);
+        // The relay now accepts the write, so the old activate would go on
+        // to save the record and start the agent if nothing stopped it.
+        const releasedAt = Date.now();
+        relay.releaseProfiles(pk);
+        const removed = await removing;
+        check("activate: the DELETE then succeeds", removed.status === 204 && deletedAt >= releasedAt, removed.text);
+        // Give work that outlived the DELETE the time to write, so a
+        // resurrected record is seen.
+        await waitFor(() => relay.published.some((item) => item.event.kind === 0 && item.event.pubkey === pk), "late profile accepted");
+        await sleep(LATE_DELETE_GRACE_MS);
+        const after = await extra.api("GET", `/v1/agents/${pk}`);
+        check("activate: the deleted agent stays deleted", after.status === 404, after.text);
+        check("activate: its key file stays deleted", !existsSync(join(temp, "late", "state", "agents", `${pk}.json`)));
+        const logged = lines(join(temp, "late", "runner.log"));
+        check("activate: the late work is logged once as stopped", logged.filter((line) => line.msg === "activate stopped after its deadline").length === 1);
+        check("activate: the late work never starts the agent", !logged.some((line) => line.msg === "agent started"));
+      } finally {
+        await extra.stop();
+      }
+    });
 
     // --- startup validation ------------------------------------------------
     await step("config: missing config exits 78", async () => {
@@ -1543,8 +1591,8 @@ async function main() {
       const logFile = join(dir, "runner.log");
       child.stdout.on("data", (chunk) => writeFileSync(logFile, chunk, { flag: "a" }));
       child.stderr.on("data", (chunk) => writeFileSync(logFile, chunk, { flag: "a" }));
-      const call = async (method, route, body) => {
-        const reply = await socketRequest(socket, method, route, { [LOGIN_HEADER]: LOGIN, ...(body ? { "content-type": "application/json" } : {}) }, body ? JSON.stringify(body) : undefined);
+      const call = async (method, route, body, timeout = WAIT_MS) => {
+        const reply = await socketRequest(socket, method, route, { [LOGIN_HEADER]: LOGIN, ...(body ? { "content-type": "application/json" } : {}) }, body ? JSON.stringify(body) : undefined, timeout);
         responses.push(reply.text);
         let json;
         try {
@@ -1564,6 +1612,8 @@ async function main() {
         },
       };
     }
+
+    await lateActivate;
 
     // --- key custody ---------------------------------------------------------------------
     {

@@ -252,36 +252,54 @@ export class AgentManager {
   }
 
   /** Verifies the owner's proof, publishes the profile with it, then starts
-   * listening. A repeat re-verifies and republishes, which is harmless. */
+   * listening. A repeat re-verifies and republishes, which is harmless.
+   *
+   * The caller gets its answer at the deadline, but the agent's lock is held
+   * until the work itself settles: a DELETE queued behind a slow activate
+   * must not run while that activate can still save the record and start
+   * the agent, or the deleted agent comes back with its key. Work past the
+   * deadline stops at its next step, since the caller was told it failed. */
   activate(pubkey: string, input: ActivateInput) {
-    return this.locked(pubkey, () =>
-      deadline(
-        (async () => {
-          const record = this.require(pubkey);
-          if (record.community !== input.community)
-            throw new ConflictError("community differs from the one this agent was created in");
-          await verifyOwnerProof(input.auth, pubkey, this.config.ownerPubkey);
-          const { config, moved } = await this.settle(record, input.config ?? record.config);
-          let next: AgentRecord = { ...record, name: input.name, auth: [...input.auth], config };
-          await this.save(next);
-          const profileAt = await this.publishProfile(next);
-          next = { ...next, activated: true, profileAt };
-          await this.save(next);
-          const live = this.running.get(pubkey);
-          // A new owner proof must reach the AUTH signer and the client, which
-          // captured the old one; otherwise only the prompt may have changed.
-          if (moved) await this.move(next, harnessOf(record.config));
-          else if (live && JSON.stringify(record.auth) === JSON.stringify(next.auth)) live.runtime.reconfigure();
-          else {
-            this.report(await this.halt(pubkey), short(pubkey));
-            await this.launch(next);
-          }
-          this.log.info("agent activated", { agent: short(pubkey) });
-        })(),
-        ACTIVATE_DEADLINE_MS,
-        "activate",
-      ),
-    );
+    return new Promise<void>((resolve, reject) => {
+      const work = this.locked(pubkey, () => {
+        const abandon = new AbortController();
+        const inner = this.activateNow(pubkey, input, abandon.signal);
+        deadline(inner, ACTIVATE_DEADLINE_MS, "activate", () => abandon.abort()).then(resolve, reject);
+        inner.catch((error: unknown) => {
+          if (abandon.signal.aborted) this.log.warn("activate stopped after its deadline", { agent: short(pubkey), error });
+        });
+        return inner;
+      });
+      // Only a refusal before the work ran (the runner is stopping) lands
+      // here first; the deadline already settled the caller otherwise.
+      work.catch(reject);
+    });
+  }
+
+  private async activateNow(pubkey: string, input: ActivateInput, abandoned: AbortSignal) {
+    const record = this.require(pubkey);
+    if (record.community !== input.community)
+      throw new ConflictError("community differs from the one this agent was created in");
+    await verifyOwnerProof(input.auth, pubkey, this.config.ownerPubkey);
+    const { config, moved } = await this.settle(record, input.config ?? record.config);
+    let next: AgentRecord = { ...record, name: input.name, auth: [...input.auth], config };
+    stillWanted(abandoned);
+    await this.save(next);
+    const profileAt = await this.publishProfile(next);
+    next = { ...next, activated: true, profileAt };
+    stillWanted(abandoned);
+    await this.save(next);
+    const live = this.running.get(pubkey);
+    // A new owner proof must reach the AUTH signer and the client, which
+    // captured the old one; otherwise only the prompt may have changed.
+    if (moved) await this.move(next, harnessOf(record.config));
+    else if (live && JSON.stringify(record.auth) === JSON.stringify(next.auth)) live.runtime.reconfigure();
+    else {
+      this.report(await this.halt(pubkey), short(pubkey));
+      stillWanted(abandoned);
+      await this.launch(next);
+    }
+    this.log.info("agent activated", { agent: short(pubkey) });
   }
 
   profile(pubkey: string, input: ProfileInput) {
@@ -450,8 +468,6 @@ export class AgentManager {
       log.error("agent harness not offered on this runner; not started", { harness });
       return;
     }
-    const client = this.client(record);
-    const state = this.store.agentState(record.pubkey);
     let relayAuthor: string | undefined;
     try {
       relayAuthor = await retry("read relay identity", () => relaySelf(record.community), log);
@@ -459,6 +475,12 @@ export class AgentManager {
     } catch (error) {
       log.warn("relay identity unreadable; DM wake disabled until restart", { error });
     }
+    // The read above yields: a stop, a delete or another launch of this
+    // agent may have run meanwhile, and a second runtime would answer every
+    // message twice. Nothing is opened before this check, so nothing leaks.
+    if (this.stopping || this.running.has(record.pubkey) || !this.records.has(record.pubkey)) return;
+    const client = this.client(record);
+    const state = this.store.agentState(record.pubkey);
     const reads = new CommunityReads(client, () => relayAuthor);
     const mediaDir = this.store.mediaDir(record.pubkey);
     // A budget lowered across releases applies from the start.
@@ -553,12 +575,22 @@ export class AgentManager {
 /** Absent is Claude: records made before harnesses existed ran on it. */
 const harnessOf = (config: AgentSettings) => config.harness ?? CLAUDE_HARNESS;
 
-function deadline<T>(work: Promise<T>, ms: number, operation: string): Promise<T> {
+/** `onLate` tells the work that its caller has stopped waiting. */
+function deadline<T>(work: Promise<T>, ms: number, operation: string, onLate: () => void): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     work,
     new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new RelayError(`${operation} did not finish within ${ms} ms`)), ms);
+      timer = setTimeout(() => {
+        onLate();
+        reject(new RelayError(`${operation} did not finish within ${ms} ms`));
+      }, ms);
     }),
   ]).finally(() => clearTimeout(timer));
+}
+
+/** A step that writes state or starts the agent runs only while its caller
+ * still waits for the answer. */
+function stillWanted(abandoned: AbortSignal) {
+  if (abandoned.aborted) throw new RelayError("activate was abandoned after its deadline");
 }
