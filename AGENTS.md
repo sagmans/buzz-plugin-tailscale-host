@@ -41,9 +41,13 @@ settings. Do not edit the files that come from the hook template:
 
 - `plugin/plugin.js` must stay one file with no runtime imports. Use
   `ctx.react` for React.
-- The host list goes in only through `scripts/build-plugin.mjs`. Keep the
-  `/* @build:hosts */ []` marker. Never add a `host` block to
-  `plugin/manifest.json`; `scripts/check` rejects it.
+- `hosts.json` is the one host list. It goes in only through
+  `scripts/build-plugin.mjs`. Keep the `/* @build:hosts */ []` marker.
+  Never add a `host` block to `plugin/manifest.json`; `scripts/check`
+  rejects it. The Settings page changes hosts only through the build's one
+  host command (`scripts/hosts-helper.mjs`); never keep a second host list
+  in app storage. The helper's grant is security-relevant: keep its
+  arguments fixed in the build, and check every request before a write.
 - Do not change the manifest `id` (`sagmans.tailscale-host`), the type id
   (`tailscale-host`) or the storage key shapes. Saved agents match on them.
   A new storage shape needs a new key suffix and a migration.

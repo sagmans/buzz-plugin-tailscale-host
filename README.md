@@ -67,7 +67,8 @@ The build checks `hosts.json` and stops with the file and field to fix.
 1. Open **Settings > Plugins > Manage plugins** and load a folder.
 2. Select the `dist/` folder, then select **Install**.
 
-To update, build again and use **Update** on the plugin.
+To update, build again. In **Manage plugins**, select **Tailscale host
+agents** (the row, not its menu), then select **Update**.
 
 ### Install from Git
 
@@ -82,6 +83,9 @@ your host names, so do not publish it:
    private repository; an HTTPS URL cannot carry credentials.
 4. Select the `dist` folder, then select **Install**.
 
+With a Git install, a change on the Settings page builds only your local
+`dist/`. Commit and push it, then select **Update**.
+
 ## Configuration
 
 `hosts.json` lists the hosts that the plugin can reach (at most 16):
@@ -92,7 +96,36 @@ your host names, so do not publish it:
 | `label` | Shown in the app, at most 40 characters. | `example/host` |
 | `origin` | `https://` origin of the host's `tailscale serve`, no path. | `https://runner-host.example.ts.net:10000` |
 
-The first host is the default for new agents. The runner settings (users,
+The first host is the default for new agents.
+
+### Hosts in the app
+
+`hosts.json` is the one host list. Open **Settings > Plugins > Tailscale
+hosts** to see its hosts with their address and status, and to change it:
+
+| Action | Rule |
+| --- | --- |
+| Add | A name (at most 40 characters) and the `https://` address of the host's `tailscale serve`, with no path. |
+| Edit | Changes the name or the address. The host keeps its id, so its agents keep it. |
+| Remove | Only when no agent of this device runs on the host. One host must stay. |
+
+Each change writes `hosts.json` and builds `dist/` again. Buzz lets the
+plugin reach only the origins of its installed build, so the change is in
+use after you open **Settings > Plugins > Manage plugins**, select
+**Tailscale host agents**, and select **Update**. Until then, the page
+shows a new host as "Not in use until Update".
+
+You can also edit `hosts.json` by hand or with a tool. Then build the plugin
+(`node scripts/build-plugin.mjs`), or select **Build** on the page, and
+select **Update**.
+
+The page saves through `scripts/hosts-helper.mjs`. The build grants the
+plugin one command: `node` on that script, with this `hosts.json` and
+`dist/` as fixed arguments. Desktop finds `node` on your login shell's
+`PATH` and stops the command after 5 seconds. If you move this folder,
+build again.
+
+The runner settings (users,
 paths, harnesses, limits) are in [runner/README.md](runner/README.md),
 section "Config". The install script takes its users and paths from
 environment variables with generic defaults; the same README lists them.
@@ -100,8 +133,9 @@ environment variables with generic defaults; the same README lists them.
 ## Use
 
 1. Select **New agent** and the type **Tailscale host**.
-2. Select the host, the harness, the model and the thinking level. A
-   harness that the host cannot run yet is shown but cannot be selected.
+2. Select the host (shown when there are two or more), the harness, the
+   model and the thinking level. A harness that the host cannot run yet is
+   shown but cannot be selected.
 3. Create the agent. Mention it or send it a DM to start a turn.
 
 If a host does not answer, the agents panel shows a notice, and the
@@ -121,8 +155,15 @@ The Buzz mobile app runs no plugins, but hosted agents do not need them:
 - Buzz plugins are not sandboxed. They run inside the app with its full
   access. Install only code that you trust, and read `plugin/plugin.js`
   first.
-- The plugin asks for one native grant: network requests to the exact
-  origins in your `hosts.json`. It cannot reach other addresses.
+- The plugin asks for two native grants: network requests to the exact
+  origins in your `hosts.json`, and one command that runs
+  `scripts/hosts-helper.mjs` with `node` from your login shell's `PATH`.
+  The plugin cannot reach other addresses or choose the program or its
+  arguments. The helper runs with your user's access and writes only the
+  `hosts.json` and `dist/` named in the build; it checks each request
+  before it writes. A change to the helper in this folder runs at the next
+  save without a new review in Desktop, so review changes before you pull
+  them.
 - The runner API has no TCP port. It listens on a Unix socket that only
   `tailscale serve` reaches, and it accepts only the Tailscale logins in its
   `allowedLogins`. Allow only your own devices to reach the host in the
