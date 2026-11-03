@@ -1,0 +1,10 @@
+{
+  "id": "sagmans.tailscale-host",
+  "name": "Tailscale host agents",
+  "apiVersion": 1,
+  "description": "Create Buzz agents that run on your own Tailscale hosts. The agent key stays on the host; this device signs only the owner proof.",
+  "discovery": {
+    "category": "agent-tools",
+    "tags": ["Remote agents", "Tailscale"]
+  }
+}

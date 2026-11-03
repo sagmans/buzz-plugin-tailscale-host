@@ -1,0 +1,9 @@
+{
+  "hosts": [
+    {
+      "id": "example-host",
+      "label": "example/host",
+      "origin": "https://runner-host.example.ts.net:10000"
+    }
+  ]
+}
