@@ -39,6 +39,7 @@ MANIFEST="$PLUGIN_DIR/manifest.json"
 PLUGIN_JS="$PLUGIN_DIR/plugin.js"
 HOSTS_EXAMPLE=hosts.example.json
 BUILD_PLUGIN=scripts/build-plugin.mjs
+HOSTS_HELPER=scripts/hosts-helper.mjs
 BUILD_RUNNER=scripts/build-runner.mjs
 LINK_TOOLCHAIN=scripts/link-toolchain
 RUNNER_DIR=runner
@@ -207,18 +208,26 @@ NODE
 }
 
 # The installable plugin is a build output; the example host list must build,
-# and the built manifest must grant exactly the example's origins.
+# and the built manifest must grant exactly the example's origins and one
+# host command: node on this tree's hosts helper, the Settings page's only
+# way to save hosts.json. Any wider grant fails here.
 check_plugin_build() {
 	has_file "$BUILD_PLUGIN" || return 0
 	has_file "$HOSTS_EXAMPLE" || fail "$BUILD_PLUGIN exists but $HOSTS_EXAMPLE is missing"
+	has_file "$HOSTS_HELPER" || fail "$BUILD_PLUGIN exists but $HOSTS_HELPER is missing"
 	require_node
 	node "$BUILD_PLUGIN" --hosts "$HOSTS_EXAMPLE" --out "$tmp/plugin" >/dev/null || fail "the plugin does not build from $HOSTS_EXAMPLE"
-	node --input-type=module - "$HOSTS_EXAMPLE" "$tmp/plugin/manifest.json" <<'NODE' || fail "the built manifest does not grant exactly the example origins"
+	node --input-type=module - "$HOSTS_EXAMPLE" "$tmp/plugin/manifest.json" "$HOSTS_HELPER" <<'NODE' || fail "the built manifest does not grant exactly the example origins and the hosts helper"
 import { readFileSync } from "node:fs";
-const [hostsPath, manifestPath] = process.argv.slice(2);
+const [hostsPath, manifestPath, helper] = process.argv.slice(2);
 const want = JSON.parse(readFileSync(hostsPath, "utf8")).hosts.map((host) => host.origin);
-const got = JSON.parse(readFileSync(manifestPath, "utf8")).host?.networkOrigins ?? [];
-process.exit(JSON.stringify(want) === JSON.stringify(got) ? 0 : 1);
+const { host = {} } = JSON.parse(readFileSync(manifestPath, "utf8"));
+const got = host.networkOrigins ?? [];
+const commands = host.commands ?? [];
+const [command] = commands;
+const helperOk = commands.length === 1 && command.id === "hosts" && command.program === "node" && command.args?.length === 5 && command.args[0].endsWith(`/${helper}`);
+const onlyKnown = Object.keys(host).every((key) => ["networkOrigins", "commands"].includes(key));
+process.exit(JSON.stringify(want) === JSON.stringify(got) && helperOk && onlyKnown ? 0 : 1);
 NODE
 }
 

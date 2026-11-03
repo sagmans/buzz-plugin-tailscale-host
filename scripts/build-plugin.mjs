@@ -6,6 +6,12 @@
 // writes dist/manifest.json with those origins and dist/plugin.js with the
 // same list. Both must agree, which is why one script writes both.
 //
+// hosts.json is the one host list. The plugin's Settings page edits it too:
+// the manifest also grants one host command that runs
+// scripts/hosts-helper.mjs on this hosts file and output folder, which
+// writes hosts.json and builds again. Buzz lets a plugin neither write files
+// nor change its own grants, so this is the only way the page can save.
+//
 // Usage: node scripts/build-plugin.mjs [--hosts <hosts.json>] [--out <dir>]
 //   defaults: --hosts ./hosts.json  --out ./dist
 // Exit codes: 0 built, 64 usage, 65 invalid hosts file, 1 other failure.
@@ -31,6 +37,19 @@ const HOST_ID = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const LABEL_MAX = 40;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const HOST_KEYS = ["id", "label", "origin"];
+/** The host command the Settings page runs (plugin.js HOSTS_COMMAND). */
+export const HOSTS_COMMAND = "hosts";
+/** Desktop resolves a command's program by name on the login shell's PATH;
+ * a path is not allowed there (crates/plugin-manager valid_program). */
+const HELPER_PROGRAM = "node";
+const HELPER = join(ROOT, "scripts", "hosts-helper.mjs");
+/** stdin and stdout bounds of the command: a full list of 16 hosts at the
+ * longest id, label and origin is about 6 KB as JSON. Desktop allows at most
+ * 64 KB in and 1 MB out. */
+export const HELPER_INPUT_MAX = 16384;
+export const HELPER_OUTPUT_MAX = 16384;
+/** Desktop's limit on one declared argument. */
+const HELPER_ARG_MAX = 1024;
 /** `node --check` of the output; local and fast, but still bounded. */
 const CHECK_TIMEOUT_MS = 30_000;
 const EXIT_USAGE = 64;
@@ -94,7 +113,7 @@ export function validateHosts(raw, source = "hosts.json") {
   });
 }
 
-function readJson(path, what) {
+export function readJson(path, what) {
   let text;
   try {
     text = readFileSync(path, "utf8");
@@ -110,10 +129,20 @@ function readJson(path, what) {
 }
 
 /** Writes beside the target and renames, so an install never reads half a file. */
-function writeAtomic(path, text) {
+export function writeAtomic(path, text) {
   const temp = `${path}.tmp-${process.pid}`;
   writeFileSync(temp, text);
   renameSync(temp, path);
+}
+
+/** The command that lets the Settings page save this same hosts file and
+ * build into this same folder. Its arguments are fixed in the manifest, so
+ * the page can choose neither the program nor the paths. */
+function helperCommand(hostsPath, outDir) {
+  const args = [HELPER, "--hosts", hostsPath, "--out", outDir];
+  const long = args.find((arg) => arg.length > HELPER_ARG_MAX);
+  if (long) throw new PluginBuildError(`path longer than ${HELPER_ARG_MAX} characters, which Buzz refuses: ${long}`, { exit: EXIT_USAGE });
+  return { id: HOSTS_COMMAND, program: HELPER_PROGRAM, args, maxInputBytes: HELPER_INPUT_MAX, maxOutputBytes: HELPER_OUTPUT_MAX };
 }
 
 /** Builds dist from a hosts file; returns what it wrote. */
@@ -133,7 +162,7 @@ export function buildPlugin({ hostsPath = DEFAULT_HOSTS, outDir = DEFAULT_OUT } 
   if (parts.length !== 2) throw new PluginBuildError(`plugin.js must hold the marker ${HOSTS_MARKER} exactly once`);
 
   const built = parts.join(JSON.stringify(hosts, null, 2));
-  const builtManifest = { ...manifest, host: { networkOrigins: hosts.map((host) => host.origin) } };
+  const builtManifest = { ...manifest, host: { networkOrigins: hosts.map((host) => host.origin), commands: [helperCommand(resolve(hostsPath), out)] } };
   mkdirSync(out, { recursive: true });
   const modulePath = join(out, MODULE);
   writeAtomic(modulePath, built);
