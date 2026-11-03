@@ -185,7 +185,9 @@ export async function piSmoke(ctx) {
         JSON.stringify({ identity: deliver?.identity, core: deliver?.hasCore, steer: deliver?.steerDiffers }),
       );
       check("pi: deliver context is the runner's {channel, root}", deliver?.context?.channel === channel && deliver.context.root === first.id, JSON.stringify(deliver?.context));
-      const tool = pi().find((line) => line.type === "tool" && line.key === deliver?.key);
+      // The reply reaches the relay before the fake host hears the tool
+      // result and logs it, so the log line may still be on its way.
+      const tool = await waitFor(() => pi().find((line) => line.type === "tool" && line.key === deliver?.key), "pi send logged");
       check("pi: the send tool ran in the runner without error and is final", tool && !tool.isError && tool.final, JSON.stringify(tool));
       check("pi: typing pulses sent for the turn", ctx.typingFor(agent, first.id).length > 0);
       // #lizard forgives: one scenario list that must read in run order
