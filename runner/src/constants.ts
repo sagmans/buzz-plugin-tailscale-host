@@ -111,6 +111,9 @@ export const SUB_PROBE = "probe";
  * `replyTarget`): Desktop's `sagmans.reply-wake` plugin can wake only the
  * agents its own app runs, so hosted agents apply the rule themselves. */
 export const SUB_REPLIES = "replies";
+/** The relay's membership notices to the agent (kinds 44100, 44101): the only
+ * live signal of a join or leave (see `live.ts` `loadRosters`). */
+export const SUB_NOTICES = "notices";
 /** Thread history read to find the last agent; same page size as the
  * reply-wake plugin's THREAD_READ_LIMIT, so both pick the same agent. */
 export const REPLY_THREAD_READ_LIMIT = 500;
@@ -120,6 +123,12 @@ export const KIND_AUTH = 22242;
 export const KIND_PROFILE = 0;
 /** Kind the liveness probe asks for with `limit: 0`; the Desktop live client uses the same. */
 export const KIND_PROBE = 44100;
+/** Relay-signed membership notices (buzz-core `kind.rs`): added, removed. */
+export const KIND_MEMBER_ADDED = 44100;
+export const KIND_MEMBER_REMOVED = 44101;
+/** NIP-CL: the relay sends a system channel's notices only to a filter that
+ * names this type in `#t`; a filter without `#t` gets the legacy types. */
+export const NOTICE_SYSTEM_TYPE = "system";
 export const KIND_CHANNEL_METADATA = 39000;
 export const KIND_CHANNEL_MEMBERS = 39002;
 /** Chat kinds Desktop reads as conversation context (runtime.ts CHAT). */

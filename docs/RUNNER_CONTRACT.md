@@ -77,6 +77,16 @@ REQ carries `#h` = the agent's channels from the relay-signed rosters. It is
 sent again on join or leave, and renewed every minute when it holds several
 channels (Desktop does the same, `relay/live.ts`).
 
+Membership changes: the relay keeps rosters (kind 39002) in their channel's
+scope, so the membership REQ gets them at connect only. A join or leave after
+the connect reaches the runner as a relay-signed membership notice (kind
+44100 added, 44101 removed; buzz-relay `side_effects.rs`
+`emit_membership_notification`). The runner subscribes to them live
+(`limit: 0`, plus a `#t:["system"]` filter for system channels), and each
+notice loads all rosters again. The new rosters replace the old ones, so a
+left channel leaves the scope. buzz-acp and Desktop also act on these
+notices.
+
 ## 4. Security design
 
 | Threat | Control |

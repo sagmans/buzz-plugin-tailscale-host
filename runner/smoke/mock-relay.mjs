@@ -16,6 +16,14 @@ const OP_PONG = 0xa;
  * EVENTs: observer kind, ±300 s freshness, exact routing tags. */
 const KIND_AGENT_OBSERVER = 24200;
 const OBSERVER_FRESHNESS_S = 300;
+/** Channel discovery kinds (metadata, roster). buzz-relay keeps them in
+ * their channel's scope, so a REQ without `#h` gets them only as stored
+ * events, never live; the mock does the same so the runner cannot rely on it. */
+const CHANNEL_SCOPED_KINDS = [39000, 39002];
+const KIND_MEMBER_ADDED = 44100;
+/** NIP-01 addressable (parameterized replaceable) kind range. */
+const ADDRESSABLE_MIN = 30000;
+const ADDRESSABLE_END = 40000;
 
 /** NIP-01 filter matching, enough for the runner's filters. */
 export function matches(filter, event) {
@@ -85,10 +93,23 @@ export class MockRelay {
 
   /** Stores an event and pushes it to live subscriptions, as an accepted write. */
   inject(event) {
+    // NIP-01 addressable kinds: a newer event replaces the stored one, so a
+    // roster without the agent hides the old roster that named it.
+    if (event.kind >= ADDRESSABLE_MIN && event.kind < ADDRESSABLE_END) {
+      const d = (item) => item.tags.find((tag) => tag[0] === "d")?.[1] ?? "";
+      this.events = this.events.filter((item) => !(item.kind === event.kind && item.pubkey === event.pubkey && d(item) === d(event)));
+    }
     this.events.push(event);
+    const live = (filter) => !CHANNEL_SCOPED_KINDS.includes(event.kind) || "#h" in filter;
     for (const connection of this.connections)
       for (const [subId, filters] of connection.subs)
-        if (filters.some((filter) => matches(filter, event))) this.send(connection, ["EVENT", subId, event]);
+        if (filters.some((filter) => live(filter) && matches(filter, event))) this.send(connection, ["EVENT", subId, event]);
+  }
+
+  /** The relay's membership notice to `member` about `channel` (buzz-relay
+   * `emit_membership_notification`): what a join or leave sends live. */
+  notice(member, channel, kind = KIND_MEMBER_ADDED, type = "stream") {
+    this.inject(this.relaySigned(kind, [["p", member], ["h", channel], ["t", type]]));
   }
 
   /** Pushes raw JSON (for example an event with a broken signature) to every subscription. */

@@ -540,11 +540,49 @@ async function main() {
       );
       const membership = await waitFor(() => relay.reqs.find((item) => item.agent === agent && item.subId === "membership"), "membership REQ");
       check("live: membership REQ {kinds:[39002], #p:[agent]}", membership.filters[0].kinds?.[0] === 39002 && membership.filters[0]["#p"]?.[0] === agent, JSON.stringify(membership.filters));
+      const notices = await waitFor(() => relay.reqs.find((item) => item.agent === agent && item.subId === "notices"), "notices REQ");
+      check(
+        "live: notices REQ {kinds:[44100,44101], #p:[agent], limit:0}, and #t:[system]",
+        notices.filters.length === 2 &&
+          notices.filters.every((f) => JSON.stringify(f.kinds) === "[44100,44101]" && f["#p"]?.[0] === agent && f.limit === 0) &&
+          !("#t" in notices.filters[0]) && JSON.stringify(notices.filters[1]["#t"]) === '["system"]',
+        JSON.stringify(notices.filters),
+      );
     });
 
-    // Rosters arrive after the agent subscribed, as a live membership change.
+    // The agent joins both channels after it connected. As on the real relay,
+    // the rosters do not reach the open membership REQ; only the notices do.
+    const membershipReqs = () => relay.reqs.filter((item) => item.agent === agent && item.subId === "membership").length;
+    const mentionScopes = () => relay.reqs.filter((item) => item.agent === agent && item.subId === "mentions").map((item) => item.filters[0]["#h"] ?? []);
+    const scopeIs = (ids) => JSON.stringify(mentionScopes().at(-1)) === JSON.stringify([...ids].sort());
+    const loadsBefore = membershipReqs();
     relay.inject(relay.relaySigned(39002, [["d", channel], ["p", owner], ["p", agent], ["p", getPublicKey(strangerSecret)]]));
     relay.inject(relay.relaySigned(39002, [["d", dm], ["p", owner], ["p", agent]]));
+    await step("live: a join after connect scopes mentions after the notice", async () => {
+      await new Promise((done) => setTimeout(done, POLL_MS * 4));
+      check("live: a roster alone does not reach the membership REQ", membershipReqs() === loadsBefore && !scopeIs([channel, dm]), JSON.stringify(mentionScopes()));
+      relay.notice(agent, channel);
+      relay.notice(agent, dm, 44100, "dm");
+      await waitFor(() => scopeIs([channel, dm]), "mentions REQ scoped to the joined channels");
+      check("live: notices reload the rosters, mentions REQ #h = joined channels", membershipReqs() > loadsBefore, JSON.stringify(mentionScopes().at(-1)));
+    });
+    await step("live: a forged notice does not reload the rosters", async () => {
+      const loads = membershipReqs();
+      relay.inject(sign(strangerSecret, 44100, [["p", agent], ["h", channel], ["t", "stream"]]));
+      await waitFor(() => lines(runnerLog).some((line) => line.msg === "event dropped" && line.reason === "bad-notice"), "bad-notice drop");
+      check("live: notice not signed by the relay is dropped", membershipReqs() === loads, `${loads} -> ${membershipReqs()}`);
+    });
+    await step("live: a leave after connect drops the channel from the scope", async () => {
+      const late = randomUUID();
+      relay.inject(relay.relaySigned(39000, [["d", late], ["t", "stream"], ["name", "late"]]));
+      relay.inject(relay.relaySigned(39002, [["d", late], ["p", owner], ["p", agent]]));
+      relay.notice(agent, late);
+      await waitFor(() => scopeIs([channel, dm, late]), "mentions REQ with the late channel");
+      relay.inject(relay.relaySigned(39002, [["d", late], ["p", owner]]));
+      relay.notice(agent, late, 44101);
+      await waitFor(() => scopeIs([channel, dm]), "mentions REQ without the left channel");
+      check("live: join adds and leave removes a channel in the mentions REQ", scopeIs([channel, dm]), JSON.stringify(mentionScopes().slice(-2)));
+    });
     await step("live: DM REQ", async () => {
       const dms = await waitFor(() => relay.reqs.find((item) => item.agent === agent && item.subId === "dms"), "dms REQ");
       check("live: one-to-one DM found from relay roster, dms REQ {kinds:[9], #h:[dm]}", dms.filters[0]["#h"]?.length === 1 && dms.filters[0]["#h"][0] === dm, JSON.stringify(dms.filters));

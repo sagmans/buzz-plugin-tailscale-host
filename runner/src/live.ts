@@ -5,8 +5,9 @@
 // It hears what can wake the agent (chat events that p-tag it, messages in
 // its one-to-one DMs, and, for the reply-wake rule, the owner's chat messages
 // in its channels), verifies each signature, drops duplicates, and
-// hands the rest to the agent's gate. The cursor survives restarts so a
-// reconnect catches up from the last event it saw.
+// hands the rest to the agent's gate. The relay's membership notices keep
+// that channel scope current while the socket stays open. The cursor
+// survives restarts so a reconnect catches up from the last event it saw.
 import { CHAT_KINDS } from "@buzz/features/agents/attention";
 import { eventDto, type RelayEvent } from "@buzz/features/relay/events";
 import type { BuzzEvent, Template } from "@buzz/buzz-mcp/client";
@@ -17,13 +18,17 @@ import {
   KIND_AUTH,
   KIND_CHANNEL_MEMBERS,
   KIND_CHAT,
+  KIND_MEMBER_ADDED,
+  KIND_MEMBER_REMOVED,
   KIND_PROBE,
+  NOTICE_SYSTEM_TYPE,
   RECONNECT_BASE_MS,
   RECONNECT_MAX_MS,
   RESUBSCRIBE_SKEW_S,
   SUB_DMS,
   SUB_MEMBERSHIP,
   SUB_MENTIONS,
+  SUB_NOTICES,
   SUB_PROBE,
   SUB_REPLIES,
   WS_AUTH_TIMEOUT_MS,
@@ -68,7 +73,12 @@ export class LiveListener {
   private readonly abort = new AbortController();
   private readonly seen: Set<string>;
   /** Channel → roster, from relay-signed kind-39002 events naming the agent. */
-  private readonly rosters = new Map<string, readonly string[]>();
+  private rosters = new Map<string, readonly string[]>();
+  /** Rosters of the membership REQ in flight; they replace `rosters` at its
+   * EOSE, so a channel the agent left drops out instead of staying stale. */
+  private loading: Map<string, readonly string[]> | undefined;
+  /** A notice came while a load was in flight: load once more after it. */
+  private reloadQueued = false;
   private readonly types = new Map<string, string | undefined>();
   /** One-to-one DMs the agent is in, which wake it without a mention. */
   private dms = new Set<string>();
@@ -266,17 +276,14 @@ export class LiveListener {
           return;
         }
         if (type === "EVENT" && typeof first === "string") return this.receive(first, second, send);
-        if (type === "EOSE" && first === SUB_MEMBERSHIP) {
-          this.membershipLoaded = true;
-          this.subscribeMentions(send);
-          return void this.refreshDms(send);
-        }
+        if (type === "EOSE" && first === SUB_MEMBERSHIP) return this.rostersLoaded(send);
         // Our own CLOSE of an answered probe comes back as CLOSED: not news.
         if (type === "CLOSED" && typeof first === "string" && first.startsWith(`${SUB_PROBE}-`)) return;
         if (type === "CLOSED" && typeof first === "string") {
           log.warn("relay closed a subscription", { subscription: first, reason: String(second ?? "").slice(0, 200) });
           // The wake subscriptions are the listener's purpose: start over.
-          if (first === SUB_MENTIONS || first === SUB_DMS || first === SUB_REPLIES) fail(new RelayError(`subscription ${first} closed`));
+          // The notices are the only way it hears a join, so they count too.
+          if (first === SUB_MENTIONS || first === SUB_DMS || first === SUB_REPLIES || first === SUB_NOTICES) fail(new RelayError(`subscription ${first} closed`));
           return;
         }
         if (type === "NOTICE") log.info("relay notice", { notice: String(first ?? "").slice(0, 200) });
@@ -286,14 +293,56 @@ export class LiveListener {
   }
 
   /** Mentions from the cursor; the membership list in full (it is replaceable,
-   * so the relay sends the current one). */
+   * so the relay sends the current one). The notice REQ goes before the
+   * roster load: the relay handles one socket's frames in order, so a join
+   * after the load was read still sends a notice. */
   private subscribe(send: (message: unknown) => void) {
     const { agent } = this.options;
     this.membershipLoaded = false;
     this.mentionScope = "";
+    this.loading = undefined;
+    this.reloadQueued = false;
     this.subscribeMentions(send);
-    send(["REQ", SUB_MEMBERSHIP, { kinds: [KIND_CHANNEL_MEMBERS], "#p": [agent] }]);
+    this.subscribeNotices(send, agent);
+    this.loadRosters(send);
     if (this.dms.size) this.subscribeDms(send);
+  }
+
+  /** The relay keeps a roster (kind 39002) in its channel's scope, so it never
+   * sends one live to the membership REQ, which has no `#h` (see
+   * `subscribeMentions`). Each grant or loss of access instead sends the agent
+   * a global notice (buzz-relay `side_effects.rs`
+   * `emit_membership_notification`), as Desktop and buzz-acp use. Live only
+   * (`limit: 0`): the roster load at connect already covers the past. The
+   * second filter asks for system channels, which a filter without `#t`
+   * does not get (buzz-core `filter.rs` `notice_channel_types`). */
+  private subscribeNotices(send: (message: unknown) => void, agent: string) {
+    const filter = { kinds: [KIND_MEMBER_ADDED, KIND_MEMBER_REMOVED], "#p": [agent], limit: 0 };
+    send(["REQ", SUB_NOTICES, filter, { ...filter, "#t": [NOTICE_SYSTEM_TYPE] }]);
+  }
+
+  /** Asks the relay for every current roster that names the agent. One load
+   * at a time: a second REQ with the same id would replace the first, and
+   * the first one's EOSE could then end the second's load early. */
+  private loadRosters(send: (message: unknown) => void) {
+    if (this.loading) {
+      this.reloadQueued = true;
+      return;
+    }
+    this.loading = new Map();
+    send(["REQ", SUB_MEMBERSHIP, { kinds: [KIND_CHANNEL_MEMBERS], "#p": [this.options.agent] }]);
+  }
+
+  /** The roster load is complete: scope the wake subscriptions to it. */
+  private rostersLoaded(send: (message: unknown) => void) {
+    if (this.loading) this.rosters = this.loading;
+    this.loading = undefined;
+    this.membershipLoaded = true;
+    this.subscribeMentions(send);
+    void this.refreshDms(send);
+    if (!this.reloadQueued) return;
+    this.reloadQueued = false;
+    this.loadRosters(send);
   }
 
   /** The relay gives a REQ without `#h` a community-global live scope, which
@@ -371,12 +420,14 @@ export class LiveListener {
       if (event.kind !== KIND_CHANNEL_MEMBERS || event.pubkey !== this.options.relayAuthor()) return;
       const channel = event.tags.find((item) => item[0] === "d")?.[1];
       if (!channel) return;
+      if (this.loading) return void this.loading.set(channel, rosterMembers(event));
       this.rosters.set(channel, rosterMembers(event));
       // A join or leave after the initial rosters changes the live scope.
       if (this.membershipLoaded) this.subscribeMentions(send);
       void this.refreshDms(send);
       return;
     }
+    if (subscription === SUB_NOTICES) return this.notice(event, send);
     if (subscription !== SUB_MENTIONS && subscription !== SUB_DMS && subscription !== SUB_REPLIES) return;
     // The relay applies the filter; this check keeps a stray frame from
     // reaching the gate as if it were the owner's.
@@ -398,6 +449,22 @@ export class LiveListener {
         if (admitted) this.options.state.advance(Math.min(event.created_at, now() + FUTURE_SKEW_S), event.id);
       })
       .catch((error) => log.error("event handler failed", { event: event.id.slice(0, 12), error }));
+  }
+
+  /** A relay-signed notice that the agent gained or lost a channel. Its
+   * channel is not trusted for the scope: the roster load decides. A notice
+   * signed by anyone else is dropped, so a stranger cannot make it reload. */
+  private notice(event: RelayEvent, send: (message: unknown) => void) {
+    const { agent, log } = this.options;
+    const kinds: readonly number[] = [KIND_MEMBER_ADDED, KIND_MEMBER_REMOVED];
+    const forAgent = event.tags.some(([name, value]) => name === "p" && value === agent);
+    if (!kinds.includes(event.kind) || event.pubkey !== this.options.relayAuthor() || !forAgent) {
+      log.warn("event dropped", { reason: "bad-notice", subscription: SUB_NOTICES, event: event.id.slice(0, 12) });
+      return;
+    }
+    const channel = event.tags.find((item) => item[0] === "h")?.[1];
+    log.info("membership notice", { kind: event.kind, channel, reloading: Boolean(this.loading) });
+    this.loadRosters(send);
   }
 
   /** Recomputes the one-to-one DMs from the rosters and resubscribes when
