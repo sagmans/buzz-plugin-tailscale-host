@@ -96,7 +96,7 @@ path that the build names.
 | --- | --- | --- |
 | `id` | Lowercase letters, digits and `-`, at most 32 characters. Saved with each agent; do not change it later. | `example-host` |
 | `label` | Shown in the app, at most 40 characters. | `example/host` |
-| `origin` | `https://` address of the machine on the tailnet, no path. The plugin adds the runner port, 10000. Write a port only for a runner on another port. | `https://runner-host.example.ts.net` |
+| `origin` | `https://` address of the machine on the tailnet, no path. The plugin adds the runner port, 10000. Write a port only for a runner on another port. Port 443 is not possible: an address with `:443` is the same as one with no port, so it goes to 10000. | `https://runner-host.example.ts.net` |
 
 The first host is the default for new agents.
 
