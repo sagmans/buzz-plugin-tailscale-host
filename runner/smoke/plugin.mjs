@@ -327,6 +327,14 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       /did not report its path|Not installed|Not found|not ready/i.test(codexAlert.textContent) && !combobox(stale.node, "Model"),
       codexAlert.textContent,
     );
+    // Desktop's Model row column takes the widest content; a long reason
+    // that counts there squeezes the "Model" title to one letter per line.
+    const reasonBlock = codexAlert.parentElement;
+    check(
+      "plugin: the reason adds no width to the Model row and wraps under the pills",
+      reasonBlock.style.width === "0px" && reasonBlock.style.minWidth === "100%" && reasonBlock.parentElement.matches(".buzz-preference-row-trailing"),
+      reasonBlock.outerHTML.slice(0, 200),
+    );
     await choose(stale.node, "Harness", "Claude");
     await until(() => combobox(stale.node, "Model"), "model pill after harness change");
     check("plugin: a harness change resets model and thinking to that harness's defaults", config.harness === "claude-code" && !config.model && !config.effort && config.instructions === "Be brief.", JSON.stringify(config));

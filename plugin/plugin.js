@@ -65,6 +65,12 @@ const CHECK_SIZE = 14;
 // collisionPadding in Select.tsx and Menu.tsx).
 const POPUP_OFFSET_PX = 4;
 const POPUP_PADDING_PX = 8;
+// Desktop's Model row (PreferenceRow) sizes its trailing column to the
+// widest content, so a long host message would squeeze the "Model" title to
+// one letter per line. A zero width adds nothing to that size; the full
+// minimum width then lets the message wrap under the pills. Desktop's CSS
+// has no utility class for this pair, so it is an inline style.
+const MESSAGE_BLOCK_STYLE = Object.freeze({ width: 0, minWidth: "100%" });
 // Desktop's Instructions box heights (AgentInstructions.tsx).
 const INSTRUCTIONS_ROWS_CREATE = 4;
 const INSTRUCTIONS_ROWS = 8;
@@ -1550,7 +1556,9 @@ export function apply(ctx) {
 
   /** New agent dialog, Model row: the harness pill and the model pill, laid
    * out as Desktop's CreateModelChoices. Desktop's own Harness row above
-   * shows the type ("Tailscale host (hosted)"), which is where it runs. */
+   * shows the type ("Tailscale host (hosted)"), which is where it runs.
+   * Messages go in a block that adds no width (MESSAGE_BLOCK_STYLE): a host
+   * error is longer than Desktop's own messages in this row. */
   function CreateModel(props) {
     const config = cleanConfig(props.config);
     useStore(() => hosts);
@@ -1579,8 +1587,14 @@ export function apply(ctx) {
           : null,
         failed ? h(Button, { size: "sm", disabled: props.disabled, onClick: () => loadModels(config.host, config.harness, true) }, LABELS.tryAgain) : null,
       ),
-      problem ? h("span", { role: "alert", className: "text-body-sm text-danger" }, problem) : null,
-      failed ? h("span", { role: "alert", className: "text-body-sm text-danger" }, list.error) : null,
+      problem || failed
+        ? h(
+            "div",
+            { className: "grid gap-1", style: MESSAGE_BLOCK_STYLE },
+            problem ? h("span", { role: "alert", className: "text-body-sm text-danger" }, problem) : null,
+            failed ? h("span", { role: "alert", className: "text-body-sm text-danger" }, list.error) : null,
+          )
+        : null,
     );
   }
 
