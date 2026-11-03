@@ -133,9 +133,8 @@ environment variables with generic defaults; the same README lists them.
 ## Use
 
 1. Select **New agent** and the type **Tailscale host**.
-2. Select the host (shown when there are two or more), the harness, the
-   model and the thinking level. A harness that the host cannot run yet is
-   shown but cannot be selected.
+2. Select the host, the harness, the model and the thinking level. A
+   harness that the host cannot run yet is shown but cannot be selected.
 3. Create the agent. Mention it or send it a DM to start a turn.
 
 If a host does not answer, the agents panel shows a notice, and the

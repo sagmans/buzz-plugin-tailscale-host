@@ -1579,9 +1579,10 @@ export function apply(ctx) {
     );
   }
 
-  /** The rest of the New agent dialog, as Desktop's: where it runs (a host
-   * choice once there are several), then the instructions. Sessions keep
-   * Desktop's default and change in Settings, as Desktop's do. */
+  /** The rest of the New agent dialog, as Desktop's: where it runs, then
+   * the instructions. The host choice shows even with one host, so the owner
+   * sees which host the agent goes to and finds where new hosts appear.
+   * Sessions keep Desktop's default and change in Settings, as Desktop's do. */
   function Create(props) {
     const config = cleanConfig(props.config);
     const host = hostById(config.host);
@@ -1589,16 +1590,14 @@ export function apply(ctx) {
     return h(
       "div",
       { className: "grid gap-4" },
-      HOSTS.length > 1
-        ? h(Select, {
-            label: LABELS.host,
-            variant: "field",
-            value: config.host,
-            disabled: props.disabled,
-            options: HOSTS.map((entry) => ({ value: entry.id, label: entry.label })),
-            onValueChange: (id) => set({ host: id }),
-          })
-        : null,
+      h(Select, {
+        label: LABELS.host,
+        variant: "field",
+        value: config.host,
+        disabled: props.disabled,
+        options: HOSTS.map((entry) => ({ value: entry.id, label: entry.label })),
+        onValueChange: (id) => set({ host: id }),
+      }),
       h("p", { className: "m-0 text-body-sm text-secondary" }, `Runs on ${host.label}. The host keeps its key and runs it, whether or not this app is open.`),
       h(AgentInstructions, { creation: true, value: config.instructions, disabled: props.disabled, onChange: (instructions) => set({ instructions }) }),
     );

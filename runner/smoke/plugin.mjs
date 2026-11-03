@@ -689,7 +689,21 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       rowFor(labHost.label)?.textContent.includes("Not in use until Update") && statusText().includes("Manage plugins, select Tailscale host agents, then select Update"),
       `${rowFor(labHost.label)?.textContent} | ${statusText()}`,
     );
-    check("plugin: before Update, New agent keeps the build's one host", settingsHosted.defaults().config.host === SMOKE_HOST.id);
+    // A field Select names its trigger with aria-labelledby, as Desktop's.
+    const labelledBy = (node, label) =>
+      [...node.querySelectorAll("[role=combobox][aria-labelledby]")].find((item) => document.getElementById(item.getAttribute("aria-labelledby"))?.textContent === label);
+    const oneHost = mount();
+    await oneHost.render(React.createElement(settingsHosted.Create, { config: settingsHosted.defaults().config, disabled: false, onChange() {} }));
+    const onePill = await until(() => labelledBy(oneHost.node, "Host"), "one-host pill");
+    const oneList = await open(onePill);
+    check(
+      "plugin: before Update, New agent shows the Host choice with the build's one host",
+      JSON.stringify(labels(oneList)) === JSON.stringify([SMOKE_HOST.label]) && settingsHosted.defaults().config.host === SMOKE_HOST.id,
+      JSON.stringify(labels(oneList)),
+    );
+    await press(document.body);
+    collect(oneHost.node);
+    await oneHost.unmount();
 
     // Edit keeps the id that agents carry.
     await press(buttonFor(labHost.label, "Edit"));
@@ -735,9 +749,6 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       return React.createElement(updated.type.Create, { config: draft, disabled: false, onChange: setDraft });
     }
     await pickHost.render(React.createElement(HostDialog));
-    // A field Select names its trigger with aria-labelledby, as Desktop's.
-    const labelledBy = (node, label) =>
-      [...node.querySelectorAll("[role=combobox][aria-labelledby]")].find((item) => document.getElementById(item.getAttribute("aria-labelledby"))?.textContent === label);
     const hostPill = await until(() => labelledBy(pickHost.node, "Host"), "host pill");
     const hostList = await open(hostPill);
     check(
