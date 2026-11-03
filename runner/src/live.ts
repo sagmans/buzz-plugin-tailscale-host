@@ -87,8 +87,13 @@ export class LiveListener {
    * the notice and serves a cached channel list for a while (see
    * `ROSTER_SETTLE_MS`), so a load right after the notice misses the join.
    * Desktop (`relay/live.ts` `grant`) and buzz-acp also act on the notice's
-   * channel. Kept across reconnects; a remove notice takes one out. */
-  private readonly granted = new Set<string>();
+   * channel. Each maps to the time of its notice. A load that starts
+   * `ROSTER_SETTLE_MS` after the notice is the truth, so it ends the grant
+   * either way: a remove notice missed while the socket was down then
+   * cannot keep a channel in scope. */
+  private readonly granted = new Map<string, number>();
+  /** When the membership REQ in flight was sent, to judge grants by it. */
+  private loadStartedAt = 0;
   /** The pending load deadline and the confirming load after a notice; both
    * belong to the open socket and end with it. */
   private loadDeadline: ReturnType<typeof setTimeout> | undefined;
@@ -350,6 +355,7 @@ export class LiveListener {
       return;
     }
     this.loading = new Map();
+    this.loadStartedAt = Date.now();
     // A load without EOSE would hold every later notice in `reloadQueued`.
     this.loadDeadline = setTimeout(() => this.failSession?.(new RelayError("relay roster load timed out")), ROSTER_LOAD_TIMEOUT_MS);
     send(["REQ", SUB_MEMBERSHIP, { kinds: [KIND_CHANNEL_MEMBERS], "#p": [this.options.agent] }]);
@@ -361,7 +367,11 @@ export class LiveListener {
     if (this.loading) this.rosters = this.loading;
     this.loading = undefined;
     const { agent } = this.options;
-    for (const channel of this.granted) if (this.rosters.get(channel)?.includes(agent)) this.granted.delete(channel);
+    for (const [channel, at] of this.granted)
+      if (this.rosters.get(channel)?.includes(agent) || this.loadStartedAt - at >= ROSTER_SETTLE_MS) this.granted.delete(channel);
+    // A grant this load could not judge yet (a reconnect soon after its
+    // notice) gets its own confirming load, as the old socket's timer died.
+    if (this.granted.size) this.settle(send);
     this.membershipLoaded = true;
     this.subscribeMentions(send);
     void this.refreshDms(send);
@@ -379,7 +389,7 @@ export class LiveListener {
   private subscribeMentions(send: (message: unknown) => void) {
     const { agent } = this.options;
     const joined = [...this.rosters].filter(([, members]) => members.includes(agent)).map(([channel]) => channel);
-    const channels = [...new Set([...joined, ...this.granted])].sort();
+    const channels = [...new Set([...joined, ...this.granted.keys()])].sort();
     const scope = channels.join(",");
     if (this.mentionScope && scope === this.mentionScope) return;
     this.mentionScope = scope || "global";
@@ -489,14 +499,19 @@ export class LiveListener {
       return;
     }
     log.info("membership notice", { kind: event.kind, channel });
-    if (event.kind === KIND_MEMBER_ADDED) this.granted.add(channel);
+    if (event.kind === KIND_MEMBER_ADDED) this.granted.set(channel, Date.now());
     else {
       this.granted.delete(channel);
       this.rosters.delete(channel);
     }
     if (this.membershipLoaded) this.subscribeMentions(send);
     void this.refreshDms(send);
-    // One confirming load after the last notice of a burst.
+    this.settle(send);
+  }
+
+  /** One confirming load `ROSTER_SETTLE_MS` after the last notice of a
+   * burst, when the relay's stored roster and channel cache are current. */
+  private settle(send: (message: unknown) => void) {
     clearTimeout(this.settleTimer);
     this.settleTimer = setTimeout(() => this.loadRosters(send), ROSTER_SETTLE_MS);
   }

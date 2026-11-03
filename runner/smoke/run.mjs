@@ -607,6 +607,19 @@ async function main() {
       await waitFor(() => mentionScopes().length > after && scopeIs([channel, dm]), "mentions REQ after the reconnect", RECONNECT_WAIT_MS);
       check("live: roster load timeout reconnects and restores the scope", scopeIs([channel, dm]), JSON.stringify(mentionScopes().at(-1)));
     });
+    // The agent is granted a channel and then loses it while its socket is
+    // down, so the remove notice never reaches it and no roster names it.
+    await step("live: a grant whose remove was missed while down ends at the settled load", async () => {
+      const gone = randomUUID();
+      relay.inject(relay.relaySigned(39000, [["d", gone], ["t", "stream"], ["name", "gone"]]));
+      relay.notice(agent, gone);
+      await waitFor(() => scopeIs([channel, dm, gone]), "mentions REQ with the granted channel");
+      const before = mentionScopes().length;
+      relay.drop(agent);
+      await waitFor(() => mentionScopes().length > before, "mentions REQ after the reconnect", RECONNECT_WAIT_MS);
+      await waitFor(() => scopeIs([channel, dm]), "mentions REQ without the stale grant", ROSTER_SETTLE_MS + WAIT_MS);
+      check("live: stale grant leaves the mentions REQ after a reconnect", scopeIs([channel, dm]), JSON.stringify(mentionScopes().slice(-3)));
+    });
 
     const repeat = await api("POST", `/v1/agents/${agent}/activate`, { body: { name: "Smoke", community: relayUrl, auth: tag } });
     check("activate: repeat call gives 204", repeat.status === 204, repeat.text);
