@@ -67,13 +67,14 @@ The build checks `hosts.json` and stops with the file and field to fix.
 1. Open **Settings > Plugins > Manage plugins** and load a folder.
 2. Select the `dist/` folder, then select **Install**.
 
-To update, build again. In **Manage plugins**, select **Tailscale host
-agents** (the row, not its menu), then select **Update**.
+To update the plugin code, build again. In **Manage plugins**, select
+**Tailscale host agents** (the row, not its menu), then select **Update**.
+A host change does not need a build or an Update.
 
 ### Install from Git
 
 The Git install reads a folder from a repository. The built `dist/` holds
-your host names, so do not publish it:
+the paths of this folder and your `hosts.json`, so do not publish it:
 
 1. Fork this repository as a private repository.
 2. Build the plugin in your fork, remove `/dist/` from `.gitignore`, and
@@ -83,8 +84,9 @@ your host names, so do not publish it:
    private repository; an HTTPS URL cannot carry credentials.
 4. Select the `dist` folder, then select **Install**.
 
-With a Git install, a change on the Settings page builds only your local
-`dist/`. Commit and push it, then select **Update**.
+A Git install builds the helper path of the machine that built `dist/`
+into the manifest. Build on this machine, and keep `hosts.json` at the
+path that the build names.
 
 ## Configuration
 
@@ -109,21 +111,21 @@ hosts** to see its hosts with their address and status, and to change it:
 | Edit | Changes the name or the address. The host keeps its id, so its agents keep it. |
 | Remove | Only when no agent of this device runs on the host. One host must stay. |
 
-Each change writes `hosts.json` and builds `dist/` again. Buzz lets the
-plugin reach only the origins of its installed build, so the change is in
-use after you open **Settings > Plugins > Manage plugins**, select
-**Tailscale host agents**, and select **Update**. Until then, the page
-shows a new host as "Not in use until Update".
+Each change writes `hosts.json` and is in use at once: **New agent**
+offers a new host with no build and no Update.
 
-You can also edit `hosts.json` by hand or with a tool. Then build the plugin
-(`node scripts/build-plugin.mjs`), or select **Build** on the page, and
-select **Update**.
+You can also edit `hosts.json` by hand or with a tool. Then select **Check
+again** on the page, or open **New agent**.
 
-The page saves through `scripts/hosts-helper.mjs`. The build grants the
-plugin one command: `node` on that script, with this `hosts.json` and
-`dist/` as fixed arguments. Desktop finds `node` on your login shell's
-`PATH` and stops the command after 5 seconds. If you move this folder,
-build again.
+The plugin reads and saves `hosts.json` and calls the hosts through
+`scripts/hosts-helper.mjs`. The build grants the plugin one host process:
+`node` on that script, with this `hosts.json` as a fixed argument. Desktop
+finds `node` on your login shell's `PATH`. If you move this folder, build
+again and select **Update**.
+
+The **Harness** title in **New agent** names the hosts that the plugin read
+when it loaded. After a host change, the title updates when the app opens
+the next time; the **Host** field updates at once.
 
 The runner settings (users,
 paths, harnesses, limits) are in [runner/README.md](runner/README.md),
@@ -155,15 +157,15 @@ The Buzz mobile app runs no plugins, but hosted agents do not need them:
 - Buzz plugins are not sandboxed. They run inside the app with its full
   access. Install only code that you trust, and read `plugin/plugin.js`
   first.
-- The plugin asks for two native grants: network requests to the exact
-  origins in your `hosts.json`, and one command that runs
+- The plugin asks for one native grant: a process that runs
   `scripts/hosts-helper.mjs` with `node` from your login shell's `PATH`.
-  The plugin cannot reach other addresses or choose the program or its
-  arguments. The helper runs with your user's access and writes only the
-  `hosts.json` and `dist/` named in the build; it checks each request
-  before it writes. A change to the helper in this folder runs at the next
-  save without a new review in Desktop, so review changes before you pull
-  them.
+  Desktop shows this grant as full access. The plugin cannot choose the
+  program or its arguments. The helper runs with your user's access. It
+  writes only the `hosts.json` named in the build, and it calls only the
+  origins in that file, on the runner's `/v1` paths, with no redirects. It
+  checks each request before it writes or calls. A change to the helper in
+  this folder runs at the next plugin start without a new review in
+  Desktop, so review changes before you pull them.
 - The runner API has no TCP port. It listens on a Unix socket that only
   `tailscale serve` reaches, and it accepts only the Tailscale logins in its
   `allowedLogins`. Allow only your own devices to reach the host in the
