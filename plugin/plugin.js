@@ -402,22 +402,63 @@ export function apply(ctx) {
     localStorage.removeItem(STORE_PREFIX + pubkey);
   }
 
+  /** Whether `host`'s runner keeps the agent `pubkey`. Only a record that
+   * names that same pubkey counts: a host that answered for any key would
+   * otherwise claim every agent. A 404 is no; other failures are raised. */
+  async function holds(host, pubkey) {
+    try {
+      const record = await call(host, "GET", `/agents/${pubkey}`);
+      return Boolean(record) && record.pubkey === pubkey;
+    } catch (error) {
+      if (error?.details?.status === HTTP_NOT_FOUND) return false;
+      throw error;
+    }
+  }
+
   /** The host that holds this agent: the saved one, else the first host whose
-   * runner knows it (covers a cleared WebView store or another device). */
+   * runner keeps it (covers a cleared WebView store or another device). */
   async function locate(pubkey) {
     if (!HEX64.test(pubkey)) throw new RunnerError("Invalid agent pubkey.", { op: "locate" });
     const saved = localStorage.getItem(STORE_PREFIX + pubkey);
     if (saved && HOSTS.some((entry) => entry.id === saved)) return hostById(saved);
     for (const host of HOSTS) {
-      try {
-        await call(host, "GET", `/agents/${pubkey}`);
-        remember(pubkey, host.id);
-        return host;
-      } catch (error) {
-        if (error?.details?.status !== HTTP_NOT_FOUND) throw error;
-      }
+      if (!(await holds(host, pubkey))) continue;
+      remember(pubkey, host.id);
+      return host;
     }
     return undefined;
+  }
+
+  /** Refuses a new agent's pubkey that another host holds. The plugin routes
+   * an agent to the host that made it, so a host that answered with another
+   * host's agent would take that agent's settings, profile and delete calls.
+   * A runner makes each key at random, so an honest one never collides. A
+   * host that cannot be asked blocks the create: the check fails closed. */
+  async function requireNewKey(host, pubkey) {
+    const saved = localStorage.getItem(STORE_PREFIX + pubkey);
+    const taken = (other) =>
+      new RunnerError(`${host.label} returned an agent that ${other.label} holds.`, {
+        op: "provision",
+        host: host.id,
+        holder: other.id,
+      });
+    const holder = saved && saved !== host.id ? HOSTS.find((entry) => entry.id === saved) : undefined;
+    if (holder) throw taken(holder);
+    for (const other of HOSTS) {
+      if (other.id === host.id) continue;
+      let held;
+      try {
+        held = await holds(other, pubkey);
+      } catch (cause) {
+        throw new RunnerError(`Could not check the new agent with ${other.label}. Try again when it answers.`, {
+          op: "provision",
+          host: host.id,
+          other: other.id,
+          cause,
+        });
+      }
+      if (held) throw taken(other);
+    }
   }
 
   // ---- Host status and model stores ---------------------------------------
@@ -1532,6 +1573,7 @@ export function apply(ctx) {
         });
         if (!created || !HEX64.test(created.pubkey))
           throw new RunnerError(`${host.label} returned no valid agent pubkey.`, { op: "provision" });
+        await requireNewKey(host, created.pubkey);
         remember(created.pubkey, host.id);
         return { pubkey: created.pubkey, ...(created.picture ? { picture: created.picture } : {}) };
       },

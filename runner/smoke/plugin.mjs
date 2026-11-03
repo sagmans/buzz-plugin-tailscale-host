@@ -22,6 +22,10 @@ const SOURCE_PLUGIN = resolve(HERE, "../../plugin/plugin.js");
 /** The host the smoke build is made for. Its origin is never contacted:
  * `host.request` below sends every call to the local runner socket. */
 const SMOKE_HOST = Object.freeze({ id: "smoke-host", label: "smoke/host", origin: "https://runner.example.invalid:10000" });
+/** A second host, answered by the smoke itself, that claims agents it does
+ * not hold; and the pubkey it names in those answers. */
+const ROGUE_HOST = Object.freeze({ id: "rogue-host", label: "rogue/host", origin: "https://rogue.example.invalid:10000" });
+const ROGUE_PUBKEY = "cd".repeat(32);
 /** Desktop's sources, to check the plugin draws only Desktop's classes; the
  * runner build reads the same clone (the runner/buzz-app link). */
 const DESKTOP_SRC = resolve(HERE, "../buzz-app/src");
@@ -523,6 +527,70 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const gone = await request("GET", `/v1/agents/${made.pubkey}`);
     check("plugin: remove deletes the agent on the host", gone.status === 404, gone.text);
     check("plugin: every call used the runner's v1 routes", calls.every((item) => / \/v1\//.test(item)), JSON.stringify([...new Set(calls)]));
+
+    // ---- A second host that claims agents it does not hold ----------------
+    // A build with two hosts, the rogue one first. It answers every agent
+    // lookup and returns a pubkey of the real host's agent as its "new" one;
+    // the plugin must keep that agent routed to the real host.
+    const owned = await hosted.remote.provision({ name: "Plugin Owned", community, config, signal });
+    const ownedKey = `${MIGRATED_HOST_KEY.split(":")[0]}:${owned.pubkey}`;
+    const twoHostsPath = join(buildDir, "hosts-two.json");
+    writeFileSync(twoHostsPath, JSON.stringify({ hosts: [ROGUE_HOST, SMOKE_HOST] }));
+    const { outDir: twoDir } = buildPlugin({ hostsPath: twoHostsPath, outDir: join(buildDir, "dist-two") });
+    let rogueDown = false;
+    const rogueTypes = [];
+    const rogueCtx = {
+      ...ctx,
+      agents: { register: (type) => rogueTypes.push(type) },
+      host: {
+        async request({ url, method, body }) {
+          const { origin, pathname } = new URL(url);
+          if (origin !== ROGUE_HOST.origin) {
+            const reply = await request(method, pathname, body);
+            return { status: reply.status, body: reply.text };
+          }
+          if (rogueDown) throw new Error("connect ECONNREFUSED");
+          if (pathname === "/v1/harnesses") return { status: 200, body: (await request("GET", pathname)).text };
+          if (method === "POST" && pathname === "/v1/agents") return { status: 200, body: JSON.stringify({ pubkey: owned.pubkey }) };
+          // Claims every agent, under a pubkey that is not the one asked for.
+          if (method === "GET" && pathname.startsWith("/v1/agents/")) return { status: 200, body: JSON.stringify({ pubkey: ROGUE_PUBKEY, config: {} }) };
+          return { status: 204, body: "" };
+        },
+      },
+    };
+    const twoHosts = await import(`${pathToFileURL(join(twoDir, "plugin.js")).href}?smoke=${Date.now()}`);
+    twoHosts.apply(rogueCtx);
+    const [rogueHosted] = rogueTypes;
+    const rogueConfig = { ...config, host: ROGUE_HOST.id };
+    const claimed = await rogueHosted.remote.provision({ name: "Rogue", community, config: rogueConfig, signal }).then(() => undefined, (error) => error);
+    check(
+      "plugin: a host that returns another host's agent as new is refused",
+      claimed?.message.includes(`${ROGUE_HOST.label} returned an agent that ${SMOKE_HOST.label} holds`),
+      String(claimed?.message),
+    );
+    check("plugin: the refused claim keeps the agent routed to its host", localStorage.getItem(ownedKey) === SMOKE_HOST.id, localStorage.getItem(ownedKey));
+    localStorage.removeItem(ownedKey);
+    const unsaved = await rogueHosted.remote.provision({ name: "Rogue", community, config: rogueConfig, signal }).then(() => undefined, (error) => error);
+    check(
+      "plugin: without a saved route, the host that holds the agent is asked and the claim refused",
+      unsaved?.message.includes(`${ROGUE_HOST.label} returned an agent that ${SMOKE_HOST.label} holds`) && localStorage.getItem(ownedKey) === null,
+      String(unsaved?.message),
+    );
+    await rogueHosted.remote.interrupt({ pubkey: owned.pubkey, channelId: "00000000-0000-4000-8000-000000000000", threadRootId: null });
+    check("plugin: a lookup answer for another pubkey does not count; the real host is found", localStorage.getItem(ownedKey) === SMOKE_HOST.id, localStorage.getItem(ownedKey));
+    rogueDown = true;
+    const unchecked = await rogueHosted.remote.provision({ name: "Plugin Unchecked", community, config, signal }).then(() => undefined, (error) => error);
+    rogueDown = false;
+    check(
+      "plugin: a new agent is refused while another host cannot be asked (fail closed)",
+      unchecked?.message.includes(`Could not check the new agent with ${ROGUE_HOST.label}`),
+      String(unchecked?.message),
+    );
+    // The refused create left an unactivated record on the runner.
+    const orphan = JSON.parse((await request("POST", "/v1/agents", JSON.stringify({ name: "Plugin Unchecked", community }))).text);
+    await request("DELETE", `/v1/agents/${orphan.pubkey}`);
+    await request("DELETE", `/v1/agents/${owned.pubkey}`);
+    localStorage.removeItem(ownedKey);
   } finally {
     // The plugin's poll timer must not outlive the run.
     for (const cleanup of cleanups) if (typeof cleanup === "function") cleanup();
