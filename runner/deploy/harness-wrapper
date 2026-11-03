@@ -1,0 +1,178 @@
+#!/bin/bash
+# harness-wrapper: the one wrapper buzz-runner starts every harness except
+# Claude through (Claude has claude-wrapper). Install as
+# /usr/local/libexec/buzz-runner/harness-wrapper, root:root, mode 0755
+# (install.sh does it). The runner reaches it only through one sudoers line
+# (deploy/sudoers.template):
+#
+#   sudo -n -u buzz-agent -- harness-wrapper <harness> <agentPk> [args...]
+#   sudo -n -u buzz-agent -- harness-wrapper <harness> --path
+#
+# Trust: the runner (buzz-runner) holds the agent keys; the harness user
+# holds none and runs the model's tools. Nothing here may give that user
+# more than it has. The harness id picks from a fixed list; every binary
+# path is fixed in this root-owned file, never taken from the runner; the
+# environment is rebuilt from nothing. `--path` prints the install path for
+# an id, which the runner compares with its own config
+# (harnesses.<id>.path) before it offers the harness. Diagnostics go to
+# stderr only: stdout is the harness protocol.
+#
+# install.sh rewrites the `readonly` values below for the host; the values
+# here are the defaults it starts from.
+set -euo pipefail
+umask 077
+
+readonly RUN_AS=buzz-agent
+readonly HOME_DIR=/home/buzz-agent
+# Per-agent workspaces: the model's working directory.
+readonly AGENTS_ROOT=/home/buzz-agent/agents
+# Per-agent harness state that is not the workspace (Pi's storage).
+readonly STATE_ROOT=/home/buzz-agent/.local/share/buzz-runner
+readonly SAFE_PATH=/usr/local/bin:/usr/bin:/bin
+readonly NODE=/usr/bin/node
+# Pinned installs; a new version is a new folder and an edit here.
+readonly PI_MODULES=/usr/local/lib/buzz-harness/pi/1.4.0/node_modules
+readonly PI_LAUNCH=/usr/local/libexec/buzz-runner/pi-launch.mjs
+readonly GOOSE_BIN=/usr/local/lib/buzz-harness/goose/1.57.0/goose-acp
+readonly CODEX_BIN=/usr/local/lib/buzz-harness/codex/0.164.0/bin/codex
+# A harness may fork tools and subagents, never fork-bomb the host.
+readonly NPROC_MAX=512
+# The kernel's OOM killer takes a harness before the runner (-900).
+readonly OOM_SCORE=1000
+readonly EX_USAGE=64
+readonly EX_NOPERM=77
+
+die() {
+	echo "harness-wrapper: $2" >&2
+	exit "$1"
+}
+
+[ "$(id -un)" = "$RUN_AS" ] || die "$EX_NOPERM" "must run as $RUN_AS"
+[ $# -ge 2 ] || die "$EX_USAGE" "usage: harness-wrapper <harness> <agentPk> [args...] | <harness> --path"
+harness=$1
+target=$2
+shift 2
+
+# The allowlist: install path (what --path reports) per harness id.
+case "$harness" in
+pi) install=$PI_MODULES ;;
+goose) install=$GOOSE_BIN ;;
+codex) install=$CODEX_BIN ;;
+*) die "$EX_USAGE" "unknown harness" ;;
+esac
+
+if [ "$target" = "--path" ]; then
+	[ $# -eq 0 ] || die "$EX_USAGE" "--path takes no arguments"
+	printf '%s\n' "$install"
+	exit 0
+fi
+
+# The agent key becomes a path: exactly 64 lowercase hex characters.
+[[ "$target" =~ ^[0-9a-f]{64}$ ]] || die "$EX_USAGE" "agent must be 64 lowercase hex characters"
+readonly agent=$target
+readonly workspace=$AGENTS_ROOT/$agent
+
+# umask 077 makes every new folder 0700; an existing workspace is set too.
+mkdir -p "$workspace"
+chmod 0700 "$workspace"
+cd "$workspace"
+
+# Fail closed: a harness the OOM killer would spare is not started.
+# No newline: with musl, bash writes "N" and "\n" as two proc writes, and
+# the kernel refuses the second.
+printf "%s" "$OOM_SCORE" >/proc/self/oom_score_adj || die "$EX_NOPERM" "cannot set oom_score_adj"
+
+base_env=(
+	"HOME=$HOME_DIR"
+	"USER=$RUN_AS"
+	"LOGNAME=$RUN_AS"
+	"SHELL=/bin/bash"
+	"PATH=$SAFE_PATH"
+	"LANG=C.UTF-8"
+	"TMPDIR=/tmp"
+)
+
+case "$harness" in
+pi)
+	# pi.ts sends its launcher as args; the fixed launcher replaces it, so
+	# any argument is refused rather than ignored.
+	[ $# -eq 0 ] || die "$EX_USAGE" "pi takes no arguments"
+	pi_data=$STATE_ROOT/pi/$agent
+	mkdir -p "$pi_data"
+	chmod 0700 "$STATE_ROOT/pi" "$pi_data"
+	harness_env=(
+		# Pi's keys and settings, shared with a `pi` CLI run as the harness user.
+		"PI_CODING_AGENT_DIR=$HOME_DIR/.pi/agent"
+		"BUZZ_PI_DATA=$pi_data"
+		"BUZZ_PI_MODULES=$PI_MODULES"
+	)
+	command=("$NODE" "$PI_LAUNCH")
+	;;
+goose)
+	# goose.ts starts goose-acp with no arguments; any is refused.
+	[ $# -eq 0 ] || die "$EX_USAGE" "goose takes no arguments"
+	# Sessions, their saved MCP tokens and logs stay per agent; the config
+	# and its secrets.yaml (the provider keys) are shared, set up once.
+	goose_data=$STATE_ROOT/goose/$agent
+	mkdir -p "$goose_data/data" "$goose_data/state"
+	chmod 0700 "$STATE_ROOT/goose" "$goose_data" "$goose_data/data" "$goose_data/state"
+	harness_env=(
+		# No desktop keyring for a service user: Goose reads secrets.yaml.
+		"GOOSE_DISABLE_KEYRING=1"
+		"XDG_CONFIG_HOME=$HOME_DIR/.config"
+		"XDG_DATA_HOME=$goose_data/data"
+		"XDG_STATE_HOME=$goose_data/state"
+		# Desktop's goose ENV: tools run without asking. The runner's spawn
+		# environment does not cross env -i, so it is fixed here.
+		"GOOSE_MODE=auto"
+	)
+	command=("$GOOSE_BIN")
+	;;
+codex)
+	# The runner starts `app-server` with no arguments; the command is fixed
+	# here, so any argument is refused.
+	[ $# -eq 0 ] || die "$EX_USAGE" "codex takes no arguments"
+	# Threads, rollouts and SQLite state stay per agent; the config and the
+	# sign-in are shared, set up once in the shared home (Desktop codex.sh).
+	codex_shared=$HOME_DIR/.codex
+	codex_home=$STATE_ROOT/codex/$agent
+	mkdir -p "$codex_home"
+	chmod 0700 "$STATE_ROOT/codex" "$codex_home"
+	# Codex replaces auth.json whole when it refreshes the sign-in, which
+	# turns the link into a file. It goes back to the shared home, under a
+	# lock so agents starting at once hand it over once, unless the shared
+	# one is newer. An empty file is one Codex is still writing.
+	if [ -s "$codex_home/auth.json" ] && [ ! -L "$codex_home/auth.json" ]; then
+		exec 9>>"$STATE_ROOT/codex/.auth.lock"
+		flock 9
+		if [ -s "$codex_home/auth.json" ] && [ ! -L "$codex_home/auth.json" ]; then
+			if [ ! "$codex_shared/auth.json" -nt "$codex_home/auth.json" ]; then
+				# Replaced whole, so never left partial; umask 077 keeps it private.
+				cat "$codex_home/auth.json" >"$codex_shared/auth.json.buzz"
+				mv -f "$codex_shared/auth.json.buzz" "$codex_shared/auth.json"
+			fi
+			rm -f "$codex_home/auth.json"
+		fi
+		exec 9>&-
+	fi
+	# Only the settings and the sign-in are linked in; anything else in the
+	# way stops the start rather than being replaced.
+	for name in config.toml auth.json; do
+		[ -e "$codex_home/$name" ] || [ -L "$codex_home/$name" ] ||
+			ln -sn "$codex_shared/$name" "$codex_home/$name"
+		[ "$(readlink "$codex_home/$name")" = "$codex_shared/$name" ] ||
+			die "$EX_NOPERM" "the agent's Codex home conflicts with $name"
+	done
+	harness_env=(
+		"CODEX_HOME=$codex_home"
+	)
+	# A shared `sqlite_home` setting must not lead to another agent's state.
+	command=("$CODEX_BIN" -c "sqlite_home=$codex_home" app-server)
+	;;
+esac
+
+# Last step, exec: stdin EOF and signals reach the harness, not a shell.
+exec /usr/bin/env -i "${base_env[@]}" "${harness_env[@]}" \
+	/usr/bin/prlimit --core=0 --nproc="$NPROC_MAX" -- \
+	/usr/bin/setpriv --no-new-privs --inh-caps=-all -- \
+	"${command[@]}"

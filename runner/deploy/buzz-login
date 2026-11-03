@@ -1,0 +1,59 @@
+#!/bin/bash -p
+# buzz-login: the owner's one sign-in tool for the harnesses buzz-runner
+# hosts (Claude, Codex, Goose, Pi). Install as /usr/local/bin/buzz-login,
+# root:root, mode 0755, beside /usr/local/libexec/buzz-runner/buzz-login.mjs
+# (root:root, 0644), which does the work.
+#
+# Hosted agents run as buzz-agent and read their sign-ins from buzz-agent's home,
+# so a sign-in only counts when it is made as buzz-agent. The owner runs it
+# from their own shell, by its full path:
+#
+#   sudo -u buzz-agent /usr/local/bin/buzz-login status
+#
+# Not from `sudo -iu buzz-agent`: a login shell of buzz-agent runs its ~/.bashrc
+# and ~/.profile, which hosted agents can write, in the owner's terminal.
+# `-p` above: bash reads no BASH_ENV and imports no functions or SHELLOPTS
+# from the caller's environment before the env -i below.
+#
+# Trust: this runs as buzz-agent and gives buzz-agent nothing new. The environment
+# is rebuilt from nothing, as harness-wrapper does, so no inherited variable
+# (NODE_OPTIONS, a provider key, a proxy) reaches Node or a harness; every
+# program path is fixed in root-owned files. Keys are read from the terminal
+# with echo off by buzz-login.mjs, never from arguments or the environment.
+#
+# install.sh rewrites the `readonly` values below for the host; the values
+# here are the defaults it starts from.
+set -euo pipefail
+umask 077
+
+readonly RUN_AS=buzz-agent
+readonly HOME_DIR=/home/buzz-agent
+readonly NODE=/usr/bin/node
+readonly LOGIN=/usr/local/libexec/buzz-runner/buzz-login.mjs
+readonly SAFE_PATH=/usr/local/bin:/usr/bin:/bin
+# A terminal type is only passed on when it looks like one: the interactive
+# sign-ins (claude, codex) draw with it.
+readonly TERM_PATTERN='^[A-Za-z0-9._+-]{1,64}$'
+readonly EX_NOPERM=77
+
+# Separate, so a failing `id` stops the run (set -e) instead of passing.
+user=$(/usr/bin/id -un)
+if [[ "$user" != "$RUN_AS" ]]; then
+	echo "buzz-login: run it as $RUN_AS, the user hosted agents run as:" >&2
+	echo "  sudo -u $RUN_AS /usr/local/bin/buzz-login status" >&2
+	exit "$EX_NOPERM"
+fi
+
+term=dumb
+if [[ "${TERM:-}" =~ $TERM_PATTERN ]]; then term=$TERM; fi
+
+exec /usr/bin/env -i \
+	"HOME=$HOME_DIR" \
+	"USER=$RUN_AS" \
+	"LOGNAME=$RUN_AS" \
+	"SHELL=/bin/bash" \
+	"PATH=$SAFE_PATH" \
+	"LANG=C.UTF-8" \
+	"TMPDIR=/tmp" \
+	"TERM=$term" \
+	"$NODE" "$LOGIN" "$@"

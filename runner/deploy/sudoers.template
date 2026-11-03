@@ -1,0 +1,6 @@
+# buzz-runner: the runner user may start only the two wrappers, only as the
+# harness user, without a password. install.sh renders this file for the
+# host, checks it with `visudo -cf`, and installs it as
+# /etc/sudoers.d/buzz-runner (root:root, 0440).
+buzz-runner ALL=(buzz-agent) NOPASSWD: /usr/local/libexec/buzz-runner/claude-wrapper
+buzz-runner ALL=(buzz-agent) NOPASSWD: /usr/local/libexec/buzz-runner/harness-wrapper

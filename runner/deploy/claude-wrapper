@@ -1,0 +1,82 @@
+#!/bin/bash
+# claude-wrapper: the one program buzz-runner starts Claude through. Install
+# as /usr/local/libexec/buzz-runner/claude-wrapper, root:root, mode 0755
+# (install.sh does it). The runner reaches it only through one sudoers line
+# (deploy/sudoers.template):
+#
+#   sudo -n -u buzz-agent -- claude-wrapper <agentPk> <claude args...>
+#
+# The runner also runs it with the all-zero key for its own checks
+# (`--version`, `auth status --json`, model discovery).
+#
+# Trust: the runner (buzz-runner) holds the agent keys; the harness user
+# holds none and runs the model's tools. Nothing here may give that user
+# more than it has. Every path is fixed in this root-owned file, never taken
+# from the runner; the environment is rebuilt from nothing, which also drops
+# ANTHROPIC_API_KEY and every CLAUDE_* session variable (Desktop's claude.ts
+# ENV), so Claude uses the harness user's own `claude auth login`.
+# Diagnostics go to stderr only: stdout is Claude's stream-json, which the
+# runner parses line by line.
+#
+# install.sh rewrites the `readonly` values below for the host; the values
+# here are the defaults it starts from.
+set -euo pipefail
+umask 077
+
+readonly RUN_AS=buzz-agent
+readonly HOME_DIR=/home/buzz-agent
+# Per-agent workspaces: the model's working directory.
+readonly AGENTS_ROOT=/home/buzz-agent/agents
+readonly SAFE_PATH=/usr/local/bin:/usr/bin:/bin
+# A pinned install; a new version is a new folder and a new install.sh run.
+readonly CLAUDE_BIN=/usr/local/lib/buzz-harness/claude/2.1.316/claude
+# Claude may fork tools and subagents, never fork-bomb the host.
+readonly NPROC_MAX=512
+# Claude opens many files at once (sessions, tools, watchers).
+readonly NOFILE_MAX=65536
+# The kernel's OOM killer takes a claude before the runner (-900).
+readonly OOM_SCORE=1000
+readonly EX_USAGE=64
+readonly EX_NOPERM=77
+
+die() {
+	echo "claude-wrapper: $2" >&2
+	exit "$1"
+}
+
+[ "$(id -un)" = "$RUN_AS" ] || die "$EX_NOPERM" "must run as $RUN_AS"
+[ $# -ge 1 ] || die "$EX_USAGE" "usage: claude-wrapper <agentPk> [claude args...]"
+
+# The agent key becomes a path: exactly 64 lowercase hex characters.
+[[ "$1" =~ ^[0-9a-f]{64}$ ]] || die "$EX_USAGE" "agent must be 64 lowercase hex characters"
+readonly agent=$1
+shift
+readonly workspace=$AGENTS_ROOT/$agent
+
+# umask 077 makes every new folder 0700; an existing workspace is set too.
+mkdir -p "$workspace"
+chmod 0700 "$workspace"
+cd "$workspace"
+
+# Fail closed: a claude the OOM killer would spare is not started.
+# No newline: with musl, bash writes "N" and "\n" as two proc writes, and
+# the kernel refuses the second.
+printf "%s" "$OOM_SCORE" >/proc/self/oom_score_adj || die "$EX_NOPERM" "cannot set oom_score_adj"
+
+# No --as or --data limit: V8 and Bun reserve much virtual memory, and an
+# address-space limit breaks claude. Core dumps would hold agent context.
+# Last step, exec: stdin EOF and signals reach claude, not a shell.
+exec /usr/bin/env -i \
+	"HOME=$HOME_DIR" \
+	"USER=$RUN_AS" \
+	"LOGNAME=$RUN_AS" \
+	"SHELL=/bin/bash" \
+	"PATH=$SAFE_PATH" \
+	"LANG=C.UTF-8" \
+	"TMPDIR=/tmp" \
+	"CLAUDE_CODE_ENTRYPOINT=sdk-ts" \
+	"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1" \
+	"DISABLE_AUTOUPDATER=1" \
+	/usr/bin/prlimit --core=0 --nproc="$NPROC_MAX" --nofile="$NOFILE_MAX" -- \
+	/usr/bin/setpriv --no-new-privs --inh-caps=-all -- \
+	"$CLAUDE_BIN" "$@"
