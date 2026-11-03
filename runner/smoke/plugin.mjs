@@ -132,8 +132,8 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     check("plugin: injects react, agents and host", JSON.stringify(plugin.inject) === JSON.stringify(["react", "agents", "host"]));
     plugin.apply(ctx);
     check(
-      "plugin: one hosted type, registered at once, with the legacy id and title Tailscale host",
-      types.length === 1 && types[0].id === TYPE_ID_VALUE && types[0].title === TYPE_TITLE,
+      "plugin: one hosted type, registered at once, with the legacy id; New agent's picker names its one host",
+      types.length === 1 && types[0].id === TYPE_ID_VALUE && types[0].title === `${TYPE_TITLE} · ${SMOKE_HOST.label}`,
       JSON.stringify(types.map((item) => [item.id, item.title])),
     );
     const [hosted] = types;
@@ -543,6 +543,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const twoHosts = await import(`${pathToFileURL(join(twoDir, "plugin.js")).href}?smoke=${Date.now()}`);
     twoHosts.apply(rogueCtx);
     const [rogueHosted] = rogueTypes;
+    check("plugin: with several hosts, New agent's picker gives the host count", rogueHosted.title === `${TYPE_TITLE} · 2 hosts`, rogueHosted.title);
     const rogueConfig = { ...config, host: ROGUE_HOST.id };
     const claimed = await rogueHosted.remote.provision({ name: "Rogue", community, config: rogueConfig, signal }).then(() => undefined, (error) => error);
     check(

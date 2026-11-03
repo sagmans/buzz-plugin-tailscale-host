@@ -44,6 +44,11 @@ const DEFAULT_HOST_ID = HOSTS.length ? HOSTS[0].id : undefined;
 // names it) keep working.
 const TYPE_ID = "tailscale-host";
 const TYPE_TITLE = "Tailscale host";
+// Desktop's New agent Harness picker shows only the type title, so the title
+// names where the agent runs: the host itself when the build has one, else
+// the host count, and the Host field below the picker names each host.
+const TYPE_PICKER_TITLE =
+  HOSTS.length === 1 ? `${TYPE_TITLE} · ${HOSTS[0].label}` : `${TYPE_TITLE} · ${HOSTS.length} hosts`;
 // The harness an agent gets when its config names none: every agent made
 // before harnesses existed runs Claude.
 const CLAUDE_HARNESS = "claude-code";
@@ -1965,7 +1970,7 @@ export function apply(ctx) {
 
   ctx.agents.register({
     id: TYPE_ID,
-    title: TYPE_TITLE,
+    title: TYPE_PICKER_TITLE,
     description: "Runs on your own Tailscale host, on any harness the host offers. The key stays on the host.",
     icon: icons.host,
     defaults: () => ({ config: cleanConfig({}) }),
