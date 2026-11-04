@@ -23,6 +23,8 @@
 //                      past root's byte budget after the copy (exit 80)
 //   FAKE_SSH_TAILSCALE_UNSAFE "1": setup.sh finds a tailscale CLI that a
 //                      non-root user can change (its exit 81)
+//   FAKE_SSH_AGENT_USER the harness user setup.sh reports, as an aligned
+//                      host with its own names does; unset: no report
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -103,7 +105,7 @@ if (rootRun) {
     }
   }
   if (process.env.FAKE_SSH_NODE_UNSAFE === "1") {
-    process.stderr.write("setup.sh: a user who is not root can change the Node or a folder above it; the root runner does not run it\n");
+    process.stderr.write(`setup.sh: a user who is not root can change ${node} or a folder above it; the root runner does not run it\n`);
     process.exit(EXIT_UNSAFE_NODE);
   }
   if (process.env.FAKE_SSH_TAILSCALE_UNSAFE === "1") {
@@ -118,7 +120,8 @@ if (rootRun) {
   }
   // What setup.sh would install as the config, for the scenario to check.
   appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ config: JSON.parse(readFileSync(`${stage}/config.json`, "utf8")) })}\n`);
-  process.stdout.write("@@step install\ninstall.sh: buzz-runner is active.\n@@step serve\n@@step done\n");
+  const agentUser = process.env.FAKE_SSH_AGENT_USER ? `@@agent-user ${process.env.FAKE_SSH_AGENT_USER}\n` : "";
+  process.stdout.write(`@@step install\ninstall.sh: buzz-runner is active.\n${agentUser}@@step serve\n@@step done\n`);
   process.exit(0);
 }
 const removal = /^rm -rf -- (\S+)$/.exec(command);

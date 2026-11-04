@@ -102,6 +102,10 @@ export const SETUP_STEPS = Object.freeze(["machine", "bundle", "connect", "copy"
 /** A Linux login name, as install.sh's USER_RE allows. Empty means ssh's
  * default, the local user name. */
 const SSH_USER_RE = /^[a-z_][a-z0-9_.-]{0,31}$/;
+/** setup.sh's line that names the harness user the install kept or made
+ * (install.sh USER_RE), and the name a first install gives it. */
+const AGENT_USER_LINE_RE = /^@@agent-user ([a-z_][a-z0-9_-]{0,31})$/;
+const DEFAULT_AGENT_USER = "buzz-agent";
 /** One label of a MagicDNS name; the first one names the machine. */
 const MACHINE_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const DNS_MAX = 253;
@@ -501,12 +505,14 @@ async function waitHealthy(origin, fetchImpl) {
   throw new HostSetupError(`${origin} did not answer /v1/health (${last}). Check that the tailnet policy lets this device reach port ${RUNNER_PORT}.`, { step: "health" });
 }
 
-/** The steps that stay with the user, with commands to copy. */
-function manualSteps(peer, sshUser) {
+/** The steps that stay with the user, with commands to copy. The harness
+ * user is the one setup.sh reported, so an aligned host with its own names
+ * gets its own sign-in command. */
+function manualSteps(peer, sshUser, agentUser) {
   const at = `${sshUser ? `${sshUser}@` : ""}${peer.dnsName}`;
   return [
     { id: "harnesses", text: "Install each harness at its pinned path, root-owned, and verify each download (runner/README.md, \"Deploy\", step 1)." },
-    { id: "sign-in", text: "Sign each harness in as the harness user.", command: `ssh -t ${at} sudo -u buzz-agent /usr/local/bin/buzz-login` },
+    { id: "sign-in", text: "Sign each harness in as the harness user.", command: `ssh -t ${at} sudo -u ${agentUser} /usr/local/bin/buzz-login` },
     { id: "policy", text: `In the tailnet policy, let only your own login reach port ${RUNNER_PORT} on ${peer.tags.join(", ")}.` },
   ];
 }
@@ -596,10 +602,12 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
 
     begin("install");
     const script = readFileSync(join(root, SETUP_SCRIPT), "utf8");
+    let agentUser = DEFAULT_AGENT_USER;
     const install = await run(ssh, sshArgs(peer, session, installCommand({ stage, access, node, script, sha: manifest.sha })), {
       input: access === "password" ? `${setup.sudoPassword}\n` : "",
       timeoutMs: INSTALL_TIMEOUT_MS,
       onLine: (line) => {
+        agentUser = AGENT_USER_LINE_RE.exec(line.trim())?.[1] ?? agentUser;
         const marker = /^@@step (install|serve|done)$/.exec(line.trim())?.[1];
         if (marker === "serve") {
           progress("done");
@@ -618,7 +626,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
           : install.code === SETUP_EXIT.noTag
             ? "the machine has no ACL tag"
             : install.code === SETUP_EXIT.unsafeNode
-              ? `a user who is not root can change ${node} or a folder above it; the root runner does not run it (runner/README.md, "Node")`
+              ? `${tail(install.stderr) || "a user who is not root can change the runner's Node or a folder above it"} (runner/README.md, "Node")`
               : install.code === SETUP_EXIT.tampered
                 ? "the stage folder on the machine changed after the copy, so nothing was installed; a process of the SSH user may have changed it"
                 : install.code === SETUP_EXIT.unsafeTailscale
@@ -635,7 +643,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     begin("health");
     const version = await waitHealthy(runnerOrigin(host.origin), fetchImpl);
     progress("done", version ? `buzz-runner ${version}` : "");
-    return { host, added, version, manual: manualSteps(peer, setup.sshUser) };
+    return { host, added, version, manual: manualSteps(peer, setup.sshUser, agentUser) };
   } catch (error) {
     const failure = error instanceof HostSetupError ? error : new HostSetupError(clip(error?.message ?? error), { step, cause: error });
     failure.step ??= step;

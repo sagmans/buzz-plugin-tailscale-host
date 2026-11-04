@@ -9,7 +9,7 @@
 // The real install on a systemd machine is a host test (runner/README.md).
 //
 // Called from run.mjs with its `check`; adds PASS/FAIL lines.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -112,7 +112,7 @@ export async function setupSmoke({ check, temp }) {
   /** One setup; returns its progress, its result or error, and the ssh calls. */
   async function attempt(request, { entry = peer(), facts = FACTS, env = {} } = {}) {
     writeFileSync(log, "");
-    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_SSH_TAILSCALE_UNSAFE: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
+    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_SSH_TAILSCALE_UNSAFE: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_AGENT_USER: "", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
     const events = [];
     let result;
     let error;
@@ -257,6 +257,8 @@ export async function setupSmoke({ check, temp }) {
   rmSync(young, { recursive: true, force: true });
   rmSync(link, { force: true });
   check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
+  const custom = await attempt({ address: SERVE_ORIGIN }, { env: { FAKE_SSH_AGENT_USER: "agents" } });
+  check("setup: the sign-in command names the harness user that setup.sh reports", !custom.error && custom.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u agents /usr/local/bin/buzz-login`), JSON.stringify(custom.result?.manual ?? custom.error?.message));
   const passwordless = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, sudon: "1" } });
   check("setup: sudo without a password runs `sudo -n` with nothing on stdin", !passwordless.error && rootCall(passwordless)?.argv.at(-1).startsWith("/bin/sh -c 'sudo -n -- /bin/bash -c ") && rootCall(passwordless)?.stdin === "", passwordless.error?.message);
   const asRoot = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, uid: "0" } });
@@ -298,4 +300,79 @@ export async function setupSmoke({ check, temp }) {
     (error) => error.message,
   );
   check("setup: the helper refuses a setup with an unknown key", extra === "unknown setup keys: host", extra);
+
+  installValuesSmoke({ check, temp });
+}
+
+/** A deployment that install.sh made with its own names (the environment of
+ * its first run), as files under one folder: the unit, the sudoers rule and
+ * buzz-login, rendered from the repository's templates. */
+const CUSTOM = Object.freeze({
+  RUNNER_USER: "svc-run",
+  RUNNER_DIRNAME: "svcrun",
+  AGENT_USER: "agents",
+  AGENT_HOME: "/srv/agents",
+  NODE_BIN: "/opt/node/bin/node",
+  LIB_DIR: "/opt/runner/lib",
+  LIBEXEC_DIR: "/opt/runner/libexec",
+  CLAUDE_WRAPPER: "/opt/runner/libexec/claude-agents",
+  HARNESS_WRAPPER: "/opt/runner/libexec/harness-agents",
+  CLAUDE_DIR: "/opt/harness/claude",
+  CODEX_BIN: "/opt/harness/codex",
+  GOOSE_BIN: "/opt/harness/goose-acp",
+  PI_MODULES: "/opt/harness/pi/node_modules",
+});
+const INSTALL_SH = join(REPO, "runner/deploy/install.sh");
+
+/** Writes CUSTOM's deployment under `base`, without the lines in `drop`. */
+function writeDeployment(base, drop = []) {
+  const v = CUSTOM;
+  const put = (path, text) => {
+    mkdirSync(dirname(join(base, path)), { recursive: true });
+    writeFileSync(join(base, path), text.split("\n").filter((line) => !drop.some((prefix) => line.startsWith(prefix))).join("\n"));
+  };
+  const unit = readFileSync(join(REPO, "runner/buzz-runner.service"), "utf8")
+    .replace(/^User=.*$/m, `User=${v.RUNNER_USER}`)
+    .replace(/^ExecStart=.*$/m, `ExecStart=${v.NODE_BIN} ${v.LIB_DIR}/buzz-runner.mjs --config /etc/${v.RUNNER_DIRNAME}/config.json`)
+    .replace(/^StateDirectory=.*$/m, `StateDirectory=${v.RUNNER_DIRNAME}`)
+    .replace(/^ReadWritePaths=\/home.*$/m, `ReadWritePaths=${v.AGENT_HOME}`);
+  put("etc/systemd/system/buzz-runner.service", unit);
+  put("etc/sudoers.d/buzz-runner", `# rules\n${v.RUNNER_USER} ALL=(${v.AGENT_USER}) NOPASSWD: ${v.CLAUDE_WRAPPER}\n${v.RUNNER_USER} ALL=(${v.AGENT_USER}) NOPASSWD: ${v.HARNESS_WRAPPER}\n`);
+  put("usr/local/bin/buzz-login", readFileSync(join(REPO, "runner/deploy/buzz-login"), "utf8").replace(/^readonly LOGIN=.*$/m, `readonly LOGIN=${v.LIBEXEC_DIR}/buzz-login.mjs`));
+  const consts = { RUN_AS: v.AGENT_USER, CLAUDE_DIR: v.CLAUDE_DIR, CODEX_BIN: v.CODEX_BIN, GOOSE_BIN: v.GOOSE_BIN, PI_MODULES: v.PI_MODULES };
+  let login = readFileSync(join(REPO, "runner/deploy/buzz-login.mjs"), "utf8");
+  for (const [name, value] of Object.entries(consts)) login = login.replace(new RegExp(`^const ${name} = ".*";$`, "m"), `const ${name} = "${value}";`);
+  put(`${v.LIBEXEC_DIR.slice(1)}/buzz-login.mjs`, login);
+}
+
+/** install.sh's own reading of an installed deployment (`--print-values`,
+ * which changes nothing). A run again must keep the names that the first
+ * run's environment set; a default name next to them would make a second
+ * runner user, rewrite the unit and the sudoers rule, and point serve at a
+ * socket that is not there. */
+function installValuesSmoke({ check, temp }) {
+  const base = join(temp, "installed");
+  const values = (env = {}, args = ["--print-values"]) => {
+    const run = spawnSync("bash", [INSTALL_SH, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, INSTALLED_ROOT: base, ...env } });
+    const pairs = Object.fromEntries(run.stdout.split("\n").filter((line) => line.includes("=")).map((line) => line.split(/=(.*)/s, 2)));
+    return { code: run.status, pairs, stderr: run.stderr };
+  };
+  rmSync(base, { recursive: true, force: true });
+  mkdirSync(base, { recursive: true });
+  const fresh = values();
+  check("install: a host without buzz-runner gets the default names", fresh.code === 0 && fresh.pairs.INSTALLED === "0" && fresh.pairs.RUNNER_DIRNAME === "buzz-runner" && fresh.pairs.AGENT_USER === "buzz-agent", JSON.stringify(fresh));
+
+  writeDeployment(base);
+  const kept = values();
+  const differ = Object.entries(CUSTOM).filter(([name, value]) => kept.pairs[name] !== value);
+  check("install: a run again keeps every name and path of the installed deployment", kept.code === 0 && kept.pairs.INSTALLED === "1" && differ.length === 0, differ.length ? JSON.stringify(differ.map(([name]) => [name, kept.pairs[name]])) : kept.stderr);
+  const set = values({ AGENT_HOME: "/srv/other" });
+  check("install: a value the environment sets wins over the installed one", set.code === 0 && set.pairs.AGENT_HOME === "/srv/other" && set.pairs.AGENT_USER === CUSTOM.AGENT_USER, JSON.stringify(set.pairs));
+
+  writeDeployment(base, ["const GOOSE_BIN = "]);
+  const unread = values();
+  check("install: an installed value that cannot be read stops the run (exit 78), not a default", unread.code === 78 && /GOOSE_BIN cannot be read/.test(unread.stderr) && !unread.pairs.GOOSE_BIN, unread.stderr);
+  writeDeployment(base);
+  const real = values({}, ["--no-start"]);
+  check("install: INSTALLED_ROOT is refused by a run that changes the host", real.code === 64 && /needs --dry-run or --print-values/.test(real.stderr), real.stderr);
 }

@@ -16,12 +16,14 @@
 # Usage (as root): bash -c "<this script>" setup.sh <stage> <port> <node> <sha>
 #   <stage>  the folder the helper made: /tmp/buzz-runner-setup.<random>
 #   <port>   the tailnet HTTPS port for `tailscale serve`
-#   <node>   the Node the runner runs on, one of NODE_PATHS
+#   <node>   a Node of NODE_PATHS: this script runs it, and a first install
+#            gives it to the runner (an installed runner keeps its own Node)
 #   <sha>    the SHA-256 of the stage's MANIFEST, in lowercase hex
 #
-# stdout: install.sh's lines, and one `@@step <name>` line as each step
-# starts, which the helper turns into the page's progress. No line holds a
-# secret: the sudo password never reaches this script.
+# stdout: install.sh's lines, one `@@step <name>` line as each step starts,
+# which the helper turns into the page's progress, and one
+# `@@agent-user <name>` line, for the page's sign-in command. No line holds
+# a secret: the sudo password never reaches this script.
 #
 # Exit: 0 done; 64 wrong arguments; 77 the machine has no ACL tag; 79 a
 # non-root user can change the Node (not 78, which install.sh uses for its
@@ -56,10 +58,9 @@ readonly STAGE_BYTES_MAX=16777216
 readonly READ_BLOCK=65536
 readonly PORT_RE='^[1-9][0-9]{0,4}$'
 readonly PORT_MAX=65535
-# install.sh's defaults (RUNNER_DIRNAME): the config it keeps and the socket
-# the runner listens on.
-readonly CONFIG_PATH=/etc/buzz-runner/config.json
-readonly SOCKET_PATH=/run/buzz-runner/api.sock
+# The socket's name in the runtime folder (/run/<RUNNER_DIRNAME>), as
+# install.sh's last note and config.example.json name it.
+readonly SOCKET_NAME=api.sock
 # The Node paths the helper may name (scripts/host-setup.mjs NODE_PATHS). The
 # first is for the runner only, so that a newer Node there does not change
 # the system Node that other tools need. sudo clears the environment, so the
@@ -186,14 +187,32 @@ trap 'rm -rf -- "${copy:?}"' EXIT
 copy_checked "$stage" "$sha" "$copy" || die "$EX_TAMPERED" "the stage at $stage is not what the helper sent; nothing was installed"
 
 step install
+install_sh=$copy/runner/deploy/install.sh
+bundle=$copy/runner/dist/buzz-runner.mjs
+# An installed deployment keeps its own names, folders and Node, as the owner
+# may have set them by hand (install.sh, "Each host value"); only a first
+# install takes the Node the helper found. The values come from install.sh
+# itself, so both scripts read the deployment the same way. INSTALLED_ROOT
+# is a smoke run aid and must never point a root run elsewhere.
+values=$(/usr/bin/env -u INSTALLED_ROOT /bin/bash "$install_sh" --print-values)
+value() { sed -n "s/^$1=//p" <<<"$values"; }
+dirname=$(value RUNNER_DIRNAME)
+runner_node=$node
+if [ "$(value INSTALLED)" = 1 ]; then
+	runner_node=$(value NODE_BIN)
+	program_root_only "$runner_node" || die "$EX_UNSAFE_NODE" "a user who is not root can change the installed runner's Node $runner_node or a folder above it; the root runner does not run it"
+	echo "setup.sh: keeping the installed deployment's values, with the Node at $runner_node"
+fi
+config_path=/etc/$dirname/config.json
 # A config already on the host may hold the owner's own edits, so a first
 # install takes the generated one and every later run keeps what is there.
-if [ -f "$CONFIG_PATH" ]; then
-	echo "setup.sh: keeping $CONFIG_PATH"
-	NODE_BIN=$node /bin/bash "$copy/runner/deploy/install.sh" --bundle "$copy/runner/dist/buzz-runner.mjs"
+if [ -f "$config_path" ]; then
+	echo "setup.sh: keeping $config_path"
+	NODE_BIN=$runner_node /bin/bash "$install_sh" --bundle "$bundle"
 else
-	NODE_BIN=$node /bin/bash "$copy/runner/deploy/install.sh" --bundle "$copy/runner/dist/buzz-runner.mjs" --config "$copy/config.json"
+	NODE_BIN=$runner_node /bin/bash "$install_sh" --bundle "$bundle" --config "$copy/config.json"
 fi
+printf '@@agent-user %s\n' "$(value AGENT_USER)"
 
 step serve
 # On an untagged machine, serve names the machine's owner as the caller of a
@@ -208,6 +227,6 @@ tags=$("$tailscale" status --json | "$node" -e '
 	});
 ')
 [ "$tags" -gt 0 ] || die "$EX_NOPERM" "this machine has no ACL tag; tag it in the Tailscale admin console, then run the setup again"
-"$tailscale" serve --bg --yes --https="$port" "unix:$SOCKET_PATH"
+"$tailscale" serve --bg --yes --https="$port" "unix:/run/$dirname/$SOCKET_NAME"
 
 step 'done'

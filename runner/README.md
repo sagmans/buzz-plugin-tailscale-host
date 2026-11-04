@@ -92,8 +92,14 @@ sudo runner/deploy/install.sh                               # update; keeps the 
 | `--config FILE` | Install this config. Without it the installed config stays. A first install without it stops before start |
 | `--no-start` | Install, but do not enable or restart |
 | `--dry-run` | Print the steps; no root needed |
+| `--print-values` | Print the names and paths below as `NAME=value` lines; change nothing |
 
-Every name is an environment variable, so a host can keep its own names:
+Every name is an environment variable. A value comes from the environment
+first. On a host where buzz-runner is installed, a value that the
+environment does not set comes next from the installed unit, sudoers rule
+and `buzz-login`, so a run again (and **Add host**) keeps the host's own
+names. If the script cannot read an installed value, it stops with exit 78:
+set that value in the environment. The defaults apply to a first install:
 
 | Variable | Default |
 | --- | --- |
@@ -177,6 +183,11 @@ page takes the first of these paths that is there:
 `deploy/setup.sh` refuses the path (exit 79) unless root owns the path, each
 link on its way, the last file, and every folder above them, and no group
 or other user can write any of them.
+
+The setup itself runs on that path. A runner that is already installed
+keeps the Node that its unit names, which can be another path (for example
+one that `NODE_BIN` set at the first install). `deploy/setup.sh` checks
+that Node in the same way.
 
 To give the runner its own Node with mise, in a data folder that only root
 can write (not in a home), run these steps as the owner of the machine.

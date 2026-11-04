@@ -18,34 +18,40 @@
 #                  start, with the example config to edit)
 #   --no-start     install everything, but do not enable or restart
 #   --dry-run      print every step, change nothing (no root needed)
+#   --print-values print the host values as NAME=value lines and change
+#                  nothing; setup.sh reads them before its install
 #
-# Every value below can be set in the environment, for example
+# Each host value below comes from the environment first, for example
 #   sudo AGENT_USER=agents NODE_BIN=/opt/node/bin/node runner/deploy/install.sh
-# An existing deployment that uses other names keeps them by setting these.
+# When buzz-runner is already installed, a value that the environment does
+# not set comes next from the files that this script installed (the unit,
+# the sudoers rule, buzz-login), so a run again keeps the names of that
+# deployment. An installed value that cannot be read stops the run: set it
+# in the environment. The defaults are for a first install only.
 set -euo pipefail
 umask 022
 
-# ---- Host values (environment overrides) --------------------------------
+# ---- Host value defaults (first install) ----------------------------------
 # The runner's system user; it owns the agent keys and nothing else.
-RUNNER_USER=${RUNNER_USER:-buzz-runner}
+readonly DEFAULT_RUNNER_USER=buzz-runner
 # Name of the systemd state, runtime and config directories
 # (/var/lib/<name>, /run/<name>, /etc/<name>).
-RUNNER_DIRNAME=${RUNNER_DIRNAME:-buzz-runner}
+readonly DEFAULT_RUNNER_DIRNAME=buzz-runner
 # The harness user; every harness runs as it, through the wrappers only.
-AGENT_USER=${AGENT_USER:-buzz-agent}
-AGENT_HOME=${AGENT_HOME:-/home/$AGENT_USER}
+readonly DEFAULT_AGENT_USER=buzz-agent
+readonly DEFAULT_HOME_PARENT=/home
 # Node >= 24 for the runner, and >= 22.19 for Pi's launcher.
-NODE_BIN=${NODE_BIN:-/usr/bin/node}
-LIB_DIR=${LIB_DIR:-/usr/local/lib/buzz-runner}
-LIBEXEC_DIR=${LIBEXEC_DIR:-/usr/local/libexec/buzz-runner}
-CLAUDE_WRAPPER=${CLAUDE_WRAPPER:-$LIBEXEC_DIR/claude-wrapper}
-HARNESS_WRAPPER=${HARNESS_WRAPPER:-$LIBEXEC_DIR/harness-wrapper}
+readonly DEFAULT_NODE_BIN=/usr/bin/node
+readonly DEFAULT_LIB_DIR=/usr/local/lib/buzz-runner
+readonly DEFAULT_LIBEXEC_DIR=/usr/local/libexec/buzz-runner
 # Pinned harness installs; installing them is the owner's step (README).
-HARNESS_ROOT=${HARNESS_ROOT:-/usr/local/lib/buzz-harness}
-CLAUDE_DIR=${CLAUDE_DIR:-$HARNESS_ROOT/claude/2.1.316}
-CODEX_BIN=${CODEX_BIN:-$HARNESS_ROOT/codex/0.164.0/bin/codex}
-GOOSE_BIN=${GOOSE_BIN:-$HARNESS_ROOT/goose/1.57.0/goose-acp}
-PI_MODULES=${PI_MODULES:-$HARNESS_ROOT/pi/1.4.0/node_modules}
+readonly DEFAULT_HARNESS_ROOT=/usr/local/lib/buzz-harness
+readonly PIN_CLAUDE=claude/2.1.316
+readonly PIN_CODEX=codex/0.164.0/bin/codex
+readonly PIN_GOOSE=goose/1.57.0/goose-acp
+readonly PIN_PI=pi/1.4.0/node_modules
+# The host values, in the order --print-values prints them.
+readonly VALUE_NAMES='RUNNER_USER RUNNER_DIRNAME AGENT_USER AGENT_HOME NODE_BIN LIB_DIR LIBEXEC_DIR CLAUDE_WRAPPER HARNESS_WRAPPER CLAUDE_DIR CODEX_BIN GOOSE_BIN PI_MODULES'
 
 # ---- Fixed names -----------------------------------------------------------
 readonly SERVICE=buzz-runner
@@ -75,6 +81,7 @@ bundle=$runner_dir/dist/buzz-runner.mjs
 config_src=
 start=1
 dry_run=0
+print_values=0
 
 die() {
 	echo "install.sh: $2" >&2
@@ -114,6 +121,10 @@ while [ $# -gt 0 ]; do
 		dry_run=1
 		shift
 		;;
+	--print-values)
+		print_values=1
+		shift
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -121,6 +132,117 @@ while [ $# -gt 0 ]; do
 	*) die "$EX_USAGE" "unknown argument: $1 (see --help)" ;;
 	esac
 done
+
+# ---- Host values -------------------------------------------------------------
+# INSTALLED_ROOT lets the smoke run show an installed deployment from a
+# folder. Only the two modes that change nothing take it, so a real run
+# always reads the host's own files.
+installed_root=${INSTALLED_ROOT:-}
+if [ -n "$installed_root" ] && [ "$dry_run" -eq 0 ] && [ "$print_values" -eq 0 ]; then
+	die "$EX_USAGE" "INSTALLED_ROOT needs --dry-run or --print-values"
+fi
+
+# installed FILE PREFIX [SUFFIX]: the value that render (below) put between
+# PREFIX and SUFFIX on the one line of FILE that starts with PREFIX; nothing
+# when the file, that one line or the suffix is not there.
+installed() {
+	local file=$installed_root$1
+	[ -r "$file" ] || return 0
+	awk -v pre="$2" -v suf="${3:-}" '
+		index($0, pre) == 1 { n++; v = substr($0, length(pre) + 1) }
+		END {
+			if (n != 1) exit
+			if (suf != "") {
+				if (length(v) < length(suf) || substr(v, length(v) - length(suf) + 1) != suf) exit
+				v = substr(v, 1, length(v) - length(suf))
+			}
+			print v
+		}' "$file"
+}
+
+# installed_rule N: "<run-as user> <command>" of the Nth rule of the installed
+# sudoers file, as the render below writes it (1: claude, 2: harness, in
+# sudoers.template's order); nothing when that rule is not in that shape.
+installed_rule() {
+	local file=$installed_root$SUDOERS_PATH
+	[ -r "$file" ] || return 0
+	awk -v want="$1" '
+		/^#/ || !NF { next }
+		{ n++ }
+		n == want && NF == 4 && $3 == "NOPASSWD:" && $2 ~ /^ALL=\([^)]+\)$/ {
+			user = $2; sub(/^ALL=\(/, "", user); sub(/\)$/, "", user)
+			print user " " $4
+		}' "$file"
+}
+
+installed=0
+i_runner_user='' i_dirname='' i_agent_user='' i_agent_home='' i_node='' i_lib_dir=''
+i_libexec_dir='' i_claude_wrapper='' i_harness_wrapper='' i_claude_dir='' i_codex='' i_goose='' i_pi=''
+if [ -f "$installed_root$UNIT_PATH" ]; then
+	installed=1
+	i_runner_user=$(installed "$UNIT_PATH" "User=")
+	i_dirname=$(installed "$UNIT_PATH" "StateDirectory=")
+	# render writes ExecStart as "<node> <lib>/buzz-runner.mjs --config /etc/<dir>/config.json".
+	read -r exec_node exec_bundle exec_flag exec_config exec_rest <<<"$(installed "$UNIT_PATH" "ExecStart=")" || true
+	if [ "${exec_bundle##*/}" = buzz-runner.mjs ] && [ "$exec_flag" = --config ] && [ "$exec_config" = "/etc/$i_dirname/config.json" ] && [ -z "$exec_rest" ]; then
+		i_node=$exec_node
+		i_lib_dir=${exec_bundle%/*}
+	fi
+	# render writes the harness home without its leading slash.
+	home=$(installed "$UNIT_PATH" "ReadWritePaths=/")
+	[ -z "$home" ] || i_agent_home=/$home
+	login=$(installed "$LOGIN_FRONT" "readonly LOGIN=")
+	[ "${login##*/}" != buzz-login.mjs ] || i_libexec_dir=${login%/*}
+	if [ -n "$i_libexec_dir" ]; then
+		login_mjs=$i_libexec_dir/buzz-login.mjs
+		i_agent_user=$(installed "$login_mjs" 'const RUN_AS = "' '";')
+		i_claude_dir=$(installed "$login_mjs" 'const CLAUDE_DIR = "' '";')
+		i_codex=$(installed "$login_mjs" 'const CODEX_BIN = "' '";')
+		i_goose=$(installed "$login_mjs" 'const GOOSE_BIN = "' '";')
+		i_pi=$(installed "$login_mjs" 'const PI_MODULES = "' '";')
+	fi
+	read -r claude_user claude_cmd <<<"$(installed_rule 1)" || true
+	read -r harness_user harness_cmd <<<"$(installed_rule 2)" || true
+	# Both rules run as the harness user that buzz-login names; anything else
+	# is not this script's sudoers file.
+	if [ -n "$i_agent_user" ] && [ "$claude_user" = "$i_agent_user" ] && [ "$harness_user" = "$i_agent_user" ]; then
+		i_claude_wrapper=$claude_cmd
+		i_harness_wrapper=$harness_cmd
+	fi
+fi
+
+# pick NAME FOUND DEFAULT: the environment's value, else the installed one
+# (FOUND), else DEFAULT. A run again must not put default names next to an
+# installed deployment, so an installed value that cannot be read stops it;
+# only a dry run (which may lack root to read sudoers) goes on with DEFAULT.
+pick() {
+	local name=$1 found=$2 default=$3
+	[ -z "${!name:-}" ] || return 0
+	if [ "$installed" -eq 1 ]; then
+		if [ -n "$found" ]; then
+			printf -v "$name" '%s' "$found"
+			return 0
+		fi
+		[ "$dry_run" -eq 1 ] || die "$EX_CONFIG" "buzz-runner is installed, but its $name cannot be read from the installed files; set $name in the environment"
+		echo "install.sh: dry run: cannot read the installed $name; using $default" >&2
+	fi
+	printf -v "$name" '%s' "$default"
+}
+pick RUNNER_USER "$i_runner_user" "$DEFAULT_RUNNER_USER"
+pick RUNNER_DIRNAME "$i_dirname" "$DEFAULT_RUNNER_DIRNAME"
+pick AGENT_USER "$i_agent_user" "$DEFAULT_AGENT_USER"
+pick AGENT_HOME "$i_agent_home" "$DEFAULT_HOME_PARENT/$AGENT_USER"
+pick NODE_BIN "$i_node" "$DEFAULT_NODE_BIN"
+pick LIB_DIR "$i_lib_dir" "$DEFAULT_LIB_DIR"
+pick LIBEXEC_DIR "$i_libexec_dir" "$DEFAULT_LIBEXEC_DIR"
+pick CLAUDE_WRAPPER "$i_claude_wrapper" "$LIBEXEC_DIR/claude-wrapper"
+pick HARNESS_WRAPPER "$i_harness_wrapper" "$LIBEXEC_DIR/harness-wrapper"
+# Only the defaults below use it; an installed deployment names each path.
+HARNESS_ROOT=${HARNESS_ROOT:-$DEFAULT_HARNESS_ROOT}
+pick CLAUDE_DIR "$i_claude_dir" "$HARNESS_ROOT/$PIN_CLAUDE"
+pick CODEX_BIN "$i_codex" "$HARNESS_ROOT/$PIN_CODEX"
+pick GOOSE_BIN "$i_goose" "$HARNESS_ROOT/$PIN_GOOSE"
+pick PI_MODULES "$i_pi" "$HARNESS_ROOT/$PIN_PI"
 
 # ---- Validate inputs before any change ----------------------------------
 check_value() {
@@ -135,6 +257,15 @@ check_value RUNNER_DIRNAME "$RUNNER_DIRNAME" "$DIRNAME_RE"
 for name in AGENT_HOME NODE_BIN LIB_DIR LIBEXEC_DIR CLAUDE_WRAPPER HARNESS_WRAPPER CLAUDE_DIR CODEX_BIN GOOSE_BIN PI_MODULES; do
 	check_value "$name" "${!name}" "$PATH_RE"
 done
+
+# Every value passed check_value, so no line can hold a space, a quote or a
+# newline: setup.sh splits them at the first "=".
+if [ "$print_values" -eq 1 ]; then
+	echo "INSTALLED=$installed"
+	for name in $VALUE_NAMES; do echo "$name=${!name}"; done
+	exit 0
+fi
+[ "$installed" -eq 0 ] || note "updating the installed deployment of $UNIT_PATH; it keeps its names and paths unless the environment sets them"
 
 [ "$(uname -s)" = Linux ] || [ "$dry_run" -eq 1 ] || die "$EX_SOFTWARE" "buzz-runner runs on Linux only"
 [ "$(id -u)" -eq 0 ] || [ "$dry_run" -eq 1 ] || die "$EX_NOPERM" "run as root (or with --dry-run)"

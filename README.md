@@ -153,7 +153,9 @@ a new runner bundle from that commit for each setup.
 
 **Add host** for a machine that is already in `hosts.json` aligns it: the
 setup updates the runner, keeps the config on the machine, and keeps the
-entry in `hosts.json`.
+entry in `hosts.json`. The same is true for a machine with a runner that is
+not listed yet. The runner keeps its own users, folders and Node, also when
+they are not the defaults (runner/README.md, "Deploy").
 
 The plugin reads and saves `hosts.json` and calls the hosts through
 `scripts/hosts-helper.mjs`. The build grants the plugin one host process:
