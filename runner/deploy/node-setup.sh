@@ -105,7 +105,8 @@ fetch() {
 		/usr/bin/curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout "$CONNECT_TIMEOUT_S" \
 			--max-time "$DOWNLOAD_TIMEOUT_S" --speed-limit "$SPEED_LIMIT" --speed-time "$SPEED_TIME_S" -o "$to" -- "$url"
 	elif [ -x /usr/bin/wget ]; then
-		/usr/bin/wget -q --https-only --timeout="$SPEED_TIME_S" --tries=1 -O "$to" -- "$url"
+		# wget has no bound on the whole download, so timeout gives it one.
+		timeout "$DOWNLOAD_TIMEOUT_S" /usr/bin/wget -q --https-only --timeout="$SPEED_TIME_S" --tries=1 -O "$to" -- "$url"
 	else
 		die "$EX_UNAVAILABLE" "no /usr/bin/curl or /usr/bin/wget to download Node with"
 	fi
@@ -116,7 +117,7 @@ x86_64) arch=x64 sha=$NODE_SHA256_X64 ;;
 aarch64) arch=arm64 sha=$NODE_SHA256_ARM64 ;;
 *) die "$EX_USAGE" "no Node pin for this machine type: $(uname -m)" ;;
 esac
-for tool in tar gzip sha256sum; do
+for tool in tar gzip sha256sum timeout; do
 	command -v "$tool" >/dev/null || die "$EX_UNAVAILABLE" "no $tool on the machine"
 done
 
