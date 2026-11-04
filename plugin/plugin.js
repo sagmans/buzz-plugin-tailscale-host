@@ -144,7 +144,7 @@ const LABELS = Object.freeze({
   settingsIntro:
     "These hosts are in hosts.json. New agent of the type Tailscale host can run on each of them; the first is the default. A change here saves hosts.json and is in use at once. You can also edit hosts.json by hand, then select Check again.",
   addIntro:
-    "Add host installs buzz-runner on the machine over Tailscale SSH, with root, or aligns the runner already there, then adds the machine to hosts.json. The machine needs Linux, an ACL tag, Tailscale SSH and Node 24 or later at /opt/buzz-runner/node (for the runner only) or /usr/bin/node.",
+    "Add host installs buzz-runner on the machine over Tailscale SSH, with root, or aligns the runner already there, then adds the machine to hosts.json. It also installs the runner's own Node. The machine needs Linux, an ACL tag, Tailscale SSH, and curl or wget.",
   noHosts: "No Tailscale hosts. Add one in Settings > Plugins > Tailscale hosts.",
   helperMissing: "This version of Buzz Desktop cannot run the hosts helper, which this plugin needs to reach its hosts.",
   helperSilent:
@@ -206,6 +206,7 @@ const SETUP_STEPS = Object.freeze([
   ["machine", "Check the machine"],
   ["bundle", "Build the runner"],
   ["connect", "Connect over Tailscale SSH"],
+  ["node", "Install the runner's Node"],
   ["copy", "Copy the runner"],
   ["install", "Install buzz-runner"],
   ["serve", "Turn on tailscale serve"],
@@ -214,8 +215,8 @@ const SETUP_STEPS = Object.freeze([
 ]);
 const SETUP_STATES = Object.freeze(["running", "waiting", "done", "failed"]);
 // The longest a setup step may run without a progress line: the helper's
-// own longest step timeout (install and build, 10 min), with a margin.
-const SETUP_IDLE_MS = 660000;
+// own longest step timeout (the Node download, 16 min), with a margin.
+const SETUP_IDLE_MS = 1020000;
 // The only links a setup shows: a Tailscale SSH check, which the user opens
 // to approve the connection (scripts/host-setup.mjs CHECK_LINK_RE).
 const CHECK_LINK = /^https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.-]{1,200}$/;

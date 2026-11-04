@@ -128,9 +128,8 @@ that the machine:
 - has Tailscale SSH on (`tailscale set --ssh`), and your login may use it,
 - has the tailscale CLI at `/usr/bin/tailscale` or `/usr/local/bin/tailscale`,
   and only root may change it (see `runner/README.md`, "Tailscale CLI"),
-- has systemd, and Node 24 or later at `/opt/buzz-runner/node` (for the
-  runner only) or `/usr/bin/node`. Only root may change that Node and the
-  folders above it, so not a version manager in a user's home (see
+- has systemd, and `curl` or `wget` at `/usr/bin`, with access to
+  `nodejs.org`. The setup installs the runner's own Node there (see
   `runner/README.md`, "Node").
 
 Then:
@@ -141,9 +140,9 @@ Then:
    the owner key and the relay: they come from the identity and community
    that are open in the app.
 3. Select **Add host**. The page shows each step: check the machine, build
-   the runner, connect, copy, install, `tailscale serve`, add to
-   `hosts.json`, check the runner. If Tailscale SSH asks for a check, the
-   page shows the link to open.
+   the runner, connect, install the runner's Node, copy, install,
+   `tailscale serve`, add to `hosts.json`, check the runner. If Tailscale
+   SSH asks for a check, the page shows the link to open.
 4. Do the steps that the page lists at the end: install and sign in each
    harness, and let only your login reach port 10000 in the tailnet policy.
 

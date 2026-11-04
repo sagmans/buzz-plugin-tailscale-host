@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PluginBuildError, RUNNER_PORT, buildPlugin, validateHosts } from "../../scripts/build-plugin.mjs";
+import { SETUP_STEPS } from "../../scripts/host-setup.mjs";
 import { runnerUrl } from "../../scripts/hosts-helper.mjs";
 import { makeCertificate, startFront } from "./https-front.mjs";
 
@@ -863,7 +864,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
           setupLines.push(ask);
           if (ask.op === "read") return answer({ id: ask.id, ok: true, hosts: [SMOKE_HOST] });
           if (ask.op === "request") return answer({ id: ask.id, ok: false, error: "no runner here" });
-          const steps = ["machine", "bundle", "connect", "copy", "install", "serve", "hosts", "health"];
+          const steps = SETUP_STEPS;
           answer({ id: ask.id, progress: { step: "connect", state: "waiting", link: "https://login.tailscale.com/a/page-check" } });
           answer({ id: ask.id, progress: { step: "copy", state: "waiting", link: "javascript:alert(1)" } });
           await setupHeld;
@@ -916,7 +917,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     );
     check("plugin: the password field is empty once the setup starts", fieldControl(setupForm(), "sudo password")?.value === "" && !setupPage.node.innerHTML.includes("page pass"));
     const stepStates = [...setupPage.node.querySelectorAll("li[data-step]")].map((item) => `${item.dataset.step}:${item.dataset.state}`);
-    check("plugin: the page shows every setup step, in order, as done", JSON.stringify(stepStates) === JSON.stringify(["machine", "bundle", "connect", "copy", "install", "serve", "hosts", "health"].map((step) => `${step}:done`)), JSON.stringify(stepStates));
+    check("plugin: the page shows every setup step, in order, as done", JSON.stringify(stepStates) === JSON.stringify(SETUP_STEPS.map((step) => `${step}:done`)), JSON.stringify(stepStates));
     check(
       "plugin: a finished setup names the host and the sign-in command to copy",
       setupPage.node.textContent.includes("Added Lab Box (buzz-runner 0.0.0-page)") && setupPage.node.querySelector("code")?.textContent === `ssh -t owner@${LAB_DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`,

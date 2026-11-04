@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Stand-in for /usr/bin/ssh in the host setup scenarios (setup.mjs). It
-// takes the argv that scripts/host-setup.mjs builds and answers its four
-// remote commands the way a Linux machine would: the probe, the copy (it
-// runs the real unpack program, so the stage folder is made as on a host),
-// the root run of setup.sh, and the stage removal. For the root run it does
+// takes the argv that scripts/host-setup.mjs builds and answers its five
+// remote commands the way a Linux machine would: the probe, the root run of
+// node-setup.sh, the copy (it runs the real unpack program, so the stage
+// folder is made as on a host), the root run of setup.sh, and the stage
+// removal. It never runs node-setup.sh either: its download and install are
+// a host test (runner/README.md, "Node"). For the root run it does
 // what setup.sh does before install.sh: it checks the stage against the
 // manifest hash that the command pins. It never runs install.sh: that needs
 // root and systemd, and has its own dry run. The real setup.sh is a host
@@ -25,6 +27,8 @@
 //                      non-root user can change (its exit 81)
 //   FAKE_SSH_AGENT_USER the harness user setup.sh reports, as an aligned
 //                      host with its own names does; unset: no report
+//   FAKE_SSH_NODE_EXIT  node-setup.sh's exit code (0 or unset: it installs
+//                      the runner's Node and names it)
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -34,6 +38,10 @@ const STAGE_RE = /\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}/;
 /** The root command as host-setup.mjs installCommand builds it: the script
  * as base64, then setup.sh's arguments. */
 const ROOT_RUN_RE = /\/bin\/bash -c "\$\(printf %s ([A-Za-z0-9+/=]+) \| \/usr\/bin\/base64 -d\)" setup\.sh (\S+) (\d+) (\S+) ([0-9a-f]{64})/;
+/** The root command of node-setup.sh: the script as base64 and no
+ * arguments, at the end of the remote shell's quoted command. */
+const NODE_RUN_RE = /\/bin\/bash -c "\$\(printf %s ([A-Za-z0-9+/=]+) \| \/usr\/bin\/base64 -d\)" node-setup\.sh'$/;
+const NODE_LINE = "@@node /opt/buzz-runner/node 24.22.1\n";
 const MANIFEST = "MANIFEST";
 const TAMPERED_FILE = "runner/deploy/install.sh";
 /** setup.sh STAGE_BYTES_MAX: the most bytes of listed files root copies. */
@@ -93,17 +101,33 @@ function stageMatches(stage, pinned) {
   return listed.every(([hash], index) => sha256(data[index]) === hash);
 }
 
+/** sudo -S on the machine: the first stdin line must be the password. */
+function sudoChecked() {
+  if (!command.includes("sudo -k -S")) return;
+  if (stdin.toString("utf8").split("\n")[0] !== process.env.FAKE_SSH_PASSWORD) {
+    process.stderr.write("Sorry, try again.\nsudo: 1 incorrect password attempt\n");
+    process.exit(EXIT_SUDO);
+  }
+}
+
+const nodeRun = NODE_RUN_RE.exec(command);
+if (nodeRun) {
+  appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ nodeRun: { script: Buffer.from(nodeRun[1], "base64").toString("utf8") } })}\n`);
+  sudoChecked();
+  const code = Number(process.env.FAKE_SSH_NODE_EXIT || 0);
+  if (code) {
+    process.stderr.write("node-setup.sh: no /usr/bin/curl or /usr/bin/wget to download Node with\n");
+    process.exit(code);
+  }
+  process.stdout.write(NODE_LINE);
+  process.exit(0);
+}
+
 const rootRun = ROOT_RUN_RE.exec(command);
 if (rootRun) {
   const [, script, stage, port, node, pinned] = rootRun;
   appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ rootRun: { script: Buffer.from(script, "base64").toString("utf8"), stage, port, node, pinned, files: filesIn(stage).sort() } })}\n`);
-  if (command.includes("sudo -k -S")) {
-    const typed = stdin.toString("utf8").split("\n")[0];
-    if (typed !== process.env.FAKE_SSH_PASSWORD) {
-      process.stderr.write("Sorry, try again.\nsudo: 1 incorrect password attempt\n");
-      process.exit(EXIT_SUDO);
-    }
-  }
+  sudoChecked();
   if (process.env.FAKE_SSH_NODE_UNSAFE === "1") {
     process.stderr.write(`setup.sh: a user who is not root can change ${node} or a folder above it; the root runner does not run it\n`);
     process.exit(EXIT_UNSAFE_NODE);

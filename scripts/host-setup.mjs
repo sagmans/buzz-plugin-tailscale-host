@@ -19,9 +19,11 @@
 // the stdin of sudo on the machine; it is never in an argument, a file, a
 // log line or a progress event.
 //
-// The steps that need the user's own hands stay manual and are returned as a
-// list: the harness installs and sign-ins (a browser or a key), and the port
-// rule in the tailnet policy (no policy token here). A machine without an ACL
+// The runner's own Node comes first (node-setup.sh, in its own root command),
+// so the machine needs no Node before the setup. The steps that need the
+// user's own hands stay manual and are returned as a list: the harness
+// installs and sign-ins (a browser or a key), and the port rule in the
+// tailnet policy (no policy token here). A machine without an ACL
 // tag is refused before any change: on an untagged machine, a harness could
 // call the runner as its owner (runner/README.md, "Security notes").
 import { spawn } from "node:child_process";
@@ -44,13 +46,14 @@ const TAILSCALE_BINS = Object.freeze([
   "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
   "/usr/bin/tailscale",
 ]);
-/** The Node paths a setup may give the root runner, first match wins, and
- * the minimum major version. The first is read by the runner only, so a
- * newer Node there leaves the system Node (and the tools that need it) as it
- * is. setup.sh has the same list and refuses a path that a non-root user
- * could change (runner/README.md, "Node"). */
+/** The Node paths setup.sh accepts (its NODE_PATHS), and the one a setup
+ * uses: the runner-only Node that node-setup.sh installs or keeps. It is on
+ * no PATH, so a newer Node there leaves the system Node (and the tools that
+ * need it) as it is (runner/README.md, "Node"). */
 export const NODE_PATHS = Object.freeze(["/opt/buzz-runner/node", "/usr/bin/node"]);
-const NODE_MAJOR_MIN = 24;
+export const RUNNER_NODE = NODE_PATHS[0];
+/** node-setup.sh's line that names the Node it installed or kept. */
+const NODE_LINE_RE = /^@@node (\/\S+) (\d+\.\d+\.\d+)$/;
 /** Where the tailscale CLI may be on the machine, first match wins. setup.sh
  * has the same list (TAILSCALE_PATHS): root runs the CLI by path, because
  * its PATH leaves out /usr/local/bin, and the probe looks in the same places
@@ -83,6 +86,9 @@ const BUNDLE_MODE = 0o644;
 /** The root half of the setup. Root runs it from the command line, never
  * from the stage that the SSH user could change. */
 const SETUP_SCRIPT = "runner/deploy/setup.sh";
+/** The root script that gives the runner its own Node, before the copy
+ * needs one. Like setup.sh it goes in the root command. */
+const NODE_SETUP_SCRIPT = "runner/deploy/node-setup.sh";
 /** The stage file that lists every other stage file with its SHA-256, in
  * sha256sum's `<hex>  <path>` form; setup.sh checks the copy against it. */
 const MANIFEST = "MANIFEST";
@@ -98,7 +104,7 @@ const TREE_PATHS = Object.freeze(["runner", "scripts/build-runner.mjs"]);
 const CONFIG_EXAMPLE = "runner/config.example.json";
 const BUILD_RUNNER = "scripts/build-runner.mjs";
 /** The page's step list, in order (plugin.js SETUP_STEPS). */
-export const SETUP_STEPS = Object.freeze(["machine", "bundle", "connect", "copy", "install", "serve", "hosts", "health"]);
+export const SETUP_STEPS = Object.freeze(["machine", "bundle", "connect", "node", "copy", "install", "serve", "hosts", "health"]);
 
 /** A Linux login name, as install.sh's USER_RE allows. Empty means ssh's
  * default, the local user name. */
@@ -128,14 +134,16 @@ const CHECK_LINK_RE = /https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.-]{1,200
 const SUDO_REFUSED_RE = /incorrect password|Sorry, try again|no password was provided|a password is required/;
 
 /** Timeouts. The first connect waits for a Tailscale SSH check, which the
- * user approves in a browser. The install builds nothing on the machine, but
- * its service start waits up to 10 s. The health check waits for serve's
- * first certificate, which can take a minute. */
+ * user approves in a browser. The Node step downloads about 55 MB
+ * (node-setup.sh DOWNLOAD_TIMEOUT_S, with a margin). The install builds
+ * nothing on the machine, but its service start waits up to 10 s. The health
+ * check waits for serve's first certificate, which can take a minute. */
 const STATUS_TIMEOUT_MS = 15_000;
 const BUILD_TIMEOUT_MS = 600_000;
 const GIT_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 300_000;
 const COPY_TIMEOUT_MS = 120_000;
+const NODE_TIMEOUT_MS = 960_000;
 const INSTALL_TIMEOUT_MS = 600_000;
 const HEALTH_TIMEOUT_MS = 120_000;
 const HEALTH_TRY_MS = 20_000;
@@ -171,7 +179,7 @@ const WORK_RE = /^buzz-setup-[A-Za-z0-9]{6}$/;
  * stale (a clock that stepped back), and a small step back keeps a live
  * folder. */
 const WORK_STALE_MS =
-  2 * (STATUS_TIMEOUT_MS + 2 * GIT_TIMEOUT_MS + BUILD_TIMEOUT_MS + CONNECT_TIMEOUT_MS + 3 * COPY_TIMEOUT_MS + INSTALL_TIMEOUT_MS + HEALTH_TIMEOUT_MS + HEALTH_TRY_MS + HEALTH_RETRY_MS);
+  2 * (STATUS_TIMEOUT_MS + 2 * GIT_TIMEOUT_MS + BUILD_TIMEOUT_MS + CONNECT_TIMEOUT_MS + NODE_TIMEOUT_MS + 3 * COPY_TIMEOUT_MS + INSTALL_TIMEOUT_MS + HEALTH_TIMEOUT_MS + HEALTH_TRY_MS + HEALTH_RETRY_MS);
 
 /** A setup step that failed, with the step and the reason the page shows. */
 export class HostSetupError extends Error {
@@ -408,8 +416,6 @@ function sshArgs(peer, { sshUser, knownHosts, port }, command) {
 const PROBE = [
   "echo os=$(uname -s)",
   "echo uid=$(id -u)",
-  // The first Node that is there, so that the probe and setup.sh agree.
-  `for n in ${NODE_PATHS.join(" ")}; do if [ -x "$n" ]; then echo node_bin=$n; echo node=$("$n" -p process.versions.node 2>/dev/null); break; fi; done`,
   "command -v systemctl >/dev/null && echo systemd=1",
   `for t in ${HOST_TAILSCALE_PATHS.join(" ")}; do if [ -x "$t" ]; then echo tailscale_bin=$t; break; fi; done`,
   "command -v sudo >/dev/null && echo sudo=1",
@@ -464,14 +470,16 @@ function manifestOf(files) {
   return { file: { path: MANIFEST, mode: 0o644, data: Buffer.from(text).toString("base64") }, sha: sha256(text) };
 }
 
-/** The root run of setup.sh, by the access the probe found. The script text
- * goes in the command as base64, so the root shell runs what this helper
- * sent and not a file that the SSH user could change. With a password, the
- * remote shell reads it from stdin into a variable and gives it to sudo by a
- * pipe, so it is in no argument list; `-k` makes sudo ask even with a cached
- * sign-in, so the password never goes to setup.sh's stdin instead. */
-function installCommand({ stage, access, node, script, sha }) {
-  const root = `/bin/bash -c "$(printf %s ${Buffer.from(script).toString("base64")} | /usr/bin/base64 -d)" setup.sh ${stage} ${RUNNER_PORT} ${node} ${sha}`;
+/** A root run of one of the setup's root scripts (setup.sh, node-setup.sh),
+ * by the access the probe found. The script text goes in the command as
+ * base64, so the root shell runs what this helper sent and not a file that
+ * the SSH user could change. `args` are values this module made or checked,
+ * never text from the page. With a password, the remote shell reads it from
+ * stdin into a variable and gives it to sudo by a pipe, so it is in no
+ * argument list; `-k` makes sudo ask even with a cached sign-in, so the
+ * password never goes to the script's stdin instead. */
+function rootCommand({ access, script, name, args = [] }) {
+  const root = [`/bin/bash -c "$(printf %s ${Buffer.from(script).toString("base64")} | /usr/bin/base64 -d)"`, name, ...args].join(" ");
   if (access === "root") return `/bin/sh -c '${root}'`;
   if (access === "sudon") return `/bin/sh -c 'sudo -n -- ${root}'`;
   return `/bin/sh -c 'IFS= read -r P || exit ${SETUP_EXIT.readStdin}; printf "%s\\n" "$P" | sudo -k -S -p "" -- ${root}'`;
@@ -571,6 +579,109 @@ function manualSteps(peer, sshUser, agentUser) {
   ];
 }
 
+/** Why a root script failed, in the words the page shows: a refused sudo
+ * password, the reason a known exit code stands for, or the script's last
+ * lines. */
+function rootFailure(result, access, reasons = {}) {
+  if (result.timedOut) return undefined;
+  if (access === "password" && SUDO_REFUSED_RE.test(result.stderr)) return "sudo refused the password";
+  const reason = reasons[result.code];
+  if (reason) return typeof reason === "function" ? reason(tail(result.stderr)) : reason;
+  return tail(`${result.stdout}\n${result.stderr}`) || `exit ${result.code}`;
+}
+
+/** The connect step: the probe over ssh, pinned to the peer's keys. It
+ * finds what the machine has and how this login becomes root, and changes
+ * nothing. */
+async function connectStep(peer, setup, { ssh, sshPort, work, progress }) {
+  const fail = (message) => new HostSetupError(message, { step: "connect" });
+  const knownHosts = join(work, "known_hosts");
+  writeFileSync(knownHosts, peer.keys.map((key) => `${peer.dnsName} ${key}\n`).join(""), { mode: 0o600 });
+  const session = { sshUser: setup.sshUser, knownHosts, port: sshPort };
+  // A Tailscale SSH check holds the session until the user approves it.
+  const onCheck = (line) => {
+    const link = CHECK_LINK_RE.exec(line)?.[0];
+    if (link) progress("waiting", "Approve the Tailscale SSH check in your browser", link);
+  };
+  const probe = await run(ssh, sshArgs(peer, session, `/bin/sh -c '${PROBE}'`), { timeoutMs: CONNECT_TIMEOUT_MS, onErrLine: onCheck });
+  if (probe.timedOut) throw fail("ssh did not connect in time (a Tailscale SSH check waits for your approval)");
+  if (probe.code !== 0) throw fail(`ssh failed: ${tail(probe.stderr) || `exit ${probe.code}`}`);
+  const facts = Object.fromEntries(probe.stdout.split("\n").filter((line) => line.includes("=")).map((line) => line.split(/=(.*)/s, 2)));
+  if (facts.os !== "Linux") throw fail(`the machine runs ${clip(facts.os || "an unknown system", 40)}; the runner needs Linux`);
+  if (!facts.systemd) throw fail("the machine has no systemd");
+  const tailscale = HOST_TAILSCALE_PATHS.find((path) => path === facts.tailscale_bin);
+  if (!tailscale) throw fail(`the machine has no tailscale CLI at ${HOST_TAILSCALE_PATHS.join(" or ")}`);
+  const access = facts.uid === "0" ? "root" : facts.sudon ? "sudon" : facts.sudo ? "password" : undefined;
+  if (!access) throw fail("the SSH login is not root and has no sudo");
+  if (access === "password" && !setup.sudoPassword) throw fail("sudo on the machine asks for a password: enter it, then run the setup again");
+  progress("done", access === "root" ? "root" : "sudo");
+  return { session, access, tailscale };
+}
+
+/** The node step: node-setup.sh, as root, installs the pinned Node at
+ * RUNNER_NODE or keeps a safe, new enough one there. The copy and setup.sh
+ * then run on it, so the machine needs no Node of its own. */
+async function nodeStep(peer, session, { ssh, access, root, sudoPassword }) {
+  const script = readFileSync(join(root, NODE_SETUP_SCRIPT), "utf8");
+  const result = await run(ssh, sshArgs(peer, session, rootCommand({ access, script, name: "node-setup.sh" })), {
+    input: access === "password" ? `${sudoPassword}\n` : "",
+    timeoutMs: NODE_TIMEOUT_MS,
+  });
+  const fail = (message) => new HostSetupError(message, { step: "node" });
+  if (result.code !== 0) throw fail(rootFailure(result, access) ?? "the Node install did not end in time");
+  const found = result.stdout.split("\n").map((line) => NODE_LINE_RE.exec(line.trim())).find(Boolean);
+  if (!found || found[1] !== RUNNER_NODE) throw fail(`node-setup.sh named no Node at ${RUNNER_NODE}`);
+  return { path: found[1], version: found[2] };
+}
+
+/** The copy step: the runner tree, a fresh bundle, the first-install config
+ * and their manifest, into a new stage folder as the SSH user. */
+async function copyStep(peer, session, { ssh, root, bundle, config }) {
+  const fail = (message) => new HostSetupError(message, { step: "copy" });
+  const files = STAGE_FILES.map(([path, mode]) => ({ path, mode, data: readFileSync(join(root, path)).toString("base64") }));
+  files.push({ path: BUNDLE, mode: BUNDLE_MODE, data: readFileSync(bundle).toString("base64") });
+  files.push({ path: "config.json", mode: 0o644, data: Buffer.from(config).toString("base64") });
+  const stageBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.data, "base64"), 0);
+  if (stageBytes > STAGE_BYTES_MAX) throw fail(`the runner files are ${stageBytes} bytes; setup.sh copies at most ${STAGE_BYTES_MAX}`);
+  const manifest = manifestOf(files);
+  files.push(manifest.file);
+  const copy = await run(ssh, sshArgs(peer, session, unpackCommand(RUNNER_NODE)), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });
+  const stage = /^@@stage (\S+)$/m.exec(copy.stdout)?.[1];
+  const reason = tail(copy.stderr) || `exit ${copy.code}`;
+  if (copy.code !== 0 || !stage || !STAGE_RE.test(stage)) throw fail(`the copy failed: ${reason}`);
+  const swept = (/^@@swept (\d+) (\d+)$/m.exec(copy.stdout) ?? []).slice(1).map(Number);
+  return { stage, sha: manifest.sha, count: files.length, swept: [swept[0] ?? 0, swept[1] ?? 0] };
+}
+
+/** The install and serve steps: setup.sh as root, which installs from its
+ * root-only copy of the stage and reports each step it starts. */
+async function installStep(peer, session, { ssh, access, root, staged, tailscale, sudoPassword, progress, begin }) {
+  const script = readFileSync(join(root, SETUP_SCRIPT), "utf8");
+  const command = rootCommand({ access, script, name: "setup.sh", args: [staged.stage, RUNNER_PORT, RUNNER_NODE, staged.sha] });
+  let agentUser = DEFAULT_AGENT_USER;
+  const install = await run(ssh, sshArgs(peer, session, command), {
+    input: access === "password" ? `${sudoPassword}\n` : "",
+    timeoutMs: INSTALL_TIMEOUT_MS,
+    onLine: (line) => {
+      agentUser = AGENT_USER_LINE_RE.exec(line.trim())?.[1] ?? agentUser;
+      if (/^@@step serve$/.test(line.trim())) {
+        progress("done");
+        begin("serve");
+      }
+    },
+  });
+  if (install.code !== 0)
+    throw new HostSetupError(
+      rootFailure(install, access, {
+        [SETUP_EXIT.noTag]: "the machine has no ACL tag",
+        [SETUP_EXIT.unsafeNode]: (last) => `${last || "a user who is not root can change the runner's Node or a folder above it"} (runner/README.md, "Node")`,
+        [SETUP_EXIT.tampered]: "the stage folder on the machine changed after the copy, so nothing was installed; a process of the SSH user may have changed it",
+        [SETUP_EXIT.unsafeTailscale]: `a user who is not root can change ${tailscale} or a folder above it; root does not run it (runner/README.md, "Tailscale CLI")`,
+      }) ?? "the install did not end in time",
+    );
+  return { agentUser };
+}
+
 /**
  * Sets up one machine. `onProgress({step, state, detail?, link?})` gets each
  * step as it starts and ends; state is running, waiting, done or failed.
@@ -607,87 +718,29 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     progress("done", `built from ${built.commit}`);
 
     begin("connect");
-    const knownHosts = join(work, "known_hosts");
-    writeFileSync(knownHosts, peer.keys.map((key) => `${peer.dnsName} ${key}\n`).join(""), { mode: 0o600 });
-    const session = { sshUser: setup.sshUser, knownHosts, port: sshPort };
-    // A Tailscale SSH check holds the session until the user approves it.
-    const onCheck = (line) => {
-      const link = CHECK_LINK_RE.exec(line)?.[0];
-      if (link) progress("waiting", "Approve the Tailscale SSH check in your browser", link);
-    };
-    const probe = await run(ssh, sshArgs(peer, session, `/bin/sh -c '${PROBE}'`), { timeoutMs: CONNECT_TIMEOUT_MS, onErrLine: onCheck });
-    if (probe.timedOut) throw new HostSetupError("ssh did not connect in time (a Tailscale SSH check waits for your approval)", { step });
-    if (probe.code !== 0) throw new HostSetupError(`ssh failed: ${tail(probe.stderr) || `exit ${probe.code}`}`, { step });
-    const facts = Object.fromEntries(probe.stdout.split("\n").filter((line) => line.includes("=")).map((line) => line.split(/=(.*)/s, 2)));
-    if (facts.os !== "Linux") throw new HostSetupError(`the machine runs ${clip(facts.os || "an unknown system", 40)}; the runner needs Linux`, { step });
-    if (!facts.systemd) throw new HostSetupError("the machine has no systemd", { step });
-    const tailscale = HOST_TAILSCALE_PATHS.find((path) => path === facts.tailscale_bin);
-    if (!tailscale) throw new HostSetupError(`the machine has no tailscale CLI at ${HOST_TAILSCALE_PATHS.join(" or ")}`, { step });
-    // Only a path of the list goes into the root command line.
-    const node = NODE_PATHS.find((path) => path === facts.node_bin);
-    if (!node || !(Number.parseInt(facts.node, 10) >= NODE_MAJOR_MIN))
-      throw new HostSetupError(
-        `the machine needs Node ${NODE_MAJOR_MIN} or newer at ${NODE_PATHS.join(" or ")} (found ${clip(facts.node || "none", 20)}${node ? ` at ${node}` : ""}); install it there, then run the setup again`,
-        { step },
-      );
-    const access = facts.uid === "0" ? "root" : facts.sudon ? "sudon" : facts.sudo ? "password" : undefined;
-    if (!access) throw new HostSetupError("the SSH login is not root and has no sudo", { step });
-    if (access === "password" && !setup.sudoPassword) throw new HostSetupError("sudo on the machine asks for a password: enter it, then run the setup again", { step });
-    progress("done", `${access === "root" ? "root" : "sudo"}, Node ${clip(facts.node, 20)} at ${node}`);
+    const { session, access, tailscale } = await connectStep(peer, setup, { ssh, sshPort, work, progress });
+
+    begin("node");
+    const runnerNode = await nodeStep(peer, session, { ssh, access, root, sudoPassword: setup.sudoPassword });
+    progress("done", `Node ${runnerNode.version} at ${runnerNode.path}`);
 
     begin("copy");
-    const files = STAGE_FILES.map(([path, mode]) => ({ path, mode, data: readFileSync(join(root, path)).toString("base64") }));
-    files.push({ path: BUNDLE, mode: BUNDLE_MODE, data: readFileSync(built.bundle).toString("base64") });
-    files.push({ path: "config.json", mode: 0o644, data: Buffer.from(runnerConfig(root, { ...setup, login })).toString("base64") });
-    const stageBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.data, "base64"), 0);
-    if (stageBytes > STAGE_BYTES_MAX) throw new HostSetupError(`the runner files are ${stageBytes} bytes; setup.sh copies at most ${STAGE_BYTES_MAX}`, { step });
-    const manifest = manifestOf(files);
-    files.push(manifest.file);
-    const copy = await run(ssh, sshArgs(peer, session, unpackCommand(node)), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });
-    const stage = /^@@stage (\S+)$/m.exec(copy.stdout)?.[1];
-    if (copy.code !== 0 || !stage || !STAGE_RE.test(stage)) throw new HostSetupError(`the copy failed: ${tail(copy.stderr) || `exit ${copy.code}`}`, { step });
-    const [removed = 0, kept = 0] = (/^@@swept (\d+) (\d+)$/m.exec(copy.stdout) ?? []).slice(1).map(Number);
+    const staged = await copyStep(peer, session, { ssh, root, bundle: built.bundle, config: runnerConfig(root, { ...setup, login }) });
     // The SSH user removes the stage: root never deletes in a folder that
     // another user owns.
-    cleanup = () => run(ssh, sshArgs(peer, session, `rm -rf -- ${stage}`), { timeoutMs: COPY_TIMEOUT_MS }).catch(() => undefined);
+    cleanup = () => run(ssh, sshArgs(peer, session, `rm -rf -- ${staged.stage}`), { timeoutMs: COPY_TIMEOUT_MS }).catch(() => undefined);
     // A stale stage that stays is no risk (it holds no secret), so it only
     // shows in the step's detail and does not stop the setup.
-    progress("done", [`${files.length} files`, ...sweptText([removed, kept], "stage")].join(", "));
+    progress("done", [`${staged.count} files`, ...sweptText(staged.swept, "stage")].join(", "));
 
     begin("install");
-    const script = readFileSync(join(root, SETUP_SCRIPT), "utf8");
-    let agentUser = DEFAULT_AGENT_USER;
-    const install = await run(ssh, sshArgs(peer, session, installCommand({ stage, access, node, script, sha: manifest.sha })), {
-      input: access === "password" ? `${setup.sudoPassword}\n` : "",
-      timeoutMs: INSTALL_TIMEOUT_MS,
-      onLine: (line) => {
-        agentUser = AGENT_USER_LINE_RE.exec(line.trim())?.[1] ?? agentUser;
-        const marker = /^@@step (install|serve|done)$/.exec(line.trim())?.[1];
-        if (marker === "serve") {
-          progress("done");
-          begin("serve");
-        }
-      },
+    const installed = await installStep(peer, session, { ssh, access, root, staged, tailscale, sudoPassword: setup.sudoPassword, progress, begin }).finally(async () => {
+      // setup.sh has its own root-only copy by now, so the stage goes on
+      // every outcome of the install.
+      await cleanup();
+      cleanup = undefined;
     });
-    // setup.sh has its own root-only copy by now, so the stage goes on every
-    // outcome of the install.
-    await cleanup();
-    cleanup = undefined;
-    if (install.code !== 0) {
-      const reason =
-        access === "password" && SUDO_REFUSED_RE.test(install.stderr)
-          ? "sudo refused the password"
-          : install.code === SETUP_EXIT.noTag
-            ? "the machine has no ACL tag"
-            : install.code === SETUP_EXIT.unsafeNode
-              ? `${tail(install.stderr) || "a user who is not root can change the runner's Node or a folder above it"} (runner/README.md, "Node")`
-              : install.code === SETUP_EXIT.tampered
-                ? "the stage folder on the machine changed after the copy, so nothing was installed; a process of the SSH user may have changed it"
-                : install.code === SETUP_EXIT.unsafeTailscale
-                  ? `a user who is not root can change ${tailscale} or a folder above it; root does not run it (runner/README.md, "Tailscale CLI")`
-                  : tail(`${install.stdout}\n${install.stderr}`) || `exit ${install.code}`;
-      throw new HostSetupError(install.timedOut ? "the install did not end in time" : reason, { step });
-    }
+    const agentUser = installed.agentUser;
     progress("done", runnerOrigin(`https://${peer.dnsName}`));
 
     begin("hosts");

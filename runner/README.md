@@ -187,40 +187,43 @@ Logs: `journalctl -u buzz-runner` (one JSON object per line).
 
 The runner service and the harness wrapper (as root, through sudo) run on
 Node 24 or later. A user who can change that Node, or a link or folder on
-its way to it, could thus run code as root. The setup from the Settings
-page takes the first of these paths that is there:
+its way to it, could thus run code as root.
 
-1. `/opt/buzz-runner/node`: for the runner only. It is on no `PATH`, so a
-   newer Node here does not change the Node of other tools on the machine.
-2. `/usr/bin/node`: the system Node, if it is 24 or later.
+The setup from the Settings page gives the runner its own Node first, as
+root, with `deploy/node-setup.sh`. The script comes in the root command, as
+`deploy/setup.sh` does. It keeps a Node that is already at
+`/opt/buzz-runner/node` when it is the pinned version or newer and only
+root can change it. Otherwise it installs the pinned release:
 
-`deploy/setup.sh` refuses the path (exit 79) unless root owns the path, each
+1. It downloads `node-v<version>-linux-<x64|arm64>.tar.gz` from
+   `nodejs.org` with `/usr/bin/curl` or, if there is none,
+   `/usr/bin/wget`, into a new folder under `/opt/buzz-runner` that only
+   root can write.
+2. It checks the SHA-256 that the script pins, before it unpacks anything.
+   The pin comes from the release's `SHASUMS256.txt`, whose signature was
+   checked against the Node.js release keys when the pin was set.
+3. It unpacks the release as root-owned files that no group or other user
+   can write, to `/opt/buzz-runner/node-v<version>-linux-<arch>`, and
+   points the link `/opt/buzz-runner/node` at its `bin/node` with one
+   rename.
+
+`/opt/buzz-runner/node` is for the runner only. It is on no `PATH`, so it
+does not change the Node of other tools on the machine. The copy step and
+`deploy/setup.sh` run on it, and a first install gives it to the runner.
+
+`deploy/setup.sh` also takes `/usr/bin/node`, for a host that was set up
+by hand. It refuses a Node path (exit 79) unless root owns the path, each
 link on its way, the last file, and every folder above them, and no group
 or other user can write any of them.
 
-The setup itself runs on that path. A runner that is already installed
-keeps the Node that its unit names, which can be another path (for example
-one that `NODE_BIN` set at the first install). `deploy/setup.sh` checks
-that Node in the same way.
+A runner that is already installed keeps the Node that its unit names,
+which can be another path (for example one that `NODE_BIN` set at the first
+install). `deploy/setup.sh` checks that Node in the same way.
 
-To give the runner its own Node with mise, in a data folder that only root
-can write (not in a home), run these steps as the owner of the machine.
-`env -C /` keeps mise from reading a `mise.toml` in the current folder.
-
-```sh
-sudo install -d -m 0755 /opt/mise /opt/buzz-runner
-sudo -H env -C / MISE_DATA_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache \
-  MISE_STATE_DIR=/opt/mise/state MISE_CONFIG_DIR=/opt/mise/config \
-  mise install node@24
-sudo chown -R root:root /opt/mise
-sudo ln -sfn /opt/mise/installs/node/24/bin/node /opt/buzz-runner/node
-/opt/buzz-runner/node --version
-```
-
-Use a `mise` binary that only root can write, for example from the system
-package manager. `installs/node/24` is the link that mise keeps to the
-newest 24.x; after a `mise install node@24` of a newer 24.x, run the setup
-again so that the runner restarts on it.
+To move to a newer Node, change the pin in `deploy/node-setup.sh` (the
+version and both SHA-256 values), then run **Add host** again for the
+machine: an older Node at the link is replaced. The installed runner keeps
+the Node path that its unit names, which is the same link.
 
 ### Tailscale CLI
 
