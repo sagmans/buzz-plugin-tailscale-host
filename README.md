@@ -206,9 +206,11 @@ The Buzz mobile app runs no plugins, but hosted agents do not need them:
   with your own SSH access. The helper accepts only a tagged Linux peer
   that `tailscale status` lists, and `ssh` accepts only the host keys that
   Tailscale reports for it. Only committed runner code goes to the
-  machine. The sudo password goes only to the stdin of `sudo` on the
-  machine. It is not in an argument, a file, a log or the page, and it is
-  not saved.
+  machine. Root never runs a file that the SSH user can change: it
+  installs from its own copy of the files, after it checks each one against
+  hashes in the root command. The sudo password goes only to the stdin of
+  `sudo` on the machine. It is not in an argument, a file, a log or the
+  page, and it is not saved.
 - The runner API has no TCP port. It listens on a Unix socket that only
   `tailscale serve` reaches, and it accepts only the Tailscale logins in its
   `allowedLogins`. Allow only your own devices to reach the host in the

@@ -69,8 +69,12 @@ each build; it is idempotent.
 
 The plugin's Settings page does the install and step 4 below (`tailscale
 serve`) for you when you add a host, over Tailscale SSH (see the root
-README, "Add a host from the app"). It runs `deploy/setup.sh` as root from
-a stage folder in `/tmp`. The manual steps here stay the reference.
+README, "Add a host from the app"). It copies the files to a stage folder
+in `/tmp` as the SSH user. Root never runs a file from that folder: the root
+command carries `deploy/setup.sh` itself, which copies the stage to a folder
+under `/run` that only root can write. It checks each file there against the
+SHA-256 manifest that the command pins, and exits 80 on any difference. The
+manual steps here stay the reference.
 
 ```sh
 sudo runner/deploy/install.sh --dry-run                     # show every step, change nothing

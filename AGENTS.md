@@ -55,8 +55,11 @@ settings. Do not edit the files that come from the hook template:
   only, found by the address's MagicDNS name; committed runner code only,
   with a new bundle per setup; `ssh` pinned to Tailscale's host keys with
   no trust on first use; the sudo password on sudo's stdin only, never in
-  argv, a file, a log, a progress event or plugin storage; one setup at a
-  time; the stage folder removed on every exit. Add a smoke check for each
+  argv, a file, a log, a progress event or plugin storage; root never runs
+  or deletes a file in the SSH user's stage: `setup.sh` goes in the root
+  command, and it installs from a root-only copy that matches the pinned
+  SHA-256 manifest; one setup at a time; the stage folder removed on every
+  exit. Add a smoke check for each
   rule you change (`runner/smoke/setup.mjs`).
 - Do not change the manifest `id` (`sagmans.tailscale-host`), the type id
   (`tailscale-host`) or the storage key shapes. Saved agents match on them.

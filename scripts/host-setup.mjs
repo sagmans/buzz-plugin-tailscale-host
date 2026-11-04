@@ -11,8 +11,12 @@
 // machine must be a Linux peer that `tailscale status` lists, and ssh accepts
 // only the host keys that Tailscale reports for that peer (no trust on first
 // use). Only committed runner code goes, in a bundle built for this setup.
-// The sudo password goes only to the stdin of sudo on the machine; it is
-// never in an argument, a file, a log line or a progress event.
+// The SSH user owns the stage folder on the machine, so root never runs a
+// file from it: setup.sh comes in the root command itself, copies the stage
+// to a folder that only root can write, and checks each file there against
+// the SHA-256 manifest that the command pins. The sudo password goes only to
+// the stdin of sudo on the machine; it is never in an argument, a file, a
+// log line or a progress event.
 //
 // The steps that need the user's own hands stay manual and are returned as a
 // list: the harness installs and sign-ins (a browser or a key), and the port
@@ -20,6 +24,7 @@
 // tag is refused before any change: on an untagged machine, a harness could
 // call the runner as its owner (runner/README.md, "Security notes").
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -45,17 +50,18 @@ const TAILSCALE_BINS = Object.freeze([
  * could change (runner/README.md, "Node"). */
 export const NODE_PATHS = Object.freeze(["/opt/buzz-runner/node", "/usr/bin/node"]);
 const NODE_MAJOR_MIN = 24;
-/** The stage folder prefix on the machine; setup.sh refuses any other. */
+/** The stage folder prefix on the machine; setup.sh refuses any other. The
+ * SSH user owns the stage, so root only reads it (setup.sh). */
 const STAGE_PREFIX = "/tmp/buzz-runner-setup.";
 const STAGE_RE = /^\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}$/;
 /** The runner tree install.sh needs ("run from a full checkout"), relative
- * to the checkout, with the mode each file gets on the machine. */
+ * to the checkout, with the mode each file gets on the machine. setup.sh is
+ * not in it: it goes in the root command (SETUP_SCRIPT). */
 const STAGE_FILES = Object.freeze([
   ["runner/README.md", 0o644],
   ["runner/buzz-runner.service", 0o644],
   ["runner/config.example.json", 0o644],
   ["runner/deploy/install.sh", 0o755],
-  ["runner/deploy/setup.sh", 0o755],
   ["runner/deploy/check-config.mjs", 0o644],
   ["runner/deploy/sudoers.template", 0o644],
   ["runner/deploy/claude-wrapper", 0o755],
@@ -68,6 +74,12 @@ const STAGE_FILES = Object.freeze([
  * mode on the machine. */
 const BUNDLE = "runner/dist/buzz-runner.mjs";
 const BUNDLE_MODE = 0o644;
+/** The root half of the setup. Root runs it from the command line, never
+ * from the stage that the SSH user could change. */
+const SETUP_SCRIPT = "runner/deploy/setup.sh";
+/** The stage file that lists every other stage file with its SHA-256, in
+ * sha256sum's `<hex>  <path>` form; setup.sh checks the copy against it. */
+const MANIFEST = "MANIFEST";
 /** The checkout paths that the stage and the bundle come from. Root runs
  * them on the machine, so each must be as committed: no edit, no new file
  * (git leaves out what .gitignore names: the build output and the links). */
@@ -120,7 +132,7 @@ const STATUS_MAX = 16_777_216;
 /** Lines of install output a failure keeps for the page. */
 const TAIL_LINES = 12;
 const LINE_MAX = 300;
-const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79 });
+const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tampered: 80 });
 
 /** A setup step that failed, with the step and the reason the page shows. */
 export class HostSetupError extends Error {
@@ -375,7 +387,7 @@ const chunks = []; let size = 0;
 process.stdin.on("data", (c) => { size += c.length; if (size > ${64 * OUTPUT_MAX}) process.exit(65); chunks.push(c); });
 process.stdin.on("end", () => {
   const files = JSON.parse(Buffer.concat(chunks).toString("utf8")).files;
-  if (!files.every((f) => /^(?:runner\\/[A-Za-z0-9._/-]+|config\\.json)$/.test(f.path) && !f.path.split("/").includes(".."))) process.exit(65);
+  if (!files.every((f) => /^(?:runner\\/[A-Za-z0-9._/-]+|config\\.json|${MANIFEST})$/.test(f.path) && !f.path.split("/").includes(".."))) process.exit(65);
   const stage = fs.mkdtempSync(${JSON.stringify(STAGE_PREFIX)});
   for (const f of files) {
     const to = path.join(stage, f.path);
@@ -388,15 +400,26 @@ process.stdin.on("end", () => {
 // the machine is in it, and base64 only carries it past the login shell.
 const unpackCommand = (node) => `${node} -e 'eval(Buffer.from("${Buffer.from(UNPACK).toString("base64")}","base64").toString())'`;
 
-/** The root run of setup.sh, by the access the probe found. With a password,
- * the remote shell reads it from stdin into a variable and gives it to sudo
- * by a pipe, so it is in no argument list; `-k` makes sudo ask even with a
- * cached sign-in, so the password never goes to setup.sh's stdin instead. */
-function installCommand(stage, access, node) {
-  const script = `/bin/bash ${stage}/runner/deploy/setup.sh ${stage} ${RUNNER_PORT} ${node}`;
-  if (access === "root") return script;
-  if (access === "sudon") return `sudo -n -- ${script}`;
-  return `/bin/sh -c 'IFS= read -r P || exit ${SETUP_EXIT.readStdin}; printf "%s\\n" "$P" | sudo -k -S -p "" -- ${script}'`;
+const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+
+/** The manifest of the stage files, and its SHA-256, which the root command
+ * pins: setup.sh installs nothing unless the root-only copy matches it. */
+function manifestOf(files) {
+  const text = files.map((file) => `${sha256(Buffer.from(file.data, "base64"))}  ${file.path}\n`).join("");
+  return { file: { path: MANIFEST, mode: 0o644, data: Buffer.from(text).toString("base64") }, sha: sha256(text) };
+}
+
+/** The root run of setup.sh, by the access the probe found. The script text
+ * goes in the command as base64, so the root shell runs what this helper
+ * sent and not a file that the SSH user could change. With a password, the
+ * remote shell reads it from stdin into a variable and gives it to sudo by a
+ * pipe, so it is in no argument list; `-k` makes sudo ask even with a cached
+ * sign-in, so the password never goes to setup.sh's stdin instead. */
+function installCommand({ stage, access, node, script, sha }) {
+  const root = `/bin/bash -c "$(printf %s ${Buffer.from(script).toString("base64")} | /usr/bin/base64 -d)" setup.sh ${stage} ${RUNNER_PORT} ${node} ${sha}`;
+  if (access === "root") return `/bin/sh -c '${root}'`;
+  if (access === "sudon") return `/bin/sh -c 'sudo -n -- ${root}'`;
+  return `/bin/sh -c 'IFS= read -r P || exit ${SETUP_EXIT.readStdin}; printf "%s\\n" "$P" | sudo -k -S -p "" -- ${root}'`;
 }
 
 const tail = (text) =>
@@ -474,8 +497,8 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     progress("running");
   };
   const work = mkdtempSync(join(tmpdir(), "buzz-setup-"));
-  // Set once the copy made a stage, so a failure before setup.sh takes it
-  // over still removes it (setup.sh removes it on its own exit).
+  // Set once the copy made a stage, and cleared once the install step has
+  // removed it, so that a failure between the two still removes it.
   let cleanup;
   try {
     begin("machine");
@@ -521,14 +544,19 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     const files = STAGE_FILES.map(([path, mode]) => ({ path, mode, data: readFileSync(join(root, path)).toString("base64") }));
     files.push({ path: BUNDLE, mode: BUNDLE_MODE, data: readFileSync(built.bundle).toString("base64") });
     files.push({ path: "config.json", mode: 0o644, data: Buffer.from(runnerConfig(root, { ...setup, login })).toString("base64") });
+    const manifest = manifestOf(files);
+    files.push(manifest.file);
     const copy = await run(ssh, sshArgs(peer, session, unpackCommand(node)), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });
     const stage = /^@@stage (\S+)$/m.exec(copy.stdout)?.[1];
     if (copy.code !== 0 || !stage || !STAGE_RE.test(stage)) throw new HostSetupError(`the copy failed: ${tail(copy.stderr) || `exit ${copy.code}`}`, { step });
+    // The SSH user removes the stage: root never deletes in a folder that
+    // another user owns.
     cleanup = () => run(ssh, sshArgs(peer, session, `rm -rf -- ${stage}`), { timeoutMs: COPY_TIMEOUT_MS }).catch(() => undefined);
     progress("done", `${files.length} files`);
 
     begin("install");
-    const install = await run(ssh, sshArgs(peer, session, installCommand(stage, access, node)), {
+    const script = readFileSync(join(root, SETUP_SCRIPT), "utf8");
+    const install = await run(ssh, sshArgs(peer, session, installCommand({ stage, access, node, script, sha: manifest.sha })), {
       input: access === "password" ? `${setup.sudoPassword}\n` : "",
       timeoutMs: INSTALL_TIMEOUT_MS,
       onLine: (line) => {
@@ -539,6 +567,10 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
         }
       },
     });
+    // setup.sh has its own root-only copy by now, so the stage goes on every
+    // outcome of the install.
+    await cleanup();
+    cleanup = undefined;
     if (install.code !== 0) {
       const reason =
         access === "password" && SUDO_REFUSED_RE.test(install.stderr)
@@ -547,6 +579,8 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
             ? "the machine has no ACL tag"
             : install.code === SETUP_EXIT.unsafeNode
               ? `a user who is not root can change ${node} or a folder above it; the root runner does not run it (runner/README.md, "Node")`
+              : install.code === SETUP_EXIT.tampered
+                ? "the stage folder on the machine changed after the copy, so nothing was installed; a process of the SSH user may have changed it"
               : tail(`${install.stdout}\n${install.stderr}`) || `exit ${install.code}`;
       throw new HostSetupError(install.timedOut ? "the install did not end in time" : reason, { step });
     }

@@ -3,8 +3,11 @@
 // takes the argv that scripts/host-setup.mjs builds and answers its four
 // remote commands the way a Linux machine would: the probe, the copy (it
 // runs the real unpack program, so the stage folder is made as on a host),
-// the root run of setup.sh, and the stage removal. It never runs install.sh:
-// that needs root and systemd, and has its own dry run.
+// the root run of setup.sh, and the stage removal. For the root run it does
+// what setup.sh does before install.sh: it checks the stage against the
+// manifest hash that the command pins. It never runs install.sh: that needs
+// root and systemd, and has its own dry run. The real setup.sh is a host
+// test (runner/README.md, "Deploy").
 //
 // Every call is appended to $FAKE_SSH_LOG as one JSON line {argv, stdin},
 // so the scenarios can check what reached "the machine".
@@ -14,10 +17,20 @@
 //   FAKE_SSH_CHECK     "1": print a Tailscale SSH check link first
 //   FAKE_SSH_NODE_UNSAFE "1": setup.sh finds a Node that a non-root user
 //                      can change (its exit 79)
+//   FAKE_SSH_TAMPER    "1": a process of the SSH user changes a stage file
+//                      after the copy, before root reads it (exit 80)
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { join, relative } from "node:path";
 
 const STAGE_RE = /\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}/;
+/** The root command as host-setup.mjs installCommand builds it: the script
+ * as base64, then setup.sh's arguments. */
+const ROOT_RUN_RE = /\/bin\/bash -c "\$\(printf %s ([A-Za-z0-9+/=]+) \| \/usr\/bin\/base64 -d\)" setup\.sh (\S+) (\d+) (\S+) ([0-9a-f]{64})/;
+const MANIFEST = "MANIFEST";
+const TAMPERED_FILE = "runner/deploy/install.sh";
+const EXIT_TAMPERED = 80;
 const CHECK_LINK = "https://login.tailscale.com/a/smoke-check";
 const EXIT_SSH = 255;
 const EXIT_SUDO = 1;
@@ -52,8 +65,26 @@ if (command.includes("eval(Buffer.from(")) {
   process.stderr.write(run.stderr);
   process.exit(run.status ?? EXIT_SSH);
 }
-if (command.includes("/runner/deploy/setup.sh ")) {
-  const stage = STAGE_RE.exec(command)[0];
+const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+/** Every file under a folder, as paths relative to it. */
+const filesIn = (folder) =>
+  readdirSync(folder, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(folder, join(entry.parentPath, entry.name)));
+/** setup.sh's copy_checked, on the stage itself: the manifest has the pinned
+ * hash, and it lists every other file, each with its own hash. */
+function stageMatches(stage, pinned) {
+  const manifest = readFileSync(join(stage, MANIFEST), "utf8");
+  if (sha256(manifest) !== pinned) return false;
+  const listed = manifest.split("\n").filter(Boolean).map((line) => [line.slice(0, 64), line.slice(66)]);
+  const present = filesIn(stage).filter((path) => path !== MANIFEST).sort();
+  return JSON.stringify(listed.map(([, path]) => path).sort()) === JSON.stringify(present) && listed.every(([hash, path]) => sha256(readFileSync(join(stage, path))) === hash);
+}
+
+const rootRun = ROOT_RUN_RE.exec(command);
+if (rootRun) {
+  const [, script, stage, port, node, pinned] = rootRun;
+  appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ rootRun: { script: Buffer.from(script, "base64").toString("utf8"), stage, port, node, pinned, files: filesIn(stage).sort() } })}\n`);
   if (command.includes("sudo -k -S")) {
     const typed = stdin.toString("utf8").split("\n")[0];
     if (typed !== process.env.FAKE_SSH_PASSWORD) {
@@ -63,13 +94,16 @@ if (command.includes("/runner/deploy/setup.sh ")) {
   }
   if (process.env.FAKE_SSH_NODE_UNSAFE === "1") {
     process.stderr.write("setup.sh: a user who is not root can change the Node or a folder above it; the root runner does not run it\n");
-    rmSync(stage, { recursive: true, force: true });
     process.exit(EXIT_UNSAFE_NODE);
+  }
+  if (process.env.FAKE_SSH_TAMPER === "1") appendFileSync(join(stage, TAMPERED_FILE), "id\n");
+  if (!stageMatches(stage, pinned)) {
+    process.stderr.write(`setup.sh: the stage at ${stage} is not what the helper sent; nothing was installed\n`);
+    process.exit(EXIT_TAMPERED);
   }
   // What setup.sh would install as the config, for the scenario to check.
   appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ config: JSON.parse(readFileSync(`${stage}/config.json`, "utf8")) })}\n`);
   process.stdout.write("@@step install\ninstall.sh: buzz-runner is active.\n@@step serve\n@@step done\n");
-  rmSync(stage, { recursive: true, force: true });
   process.exit(0);
 }
 const removal = /^rm -rf -- (\S+)$/.exec(command);
