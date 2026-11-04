@@ -4,13 +4,13 @@
 // tagged Linux peer only, ssh pinned to Tailscale's host keys, the sudo
 // password only on sudo's stdin, root running setup.sh from its command and
 // a stage that matches the pinned manifest, the stage removed on every
-// exit) and what
+// exit, and a killed helper's old stage removed by the next copy) and what
 // the user sees: each step's progress and the host added to hosts.json.
 // The real install on a systemd machine is a host test (runner/README.md).
 //
 // Called from run.mjs with its `check`; adds PASS/FAIL lines.
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,7 +55,12 @@ const fixtureGit = (root, args) =>
 const OWNER = "ef".repeat(32);
 const RELAY = "wss://relay.example.ts.net";
 const FACTS = Object.freeze({ os: "Linux", uid: "1000", node_bin: "/usr/bin/node", node: "24.1.0", systemd: "1", tailscale: "1", sudo: "1" });
+/** Where host-setup.mjs makes its stages, and their name prefix. */
+const STAGE_DIR = "/tmp";
 const STAGE_PREFIX = "buzz-runner-setup.";
+/** How old a killed helper's stage is in the sweep scenario: far past
+ * host-setup.mjs STAGE_STALE_MS. */
+const STALE_AGE_S = 86_400;
 const SETUP_SCRIPT = "runner/deploy/setup.sh";
 /** What the stage holds when root reads it: every copied file, the bundle,
  * the config and the manifest, and no setup.sh. */
@@ -74,7 +79,7 @@ const peer = (overrides = {}) => ({
   ...overrides,
 });
 const statusWith = (entry) => ({ Self: { UserID: 7 }, User: { 7: { LoginName: LOGIN } }, Peer: { node: entry } });
-const leftoverStages = () => readdirSync("/tmp").filter((name) => name.startsWith(STAGE_PREFIX));
+const leftoverStages = () => readdirSync(STAGE_DIR).filter((name) => name.startsWith(STAGE_PREFIX));
 
 /** @param {{check: (name: string, ok: unknown, detail?: string) => void, temp: string}} deps */
 export async function setupSmoke({ check, temp }) {
@@ -204,7 +209,30 @@ export async function setupSmoke({ check, temp }) {
   check("setup: the manual steps name the sign-in command and the tag's port rule", done.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)), JSON.stringify(done.result?.manual));
   check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));
 
+  // A killed helper's stage: the next copy removes it, but keeps a young
+  // stage (a live setup of another device) and never follows a stage-named
+  // link to what it points at.
+  const staleAt = Date.now() / 1000 - STALE_AGE_S;
+  const stale = mkdtempSync(`${STAGE_DIR}/${STAGE_PREFIX}`);
+  writeFileSync(join(stale, "MANIFEST"), "old\n");
+  utimesSync(stale, staleAt, staleAt);
+  const young = mkdtempSync(`${STAGE_DIR}/${STAGE_PREFIX}`);
+  const target = join(temp, "sweep-target");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, "keep"), "keep\n");
+  utimesSync(target, staleAt, staleAt);
+  const link = `${STAGE_DIR}/${STAGE_PREFIX}smokeLink${process.pid}`;
+  symlinkSync(target, link);
+  lutimesSync(link, staleAt, staleAt);
   const again = await attempt({ address: SERVE_ORIGIN });
+  const copyDone = again.events.find((event) => event.step === "copy" && event.state === "done");
+  check(
+    "setup: the next copy removes a killed helper's old stage, keeps a young one and follows no link",
+    !existsSync(stale) && existsSync(young) && existsSync(join(target, "keep")) && /, 1 old stage removed$/.test(copyDone?.detail ?? ""),
+    copyDone?.detail,
+  );
+  rmSync(young, { recursive: true, force: true });
+  rmSync(link, { force: true });
   check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
   const passwordless = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, sudon: "1" } });
   check("setup: sudo without a password runs `sudo -n` with nothing on stdin", !passwordless.error && rootCall(passwordless)?.argv.at(-1).startsWith("/bin/sh -c 'sudo -n -- /bin/bash -c ") && rootCall(passwordless)?.stdin === "", passwordless.error?.message);

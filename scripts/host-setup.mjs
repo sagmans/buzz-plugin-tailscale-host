@@ -138,6 +138,13 @@ const STATUS_MAX = 16_777_216;
 const TAIL_LINES = 12;
 const LINE_MAX = 300;
 const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tampered: 80 });
+/** A helper that is killed (the app quits, the process gets SIGKILL) never
+ * runs its stage removal, so each copy removes the SSH user's own stages that
+ * are older than any live setup can keep one: the install's timeout plus the
+ * copy and the removal calls, twice for clock and slow-link margin. A live
+ * setup of another device on the same machine is younger, so it keeps its
+ * stage. */
+const STAGE_STALE_MS = 2 * (INSTALL_TIMEOUT_MS + 2 * COPY_TIMEOUT_MS);
 
 /** A setup step that failed, with the step and the reason the page shows. */
 export class HostSetupError extends Error {
@@ -385,9 +392,25 @@ const PROBE = [
 
 /** The copy: one Node program, as the SSH user, that makes a fresh stage
  * folder and writes the files from a JSON document on stdin. Base64 keeps it
- * free of quotes for any login shell. */
+ * free of quotes for any login shell. First it removes the stale stages of a
+ * killed helper (STAGE_STALE_MS): only real folders (lstat, so no link is
+ * followed) that this user owns, so it never touches a file of another user,
+ * and /tmp's sticky bit keeps another user from swapping one in. It reports
+ * the count, and the count it could not remove, on an @@swept line. */
 const UNPACK = `
 const fs = require("node:fs"), path = require("node:path");
+const swept = [0, 0];
+for (const name of fs.readdirSync(${JSON.stringify(dirname(STAGE_PREFIX))})) {
+  const old = path.join(${JSON.stringify(dirname(STAGE_PREFIX))}, name);
+  if (!${STAGE_RE}.test(old)) continue;
+  try {
+    const st = fs.lstatSync(old);
+    if (!st.isDirectory() || st.uid !== process.getuid() || Date.now() - st.mtimeMs < ${STAGE_STALE_MS}) continue;
+    fs.rmSync(old, { recursive: true, force: true });
+    swept[0] += 1;
+  } catch { swept[1] += 1; }
+}
+process.stdout.write("@@swept " + swept.join(" ") + "\\n");
 const chunks = []; let size = 0;
 process.stdin.on("data", (c) => { size += c.length; if (size > ${64 * OUTPUT_MAX}) process.exit(65); chunks.push(c); });
 process.stdin.on("end", () => {
@@ -556,10 +579,14 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     const copy = await run(ssh, sshArgs(peer, session, unpackCommand(node)), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });
     const stage = /^@@stage (\S+)$/m.exec(copy.stdout)?.[1];
     if (copy.code !== 0 || !stage || !STAGE_RE.test(stage)) throw new HostSetupError(`the copy failed: ${tail(copy.stderr) || `exit ${copy.code}`}`, { step });
+    const [removed = 0, kept = 0] = (/^@@swept (\d+) (\d+)$/m.exec(copy.stdout) ?? []).slice(1).map(Number);
     // The SSH user removes the stage: root never deletes in a folder that
     // another user owns.
     cleanup = () => run(ssh, sshArgs(peer, session, `rm -rf -- ${stage}`), { timeoutMs: COPY_TIMEOUT_MS }).catch(() => undefined);
-    progress("done", `${files.length} files`);
+    // A stale stage that stays is no risk (it holds no secret), so it only
+    // shows in the step's detail and does not stop the setup.
+    const sweptText = [removed && `${removed} old stage${removed === 1 ? "" : "s"} removed`, kept && `${kept} old stage${kept === 1 ? "" : "s"} not removed`].filter(Boolean);
+    progress("done", [`${files.length} files`, ...sweptText].join(", "));
 
     begin("install");
     const script = readFileSync(join(root, SETUP_SCRIPT), "utf8");
