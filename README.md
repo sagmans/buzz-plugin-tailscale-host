@@ -145,8 +145,13 @@ Then:
    harnesses, install, `tailscale serve`, add to `hosts.json`, check the
    runner. If Tailscale SSH asks for a check, the page shows the link to
    open.
-4. Do the steps that the page lists at the end: sign in each harness, and
-   let only your login reach port 10000 in the tailnet policy.
+4. Do the steps that the page lists at the end: sign in each harness (step
+   5), and let only your login reach port 10000 in the tailnet policy.
+5. Select **Sign in** on the host's row. Choose a sign-in, type the SSH
+   login and the sudo password, and select **Start**. The page shows the
+   host's terminal: open the sign-in link it shows, then type the code or
+   key into **Answer** and select **Send**. Do this once for each harness.
+   **Show what is signed in** lists what each harness has.
 
 The setup copies only committed runner code: if `runner/` in this folder
 has changes that are not committed, it stops before it connects. It builds
@@ -227,8 +232,11 @@ The Buzz mobile app runs no plugins, but hosted agents do not need them:
 - Harnesses run as a separate Unix user through two narrow sudo rules. They
   never get an agent key. All agents on a host share that user, so they can
   read each other's workspaces and the harness sign-ins.
-- Harness sign-ins stay on the host. You sign in on the host with
-  `buzz-login`; keys never go through the plugin.
+- Harness sign-ins stay on the host. **Sign in** runs `buzz-login` on the
+  host over Tailscale SSH, as the harness user, and the page only carries
+  its terminal. A key that you type there goes from the page to the hosts
+  helper and on to that terminal. The plugin and the helper never save or
+  log it, and they mask it in the output that the page shows.
 
 Report a security problem privately to the maintainers. Do not open a
 public issue for it.

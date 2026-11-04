@@ -853,6 +853,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     // password handling are checked without a machine.
     const LAB_DNS = "lab-box.example.ts.net";
     const setupLines = [];
+    let signinAsk;
     // The setup waits at its check link until the scenario has looked.
     let releaseSetup;
     const setupHeld = new Promise((done) => (releaseSetup = done));
@@ -864,6 +865,16 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
           setupLines.push(ask);
           if (ask.op === "read") return answer({ id: ask.id, ok: true, hosts: [SMOKE_HOST] });
           if (ask.op === "request") return answer({ id: ask.id, ok: false, error: "no runner here" });
+          // A sign-in: its terminal waits at a prompt until the page answers.
+          if (ask.op === "signin") {
+            signinAsk = ask;
+            answer({ id: ask.id, progress: { state: "running", output: "sudo password: \nPaste the key: ", link: "https://login.tailscale.com/a/signin-check" } });
+            return answer({ id: ask.id, progress: { state: "running", output: "sudo password: \nPaste the key: ", link: "javascript:alert(1)" } });
+          }
+          if (ask.op === "signin-input") {
+            answer({ id: ask.id, ok: true });
+            return answer({ id: signinAsk.id, ok: true, code: 0, output: `sudo password: \nPaste the key: \nSaved a key of ${ask.text.length} characters.` });
+          }
           const steps = SETUP_STEPS;
           answer({ id: ask.id, progress: { step: "connect", state: "waiting", link: "https://login.tailscale.com/a/page-check" } });
           answer({ id: ask.id, progress: { step: "copy", state: "waiting", link: "javascript:alert(1)" } });
@@ -908,7 +919,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const links = [...setupPage.node.querySelectorAll("li[data-step] a")].map((item) => item.getAttribute("href"));
     check("plugin: a waiting step shows its Tailscale check link, and no other URL", JSON.stringify(links) === JSON.stringify(["https://login.tailscale.com/a/page-check"]), JSON.stringify(links));
     releaseSetup();
-    await until(() => setupPage.node.textContent.includes("Still to do on the host"), "setup result");
+    await until(() => setupPage.node.textContent.includes("Still to do:"), "setup result");
     const sent = setupLines.find((ask) => ask.op === "setup");
     check(
       "plugin: Add host sends the address, name, login, password, owner, relay and reserved ids as one setup",
@@ -921,6 +932,38 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     check(
       "plugin: a finished setup names the host and the sign-in command to copy",
       setupPage.node.textContent.includes("Added Lab Box (buzz-runner 0.0.0-page)") && setupPage.node.querySelector("code")?.textContent === `ssh -t owner@${LAB_DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`,
+    );
+
+    // ---- Sign in: the page side of a harness sign-in -------------------------
+    // The helper's sign-in itself is signin.mjs; here the stand-in streams a
+    // terminal that waits at a prompt, and ends when the page answers it.
+    const signInButton = () => setupPage.node.querySelector(`button[aria-label="Sign in on ${SMOKE_HOST.label}"]`);
+    await until(signInButton, "Sign in button");
+    await act(async () => signInButton().click());
+    const startForm = () => setupPage.node.querySelector('form[aria-label="Start a sign-in"]');
+    await until(startForm, "sign-in form");
+    await typeText(fieldControl(startForm(), "SSH login"), "owner");
+    await typeText(fieldControl(startForm(), "sudo password"), "sign pass");
+    await act(async () => startForm().requestSubmit());
+    const answerForm = () => setupPage.node.querySelector('form[aria-label="Answer the terminal"]');
+    await until(() => answerForm() && setupPage.node.querySelector('pre[role="log"]')?.textContent.includes("Paste the key"), "sign-in terminal");
+    const signinSent = setupLines.find((ask) => ask.op === "signin");
+    check(
+      "plugin: Start sends the host id, login, password and the chosen command as one sign-in",
+      signinSent?.signin.host === SMOKE_HOST.id && signinSent.signin.sshUser === "owner" && signinSent.signin.sudoPassword === "sign pass" && signinSent.signin.command === "status",
+      JSON.stringify({ ...signinSent?.signin, sudoPassword: signinSent?.signin.sudoPassword ? "<set>" : "" }),
+    );
+    const signinLinks = [...setupPage.node.querySelectorAll('[aria-label^="Sign in on"] a')].map((item) => item.getAttribute("href"));
+    check("plugin: a sign-in shows its Tailscale check link, and no other URL", JSON.stringify(signinLinks) === JSON.stringify(["https://login.tailscale.com/a/signin-check"]), JSON.stringify(signinLinks));
+    check("plugin: the sign-in password field is empty once the sign-in starts", fieldControl(startForm(), "sudo password")?.value === "" && !setupPage.node.innerHTML.includes("sign pass"));
+    await typeText(fieldControl(answerForm(), "Answer"), "sk-page-key");
+    check("plugin: the answer field hides what is typed", fieldControl(answerForm(), "Answer")?.type === "password");
+    await act(async () => answerForm().requestSubmit());
+    await until(() => setupPage.node.textContent.includes("The sign-in ended."), "sign-in end");
+    const typedLine = setupLines.find((ask) => ask.op === "signin-input");
+    check(
+      "plugin: Send gives the typed line to the sign-in, and the page keeps no copy",
+      typedLine?.text === "sk-page-key" && !setupPage.node.innerHTML.includes("sk-page-key") && setupPage.node.querySelector('pre[role="log"]')?.textContent.endsWith("Saved a key of 11 characters."),
     );
     collect(setupPage.node);
     await setupPage.unmount();

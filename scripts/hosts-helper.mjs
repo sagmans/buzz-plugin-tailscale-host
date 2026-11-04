@@ -11,9 +11,13 @@
 // The Settings page also adds a host here through a setup
 // (scripts/host-setup.mjs), which installs or aligns buzz-runner on it: the
 // page cannot reach a machine, and a setup runs for minutes, far past a
-// command's limit. It is the one call that takes a secret (the sudo
-// password), so the request is never logged and the password only goes on
-// to sudo's stdin on the machine.
+// command's limit. It takes a secret (the sudo password), so the request is
+// never logged and the password only goes on to sudo's stdin on the machine.
+//
+// The page also signs a harness in on a host here (scripts/host-signin.mjs):
+// a sign-in is a terminal on the machine for minutes, which the page drives
+// with one line at a time. It takes the same secret, and each typed line may
+// be a key, so neither a sign-in request nor an input is ever logged.
 //
 // The build (scripts/build-plugin.mjs) declares this helper as the plugin's
 // one host process, with the hosts file fixed in the manifest. A one-shot
@@ -30,10 +34,16 @@
 //     "ownerPubkey":"<hex>","relay":"wss://…","label":"…","reservedIds":["…"]}}
 //                                                install or align buzz-runner there and
 //                                                list it, one setup at a time
+//   {"id":5,"op":"signin","signin":{"host":"<id>","sshUser":"…","sudoPassword":"…","command":"claude"}}
+//                                                run buzz-login there, one sign-in at a time
+//   {"id":6,"op":"signin-input","text":"…"}      one typed line to the running sign-in
+//   {"id":7,"op":"signin-cancel"}                end the running sign-in
 // stdout: one JSON reply per line, with the request's id:
 //   {"id":1,"ok":true,"hosts":[...]}  {"id":3,"ok":true,"status":200,"body":"..."}
 //   {"id":2,"ok":false,"error":"..."}
 //   {"id":4,"progress":{"step":"copy","state":"running"}}  before a setup's reply
+//   {"id":5,"progress":{"state":"running","output":"…","link":"https://…"}}
+//                                    the sign-in's terminal, before its reply
 //   A line that cannot be read gets id null. Replies to runner calls come in
 //   the order the calls end, not the order they came.
 // Exit: 0 when stdin ends and every call is answered; 64 for wrong arguments.
@@ -41,13 +51,17 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PluginBuildError, readJson, runnerOrigin, validateHosts, writeAtomic } from "./build-plugin.mjs";
 import { parseSetupRequest, setupHost } from "./host-setup.mjs";
+import { HostSignIn } from "./host-signin.mjs";
 
-const OPS = ["read", "save", "request", "setup"];
+const OPS = ["read", "save", "request", "setup", "signin", "signin-input", "signin-cancel"];
 const REQUEST_KEYS = Object.freeze({
   read: ["id", "op"],
   save: ["id", "op", "hosts"],
   request: ["id", "op", "host", "method", "path", "body", "timeoutMs"],
   setup: ["id", "op", "setup"],
+  signin: ["id", "op", "signin"],
+  "signin-input": ["id", "op", "text"],
+  "signin-cancel": ["id", "op"],
 });
 /** The runner contract's routes (docs/RUNNER_CONTRACT.md): every call stays
  * under this prefix, with the methods the contract uses. */
@@ -175,6 +189,7 @@ let settingUp = false;
 /** One host setup; `emit` sends each progress event to the plugin. The
  * request is checked before anything reaches the machine. */
 async function setup(request, paths, emit) {
+  if (signingIn) throw new HostsHelperError("a sign-in is running; set up when it ends");
   const parsed = parseSetupRequest(request.setup);
   if (settingUp) throw new HostsHelperError("a setup is already running; wait for it to end");
   settingUp = true;
@@ -185,13 +200,45 @@ async function setup(request, paths, emit) {
   }
 }
 
+/** The sign-in that runs, if any. One at a time: the page has one terminal,
+ * and a typed line must reach the session the owner sees. */
+let signingIn;
+
+/** One sign-in; `emit` sends the terminal to the plugin as it changes. Not
+ * while a setup runs: the setup may replace buzz-login on that machine. */
+async function signIn(request, paths, emit) {
+  if (signingIn) throw new HostsHelperError("a sign-in is already running; cancel it or wait for it to end");
+  if (settingUp) throw new HostsHelperError("a setup is running; sign in when it ends");
+  const session = new HostSignIn(request.signin, { hostsPath: paths.hostsPath, onProgress: emit, deps: paths.signInDeps });
+  signingIn = session;
+  try {
+    return await session.run();
+  } finally {
+    signingIn = undefined;
+  }
+}
+
+/** The input and cancel calls of the running sign-in. */
+function signInControl(request) {
+  if (!signingIn) throw new HostsHelperError("no sign-in is running");
+  if (request.op === "signin-cancel") {
+    signingIn.cancel();
+    return { cancelled: true };
+  }
+  signingIn.input(request.text);
+  return {};
+}
+
 /** Runs one request; returns the reply fields without the id. `emit` sends
  * a progress event before the reply, for the calls that have them.
- * `paths.setupDeps` is for the smoke run only (host-setup.mjs `deps`); the
- * command line never sets it. */
+ * `paths.setupDeps` and `paths.signInDeps` are for the smoke run only
+ * (the `deps` of host-setup.mjs and host-signin.mjs); the command line
+ * never sets them. */
 export async function handle(request, paths, emit = () => {}) {
   if (request.op === "read") return { hosts: validateHosts(readJson(paths.hostsPath, "hosts file"), paths.hostsPath) };
   if (request.op === "setup") return setup(request, paths, emit);
+  if (request.op === "signin") return signIn(request, paths, emit);
+  if (request.op === "signin-input" || request.op === "signin-cancel") return signInControl(request);
   if (request.op === "save") {
     // The setup's own add would write over a save made while it runs.
     if (settingUp) throw new HostsHelperError("a setup is running; save again when it ends");

@@ -23,9 +23,10 @@
 // The runner's own Node comes first (node-setup.sh, in its own root command),
 // so the machine needs no Node before the setup, and setup.sh installs each
 // missing harness at its pinned path (harnesses.sh) before the runner. The
-// steps that need the user's own hands stay manual and are returned as a
-// list: the harness sign-ins (a browser or a key), and the port rule in the
-// tailnet policy (no policy token here). A machine without an ACL
+// steps that need the user's own hands are returned as a list: the harness
+// sign-ins (a browser or a key), which the page's Sign in does
+// (host-signin.mjs), and the port rule in the tailnet policy (no policy
+// token here). A machine without an ACL
 // tag is refused before any change: on an untagged machine, a harness could
 // call the runner as its owner (runner/README.md, "Security notes").
 import { spawn } from "node:child_process";
@@ -38,7 +39,7 @@ import { RUNNER_PORT, readJson, runnerOrigin, validateHosts, writeAtomic } from 
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** The system ssh and git, by path: a program on PATH could be anything. */
-const SSH_BIN = "/usr/bin/ssh";
+export const SSH_BIN = "/usr/bin/ssh";
 const GIT_BIN = "/usr/bin/git";
 /** Where the Tailscale CLI is on macOS (Homebrew, the standalone package,
  * the App Store app) and on Linux; the first that exists is used. */
@@ -125,7 +126,7 @@ export const SETUP_STEPS = Object.freeze(["machine", "bundle", "connect", "node"
 
 /** A Linux login name, as install.sh's USER_RE allows. Empty means ssh's
  * default, the local user name. */
-const SSH_USER_RE = /^[a-z_][a-z0-9_.-]{0,31}$/;
+export const SSH_USER_RE = /^[a-z_][a-z0-9_.-]{0,31}$/;
 /** setup.sh's line that names the harness user the install kept or made
  * (install.sh USER_RE), and the name a first install gives it. */
 const AGENT_USER_LINE_RE = /^@@agent-user ([a-z_][a-z0-9_-]{0,31})$/;
@@ -138,7 +139,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
  * may reserve: the hosts that agents on its device still name. */
 const HOST_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const RESERVED_MAX = 256;
-const PASSWORD_MAX = 256;
+export const PASSWORD_MAX = 256;
 const RELAY_MAX = 300;
 const LABEL_MAX = 40;
 const LOGIN_MAX = 254;
@@ -146,7 +147,7 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 /** The shapes of an OpenSSH public host key line that Tailscale reports. */
 const HOST_KEY_RE = /^(?:ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,2}$/;
 /** A Tailscale SSH check prints a link the user must open; the page shows it. */
-const CHECK_LINK_RE = /https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.-]{1,200}/;
+export const CHECK_LINK_RE = /https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.-]{1,200}/;
 /** sudo's words for a refused password (sudo 1.9). */
 const SUDO_REFUSED_RE = /incorrect password|Sorry, try again|no password was provided|a password is required/;
 
@@ -172,7 +173,7 @@ const INSTALL_TIMEOUT_MS = 600_000;
 const HEALTH_TIMEOUT_MS = 120_000;
 const HEALTH_TRY_MS = 20_000;
 const HEALTH_RETRY_MS = 3_000;
-const KILL_GRACE_MS = 3_000;
+export const KILL_GRACE_MS = 3_000;
 /** Bounds on what a child may write back; more is a broken child. */
 const OUTPUT_MAX = 1_048_576;
 const STATUS_MAX = 16_777_216;
@@ -217,7 +218,7 @@ export class HostSetupError extends Error {
 /** Every control character, for clip: one left in would break a log line
  * or a progress event. */
 const CONTROL_CHARS_ALL = new RegExp(CONTROL_CHARS.source, "g");
-const clip = (value, max = LINE_MAX) => String(value).replace(CONTROL_CHARS_ALL, " ").slice(0, max);
+export const clip = (value, max = LINE_MAX) => String(value).replace(CONTROL_CHARS_ALL, " ").slice(0, max);
 
 /** A relay URL as the runner config takes it: wss://, no credentials, no
  * query or fragment. */
@@ -354,7 +355,7 @@ const machineOf = (peer) => dnsOf(peer).split(".")[0];
 
 /** The peer that the address names, checked for every rule before anything
  * else runs. */
-function findPeer(status, hostAddress) {
+export function findPeer(status, hostAddress) {
   const dnsName = new URL(hostAddress).hostname;
   const peer = Object.values(status?.Peer ?? {}).find((entry) => dnsOf(entry) === dnsName);
   const fail = (message) => new HostSetupError(message, { step: "machine" });
@@ -425,8 +426,10 @@ function runnerConfig(root, { ownerPubkey, relay, login }) {
   return `${JSON.stringify({ ...example, ownerPubkey, allowedLogins: [login], relays: [relay] }, null, 2)}\n`;
 }
 
-/** One ssh session to the peer, pinned to the keys Tailscale reports. */
-function sshArgs(peer, { sshUser, knownHosts, port }, command) {
+/** One ssh session to the peer, pinned to the keys Tailscale reports.
+ * `tty` asks the machine for a terminal: a sign-in (host-signin.mjs) needs
+ * one for sudo and for the prompts of buzz-login. */
+export function sshArgs(peer, { sshUser, knownHosts, port, tty = false }, command) {
   return [
     "-F", "/dev/null",
     "-o", "BatchMode=yes",
@@ -438,6 +441,7 @@ function sshArgs(peer, { sshUser, knownHosts, port }, command) {
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=4",
     "-p", String(port),
+    ...(tty ? ["-tt"] : []),
     ...(sshUser ? ["-l", sshUser] : []),
     "--", peer.address, command,
   ];
@@ -599,13 +603,13 @@ function sweepWork(dir) {
 const sweptText = ([removed, kept], noun) =>
   [removed && `${removed} old ${noun}${removed === 1 ? "" : "s"} removed`, kept && `${kept} old ${noun}${kept === 1 ? "" : "s"} not removed`].filter(Boolean);
 
-/** The steps that stay with the user, with commands to copy. The harness
- * user is the one setup.sh reported, so an aligned host with its own names
- * gets its own sign-in command. */
-function manualSteps(peer, sshUser, agentUser) {
-  const at = `${sshUser ? `${sshUser}@` : ""}${peer.dnsName}`;
+/** The steps that stay with the user. The sign-ins are on the Settings page
+ * (Sign in, host-signin.mjs), so none needs a shell on the machine; the
+ * harness user is the one setup.sh reported, so an aligned host with its own
+ * names shows its own. */
+function manualSteps(peer, label, agentUser) {
   return [
-    { id: "sign-in", text: "Sign each harness in as the harness user.", command: `ssh -t ${at} sudo -u ${agentUser} /usr/local/bin/buzz-login` },
+    { id: "sign-in", text: `Sign each harness in: select Sign in on the row of ${label}. It runs buzz-login there as ${agentUser}.` },
     { id: "policy", text: `In the tailnet policy, let only your own login reach port ${RUNNER_PORT} on ${peer.tags.join(", ")}.` },
   ];
 }
@@ -793,7 +797,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     begin("health");
     const version = await waitHealthy(runnerOrigin(host.origin), fetchImpl);
     progress("done", version ? `buzz-runner ${version}` : "");
-    return { host, added, version, manual: manualSteps(peer, setup.sshUser, agentUser) };
+    return { host, added, version, manual: manualSteps(peer, host.label, agentUser) };
   } catch (error) {
     const failure = error instanceof HostSetupError ? error : new HostSetupError(clip(error?.message ?? error), { step, cause: error });
     failure.step ??= step;

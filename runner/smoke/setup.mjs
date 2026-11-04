@@ -344,7 +344,11 @@ async function setupScenarios({ check, temp }) {
   check("setup: the machine joins hosts.json with its serve origin and the given name", hosts.length === 2 && hosts[1].id === MACHINE && hosts[1].label === "smoke/box" && hosts[1].origin === ORIGIN && done.result?.added === true, JSON.stringify(hosts));
   check("setup: the health check goes to the new origin, on the runner port", health.at(-1) === `${SERVE_ORIGIN}/v1/health` && done.result?.version === "0.0.0-smoke");
   check("setup: the copy and setup.sh run on the runner-only Node", rootRun?.port === "10000" && rootRun.node === RUNNER_NODE && done.calls[2]?.argv.at(-1).startsWith(`${RUNNER_NODE} -e `), JSON.stringify(rootRun && { port: rootRun.port, node: rootRun.node }));
-  check("setup: the manual steps name the sign-in command and the tag's port rule, and no harness install", !done.result?.manual?.some((step) => step.id === "harnesses") && done.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)), JSON.stringify(done.result?.manual));
+  check(
+    "setup: the manual steps send the sign-ins to the page's Sign in and name the tag's port rule, with no harness install and no shell command",
+    !done.result?.manual?.some((step) => step.id === "harnesses" || step.command) && done.result?.manual?.some((step) => step.id === "sign-in" && /select Sign in on the row of .* as buzz-agent\./.test(step.text)) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)),
+    JSON.stringify(done.result?.manual),
+  );
   check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));
 
   // A killed helper's stage: the next copy removes it, also when its time is
@@ -401,7 +405,7 @@ async function setupScenarios({ check, temp }) {
   rmSync(workLink, { force: true });
   check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
   const custom = await attempt({ address: SERVE_ORIGIN }, { env: { FAKE_SSH_AGENT_USER: "agents" } });
-  check("setup: the sign-in command names the harness user that setup.sh reports", !custom.error && custom.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u agents /usr/local/bin/buzz-login`), JSON.stringify(custom.result?.manual ?? custom.error?.message));
+  check("setup: the sign-in step names the harness user that setup.sh reports", !custom.error && custom.result?.manual?.some((step) => step.id === "sign-in" && step.text.endsWith(" as agents.")), JSON.stringify(custom.result?.manual ?? custom.error?.message));
   const passwordless = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, sudon: "1" } });
   check("setup: sudo without a password runs `sudo -n` with nothing on stdin", !passwordless.error && rootCall(passwordless)?.argv.at(-1).startsWith("/bin/sh -c 'sudo -n -- /bin/bash -c ") && rootCall(passwordless)?.stdin === "", passwordless.error?.message);
   const asRoot = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, uid: "0" } });

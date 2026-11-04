@@ -144,7 +144,7 @@ const LABELS = Object.freeze({
   settingsIntro:
     "These hosts are in hosts.json. New agent of the type Tailscale host can run on each of them; the first is the default. A change here saves hosts.json and is in use at once. You can also edit hosts.json by hand, then select Check again.",
   addIntro:
-    "Add host installs buzz-runner on the machine over Tailscale SSH, with root, or aligns the runner already there, then adds the machine to hosts.json. It also installs the runner's own Node and each harness that the machine does not have yet. The machine needs Linux, an ACL tag, Tailscale SSH, and curl or wget.",
+    "Add host installs buzz-runner on the machine over Tailscale SSH, with root, or aligns the runner already there, then adds the machine to hosts.json. It also installs the runner's own Node and each harness that the machine does not have yet. Then sign each harness in with Sign in on the host's row. The machine needs Linux, an ACL tag, Tailscale SSH, and curl or wget.",
   noHosts: "No Tailscale hosts. Add one in Settings > Plugins > Tailscale hosts.",
   helperMissing: "This version of Buzz Desktop cannot run the hosts helper, which this plugin needs to reach its hosts.",
   helperSilent:
@@ -222,6 +222,28 @@ const SETUP_IDLE_MS = 1020000;
 // The only links a setup shows: a Tailscale SSH check, which the user opens
 // to approve the connection (scripts/host-setup.mjs CHECK_LINK_RE).
 const CHECK_LINK = /^https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.-]{1,200}$/;
+// The sign-ins that Sign in offers, with the words the page shows: the
+// helper takes only these keys (scripts/host-signin.mjs SIGNIN_COMMANDS).
+const SIGNIN_COMMANDS = Object.freeze([
+  ["status", "Show what is signed in"],
+  ["claude", "Claude: sign in with claude.ai"],
+  ["claude-console", "Claude: sign in with the Anthropic Console"],
+  ["codex-device", "Codex: sign in with a device code"],
+  ["codex-api-key", "Codex: enter an API key"],
+  ["goose-key", "Goose: enter a provider key"],
+  ["goose-oauth", "Goose: sign in with a device code"],
+  ["goose-default", "Goose: choose the default model"],
+  ["pi-key", "Pi: enter a provider key"],
+  ["pi-oauth", "Pi: sign in"],
+  ["pi-default", "Pi: choose the default model"],
+]);
+// The longest a sign-in may stay without new output: the owner signs in
+// in a browser meanwhile, and the helper ends a sign-in after 20 min.
+const SIGNIN_IDLE_MS = 1260000;
+// The helper sends at most 300 lines of 2000 characters.
+const SIGNIN_OUTPUT_MAX = 700000;
+// buzz-login's own bound for a key or a pasted code.
+const SIGNIN_INPUT_MAX = 8192;
 // Bounds for what the helper reports about a setup.
 const DETAIL_MAX = 500;
 const MANUAL_MAX = 8;
@@ -1061,6 +1083,43 @@ export async function apply(ctx) {
       if (!disposed) setSetupRun({ state: "failed", error: errorText(error) });
     }
   }
+
+  // ---- Harness sign-in -------------------------------------------------------
+  // Settings > Tailscale hosts > Sign in: the one sign-in that may run, a
+  // terminal on the machine that runs buzz-login as the harness user
+  // (scripts/host-signin.mjs). Kept here, as the setup is, so a sign-in that
+  // waits for the owner's browser goes on when the page closes and opens.
+  const SIGNIN_IDLE = Object.freeze({ state: "idle", hostId: "", output: "", link: undefined, error: undefined, code: undefined });
+  let signinRun = SIGNIN_IDLE;
+  const setSigninRun = (change) => {
+    signinRun = Object.freeze({ ...signinRun, ...change });
+    emit();
+  };
+
+  /** Runs one sign-in through the helper. The password goes into the
+   * request and nowhere else: not into the store, a log or an error. */
+  async function startSignIn({ hostId, sshUser, sudoPassword, command }) {
+    if (signinRun.state === "running") throw new HostConfigError("A sign-in is already running.", { op: "signin" });
+    setSigninRun({ ...SIGNIN_IDLE, state: "running", hostId });
+    try {
+      const reply = await helper.call({ op: "signin", signin: { host: hostId, sshUser, sudoPassword, command } }, SIGNIN_IDLE_MS, (event) => {
+        if (disposed || !event) return;
+        const link = typeof event.link === "string" && CHECK_LINK.test(event.link) ? event.link : signinRun.link;
+        setSigninRun({ output: text(event.output, SIGNIN_OUTPUT_MAX) ?? signinRun.output, link });
+      });
+      if (disposed) return;
+      setSigninRun({ state: "done", code: Number.isInteger(reply.code) ? reply.code : undefined, output: text(reply.output, SIGNIN_OUTPUT_MAX) ?? signinRun.output });
+      // A sign-in changes what each harness reports.
+      void refresh();
+    } catch (error) {
+      if (!disposed) setSigninRun({ state: "failed", error: errorText(error) });
+    }
+  }
+
+  /** One typed line, or the cancel, to the running sign-in. Neither is
+   * kept: a line may be a key. */
+  const sendSignInInput = (line) => helper.call({ op: "signin-input", text: line }, REQUEST_TIMEOUT_MS);
+  const cancelSignIn = () => helper.call({ op: "signin-cancel" }, REQUEST_TIMEOUT_MS);
 
   function fileHost(list, id) {
     const host = list.find((entry) => entry.id === id);
@@ -2170,13 +2229,14 @@ export async function apply(ctx) {
     );
   }
 
-  /** The steps a setup leaves to the owner, with each command to copy. */
+  /** The steps a setup leaves to the owner, with a command to copy where a
+   * step has one. */
   function SetupResult({ result }) {
     return h(
       "div",
       { className: "grid gap-2 text-body-sm" },
       h("p", { role: "status", className: "m-0" }, `${result.added ? "Added" : "Already listed:"} ${result.label}${result.version ? ` (buzz-runner ${result.version})` : ""}. New agent can use it now.`),
-      h("p", { className: "m-0" }, "Still to do on the host:"),
+      h("p", { className: "m-0" }, "Still to do:"),
       h(
         "ol",
         { className: "m-0 grid gap-2 list-decimal pl-6" },
@@ -2254,6 +2314,112 @@ export async function apply(ctx) {
     );
   }
 
+  /** Settings > Tailscale hosts > Sign in, the start: the sign-in to run
+   * and how to reach root on the host. */
+  function SignInStart({ host, active, running, mine, onClose }) {
+    const [values, setValues] = React.useState({ sshUser: "", password: "", command: SIGNIN_COMMANDS[0][0] });
+    const ids = { user: React.useId(), password: React.useId() };
+    const typed = (key) => (event) => {
+      const { value } = event.target;
+      setValues((now) => ({ ...now, [key]: value }));
+    };
+    const start = (event) => {
+      event.preventDefault();
+      if (!active() || running) return;
+      // The password leaves the view with the request, as in Add host.
+      const sudoPassword = values.password;
+      setValues((now) => ({ ...now, password: "" }));
+      void startSignIn({ hostId: host.id, sshUser: values.sshUser.trim(), sudoPassword, command: values.command });
+    };
+    return h(
+      "form",
+      { "aria-label": "Start a sign-in", className: "grid gap-3", onSubmit: start },
+      h(Select, {
+        label: "Sign-in",
+        variant: "preference",
+        value: values.command,
+        disabled: running,
+        options: SIGNIN_COMMANDS.map(([value, label]) => ({ value, label })),
+        onValueChange: (command) => setValues((now) => ({ ...now, command })),
+      }),
+      h(
+        Field,
+        { label: "SSH login", controlId: ids.user, description: "The Linux user that Tailscale SSH signs you in as. Empty: your user name here." },
+        h(Input, { id: ids.user, value: values.sshUser, maxLength: SSH_USER_MAX, autoComplete: "off", autoCapitalize: "none", spellCheck: false, disabled: running, onChange: typed("sshUser") }),
+      ),
+      h(
+        Field,
+        { label: "sudo password", controlId: ids.password, description: "Only for a login that sudo asks a password of. It goes to sudo on the machine, and is not saved." },
+        h(Input, { id: ids.password, type: "password", value: values.password, maxLength: PASSWORD_MAX, autoComplete: "off", disabled: running, onChange: typed("password") }),
+      ),
+      h(
+        "div",
+        { className: "flex items-center gap-2" },
+        h(Button, { type: "submit", variant: "prominent", loading: running && mine, disabled: running && !mine }, "Start"),
+        // A cancel that comes just after the end finds no sign-in; the end
+        // already shows, so there is nothing more to say.
+        running && mine ? h(Button, { onClick: () => void cancelSignIn().catch(() => undefined) }, "Cancel") : null,
+        running ? null : h(Button, { onClick: onClose }, "Close"),
+      ),
+    );
+  }
+
+  /** Settings > Tailscale hosts > Sign in, the answer: one typed line to the
+   * running sign-in's terminal. */
+  function SignInAnswer({ active, onError }) {
+    const [line, setLine] = React.useState("");
+    const id = React.useId();
+    const send = (event) => {
+      event.preventDefault();
+      if (!active()) return;
+      // The line leaves the view with the request; it may be a key.
+      const typed = line;
+      setLine("");
+      sendSignInInput(typed).catch((cause) => onError(errorText(cause)));
+    };
+    return h(
+      "form",
+      { "aria-label": "Answer the terminal", className: "grid gap-2", onSubmit: send },
+      h(
+        Field,
+        { label: "Answer", controlId: id, description: "A key, a pasted code, or a menu number. It is hidden as you type, goes only to the terminal, and is not saved." },
+        h(Input, { id, type: "password", value: line, maxLength: SIGNIN_INPUT_MAX, autoComplete: "off", autoCapitalize: "none", spellCheck: false, onChange: (event) => setLine(event.target.value) }),
+      ),
+      h("div", null, h(Button, { type: "submit" }, "Send")),
+    );
+  }
+
+  /** How the sign-in on this host ended, in the words the page shows. */
+  function signInEnd(run) {
+    if (run.state === "failed") return h("p", { role: "alert", className: "buzz-field-error" }, run.error);
+    if (run.state !== "done") return null;
+    return h("p", { role: "status", className: "m-0 text-body-sm" }, run.code === 0 ? "The sign-in ended." : `The sign-in ended with exit ${run.code}.`);
+  }
+
+  /** Settings > Tailscale hosts > Sign in: buzz-login on the host, as the
+   * harness user. The machine's terminal shows here, and each line typed
+   * here goes to it, so the owner signs each harness in without a shell on
+   * the machine. */
+  function SignInPanel({ host, active, onClose }) {
+    const run = useStore(() => signinRun);
+    const [error, setError] = React.useState("");
+    const running = run.state === "running";
+    const mine = run.hostId === host.id && run.state !== "idle";
+    const link = mine && run.link ? h("p", { className: "m-0 text-body-sm" }, "Open this link to approve the connection: ", h("a", { href: run.link, target: "_blank", rel: "noopener noreferrer" }, run.link)) : null;
+    const output = mine && run.output ? h("pre", { role: "log", "aria-label": "Terminal on the host", className: "m-0 max-h-80 overflow-auto whitespace-pre-wrap break-all text-body-sm select-text" }, run.output) : null;
+    return h(
+      "div",
+      { "aria-label": `Sign in on ${host.label}`, role: "group", className: "grid gap-3" },
+      h("h3", { className: "text-label-sm" }, `Sign in on ${host.label}`),
+      h(SignInStart, { host, active, running, mine, onClose }),
+      link,
+      output,
+      running && mine ? h(SignInAnswer, { active, onError: setError }) : null,
+      mine ? signInEnd(run) : null,
+      error ? h("p", { role: "alert", className: "buzz-field-error" }, error) : null,
+    );
+  }
+
   /** One host's row: its address and whether it answers. */
   function hostSubtitle(host, status) {
     const reach = status.state === "checking" ? "Checking…" : status.state === "down" ? status.error : "Reachable";
@@ -2267,6 +2433,8 @@ export async function apply(ctx) {
     const list = useStore(() => HOSTS);
     useStore(() => hosts);
     const [editing, setEditing] = React.useState(null);
+    // A sign-in that still runs shows again when the page opens again.
+    const [signing, setSigning] = React.useState(() => (signinRun.state === "running" ? signinRun.hostId : null));
     const [notice, setNotice] = React.useState("");
     const [checking, setChecking] = React.useState(false);
     // The file may have changed by hand since the last read.
@@ -2312,6 +2480,7 @@ export async function apply(ctx) {
                       "div",
                       { className: "flex items-center gap-2" },
                       h(Button, { size: "sm", disabled: file.busy, "aria-label": `Edit ${host.label}`, onClick: () => setEditing(host.id) }, "Edit"),
+                      h(Button, { size: "sm", "aria-label": `Sign in on ${host.label}`, onClick: () => setSigning(host.id) }, "Sign in"),
                       h(
                         Button,
                         {
@@ -2332,6 +2501,9 @@ export async function apply(ctx) {
         ),
       ),
       notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, notice) : null,
+      ready && signing && list.some((host) => host.id === signing)
+        ? h(SignInPanel, { key: signing, host: list.find((host) => host.id === signing), active, onClose: () => setSigning(null) })
+        : null,
       ready ? h("h3", { className: "text-label-sm" }, "Add a host") : null,
       ready ? h(AddHostForm, { active, disabled: file.busy }) : null,
       h(

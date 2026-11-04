@@ -162,8 +162,10 @@ The owner's steps after install:
    `GOOSE_BIN`, `PI_MODULES`), root-owned and read-only. Verify each download
    (checksum, signature or provenance) first. **Add host** does this step
    (see [Harnesses](#harnesses)).
-2. Sign each harness in as the harness user: `sudo -u buzz-agent
-   /usr/local/bin/buzz-login status`, then `buzz-login <harness>`.
+2. Sign each harness in as the harness user. **Sign in** on the plugin's
+   Settings page runs this for you over Tailscale SSH. By hand: `sudo -u
+   buzz-agent /usr/local/bin/buzz-login status`, then `buzz-login
+   <harness>`.
 3. Check sudo for the nologin user: `sudo -u buzz-runner sudo -n -u buzz-agent
    -- /usr/local/libexec/buzz-runner/claude-wrapper <64-hex> --version` prints
    the claude version.
