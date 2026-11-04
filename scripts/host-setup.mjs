@@ -609,7 +609,7 @@ const sweptText = ([removed, kept], noun) =>
  * names shows its own. */
 function manualSteps(peer, label, agentUser) {
   return [
-    { id: "sign-in", text: `Sign each harness in: select Sign in on the row of ${label}. It runs buzz-login there as ${agentUser}.` },
+    { id: "sign-in", text: `Sign each harness in: select Sign in here, or under "Sign in to the harnesses" on this page. It runs buzz-login on ${label} as ${agentUser}.` },
     { id: "policy", text: `In the tailnet policy, let only your own login reach port ${RUNNER_PORT} on ${peer.tags.join(", ")}.` },
   ];
 }

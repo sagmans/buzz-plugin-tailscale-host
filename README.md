@@ -147,10 +147,11 @@ Then:
    open.
 4. Do the steps that the page lists at the end: sign in each harness (step
    5), and let only your login reach port 10000 in the tailnet policy.
-5. Select **Sign in** on the host's row. Choose a sign-in, type the SSH
-   login and the sudo password, and select **Start**. The page shows the
-   host's terminal: open the sign-in link it shows, then type the code or
-   key into **Answer** and select **Send**. Do this once for each harness.
+5. Select **Sign in** in that step, or under **Sign in to the harnesses**
+   on the page. Choose a sign-in, type the SSH login and the sudo password,
+   and select **Start**. The page shows the host's terminal: open the
+   sign-in link it shows, then type the code or key into **Answer** and
+   select **Send**. Do this once for each harness.
    **Show what is signed in** lists what each harness has.
 
 The setup copies only committed runner code: if `runner/` in this folder

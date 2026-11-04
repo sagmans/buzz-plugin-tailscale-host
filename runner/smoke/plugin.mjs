@@ -852,6 +852,10 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     // answers as the helper does, so the page's steps, link, result and
     // password handling are checked without a machine.
     const LAB_DNS = "lab-box.example.ts.net";
+    // The host the setup adds: hosts.json lists it once the setup is done,
+    // as the helper's own setup does.
+    const ADDED_HOST = Object.freeze({ id: "lab-box", label: "Lab Box", origin: `https://${LAB_DNS}` });
+    let labListed = false;
     const setupLines = [];
     let signinAsk;
     // The setup waits at its check link until the scenario has looked.
@@ -863,7 +867,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
         write: async (line) => {
           const ask = JSON.parse(line);
           setupLines.push(ask);
-          if (ask.op === "read") return answer({ id: ask.id, ok: true, hosts: [SMOKE_HOST] });
+          if (ask.op === "read") return answer({ id: ask.id, ok: true, hosts: labListed ? [SMOKE_HOST, ADDED_HOST] : [SMOKE_HOST] });
           if (ask.op === "request") return answer({ id: ask.id, ok: false, error: "no runner here" });
           // A sign-in: its terminal waits at a prompt until the page answers.
           if (ask.op === "signin") {
@@ -880,7 +884,8 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
           answer({ id: ask.id, progress: { step: "copy", state: "waiting", link: "javascript:alert(1)" } });
           await setupHeld;
           for (const step of steps) answer({ id: ask.id, progress: { step, state: "done", detail: step === "health" ? "buzz-runner 0.0.0-page" : undefined } });
-          answer({ id: ask.id, ok: true, added: true, version: "0.0.0-page", host: { id: "lab-box", label: "Lab Box", origin: "https://lab-box.example.ts.net:10000" },
+          labListed = true;
+          answer({ id: ask.id, ok: true, added: true, version: "0.0.0-page", host: { ...ADDED_HOST, origin: `https://${LAB_DNS}:10000` },
             manual: [{ id: "sign-in", text: "Sign each harness in.", command: `ssh -t owner@${LAB_DNS} sudo -u buzz-agent /usr/local/bin/buzz-login` }] });
         },
         end: () => {},
@@ -937,12 +942,22 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     // ---- Sign in: the page side of a harness sign-in -------------------------
     // The helper's sign-in itself is signin.mjs; here the stand-in streams a
     // terminal that waits at a prompt, and ends when the page answers it.
-    const signInButton = () => setupPage.node.querySelector(`button[aria-label="Sign in on ${SMOKE_HOST.label}"]`);
-    await until(signInButton, "Sign in button");
-    await act(async () => signInButton().click());
+    const section = () => setupPage.node.querySelector('section[aria-label="Sign in to the harnesses"]');
+    const resultSignIn = () => setupPage.node.querySelector(`[aria-label="Still to do"] button[aria-label="Sign in on ${ADDED_HOST.label}"]`);
+    await until(resultSignIn, "Sign in button in the setup's result");
+    const sectionButtons = [...(section()?.querySelectorAll("button") ?? [])].map((item) => item.textContent);
+    check(
+      "plugin: the page has a sign-in section with its heading, its steps and a Sign in button for each host",
+      section()?.querySelector("h3")?.textContent === "Sign in to the harnesses" && /Select Sign in for a host/.test(section().textContent) && JSON.stringify(sectionButtons) === JSON.stringify([`Sign in on ${SMOKE_HOST.label}`, `Sign in on ${ADDED_HOST.label}`]),
+      JSON.stringify(sectionButtons),
+    );
+    await act(async () => resultSignIn().click());
     const startForm = () => setupPage.node.querySelector('form[aria-label="Start a sign-in"]');
     await until(startForm, "sign-in form");
-    await typeText(fieldControl(startForm(), "SSH login"), "owner");
+    check(
+      "plugin: Sign in in the setup's result opens the sign-in for that host, with the setup's SSH login",
+      section()?.querySelector(`[aria-label="Sign in on ${ADDED_HOST.label}"][role="group"]`) && fieldControl(startForm(), "SSH login")?.value === "owner" && fieldControl(startForm(), "sudo password")?.value === "",
+    );
     await typeText(fieldControl(startForm(), "sudo password"), "sign pass");
     await act(async () => startForm().requestSubmit());
     const answerForm = () => setupPage.node.querySelector('form[aria-label="Answer the terminal"]');
@@ -950,7 +965,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const signinSent = setupLines.find((ask) => ask.op === "signin");
     check(
       "plugin: Start sends the host id, login, password and the chosen command as one sign-in",
-      signinSent?.signin.host === SMOKE_HOST.id && signinSent.signin.sshUser === "owner" && signinSent.signin.sudoPassword === "sign pass" && signinSent.signin.command === "status",
+      signinSent?.signin.host === ADDED_HOST.id && signinSent.signin.sshUser === "owner" && signinSent.signin.sudoPassword === "sign pass" && signinSent.signin.command === "status",
       JSON.stringify({ ...signinSent?.signin, sudoPassword: signinSent?.signin.sudoPassword ? "<set>" : "" }),
     );
     const signinLinks = [...setupPage.node.querySelectorAll('[aria-label^="Sign in on"] a')].map((item) => item.getAttribute("href"));
