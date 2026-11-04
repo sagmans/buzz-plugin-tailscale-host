@@ -99,7 +99,15 @@ first. On a host where buzz-runner is installed, a value that the
 environment does not set comes next from the installed unit, sudoers rule
 and `buzz-login`, so a run again (and **Add host**) keeps the host's own
 names. If the script cannot read an installed value, it stops with exit 78:
-set that value in the environment. The defaults apply to a first install:
+set that value in the environment.
+
+This also applies to the harness pins (`CLAUDE_DIR`, `CODEX_BIN`,
+`GOOSE_BIN`, `PI_MODULES`). An installed host keeps the harness paths that
+it has, so a pin bump in this script does not reach it. To move an installed
+host to a new pin, install that harness version at its path, then run the
+script again with the variable set to that path.
+
+The defaults apply to a first install:
 
 | Variable | Default |
 | --- | --- |
