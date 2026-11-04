@@ -51,6 +51,11 @@ const TAILSCALE_BINS = Object.freeze([
  * could change (runner/README.md, "Node"). */
 export const NODE_PATHS = Object.freeze(["/opt/buzz-runner/node", "/usr/bin/node"]);
 const NODE_MAJOR_MIN = 24;
+/** Where the tailscale CLI may be on the machine, first match wins. setup.sh
+ * has the same list (TAILSCALE_PATHS): root runs the CLI by path, because
+ * its PATH leaves out /usr/local/bin, and the probe looks in the same places
+ * so that it fails early where setup.sh would. */
+export const HOST_TAILSCALE_PATHS = Object.freeze(["/usr/bin/tailscale", "/usr/local/bin/tailscale"]);
 /** The stage folder prefix on the machine; setup.sh refuses any other. The
  * SSH user owns the stage, so root only reads it (setup.sh). */
 const STAGE_PREFIX = "/tmp/buzz-runner-setup.";
@@ -137,7 +142,7 @@ const STATUS_MAX = 16_777_216;
 /** Lines of install output a failure keeps for the page. */
 const TAIL_LINES = 12;
 const LINE_MAX = 300;
-const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tampered: 80 });
+const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tampered: 80, unsafeTailscale: 81 });
 /** A helper that is killed (the app quits, the process gets SIGKILL) never
  * runs its stage removal, so each copy removes the SSH user's own stages that
  * are older than any live setup can keep one: the install's timeout plus the
@@ -384,7 +389,7 @@ const PROBE = [
   // The first Node that is there, so that the probe and setup.sh agree.
   `for n in ${NODE_PATHS.join(" ")}; do if [ -x "$n" ]; then echo node_bin=$n; echo node=$("$n" -p process.versions.node 2>/dev/null); break; fi; done`,
   "command -v systemctl >/dev/null && echo systemd=1",
-  "command -v tailscale >/dev/null && echo tailscale=1",
+  `for t in ${HOST_TAILSCALE_PATHS.join(" ")}; do if [ -x "$t" ]; then echo tailscale_bin=$t; break; fi; done`,
   "command -v sudo >/dev/null && echo sudo=1",
   "sudo -n true 2>/dev/null && echo sudon=1",
   "true",
@@ -555,7 +560,8 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     const facts = Object.fromEntries(probe.stdout.split("\n").filter((line) => line.includes("=")).map((line) => line.split(/=(.*)/s, 2)));
     if (facts.os !== "Linux") throw new HostSetupError(`the machine runs ${clip(facts.os || "an unknown system", 40)}; the runner needs Linux`, { step });
     if (!facts.systemd) throw new HostSetupError("the machine has no systemd", { step });
-    if (!facts.tailscale) throw new HostSetupError("the machine has no tailscale command on its PATH", { step });
+    const tailscale = HOST_TAILSCALE_PATHS.find((path) => path === facts.tailscale_bin);
+    if (!tailscale) throw new HostSetupError(`the machine has no tailscale CLI at ${HOST_TAILSCALE_PATHS.join(" or ")}`, { step });
     // Only a path of the list goes into the root command line.
     const node = NODE_PATHS.find((path) => path === facts.node_bin);
     if (!node || !(Number.parseInt(facts.node, 10) >= NODE_MAJOR_MIN))
@@ -615,7 +621,9 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
               ? `a user who is not root can change ${node} or a folder above it; the root runner does not run it (runner/README.md, "Node")`
               : install.code === SETUP_EXIT.tampered
                 ? "the stage folder on the machine changed after the copy, so nothing was installed; a process of the SSH user may have changed it"
-              : tail(`${install.stdout}\n${install.stderr}`) || `exit ${install.code}`;
+                : install.code === SETUP_EXIT.unsafeTailscale
+                  ? `a user who is not root can change ${tailscale} or a folder above it; root does not run it (runner/README.md, "Tailscale CLI")`
+                  : tail(`${install.stdout}\n${install.stderr}`) || `exit ${install.code}`;
       throw new HostSetupError(install.timedOut ? "the install did not end in time" : reason, { step });
     }
     progress("done", runnerOrigin(`https://${peer.dnsName}`));

@@ -21,6 +21,8 @@
 //                      after the copy, before root reads it (exit 80)
 //   FAKE_SSH_GROW      "1": a process of the SSH user grows a stage file
 //                      past root's byte budget after the copy (exit 80)
+//   FAKE_SSH_TAILSCALE_UNSAFE "1": setup.sh finds a tailscale CLI that a
+//                      non-root user can change (its exit 81)
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -40,6 +42,7 @@ const CHECK_LINK = "https://login.tailscale.com/a/smoke-check";
 const EXIT_SSH = 255;
 const EXIT_SUDO = 1;
 const EXIT_UNSAFE_NODE = 79;
+const EXIT_UNSAFE_TAILSCALE = 81;
 
 const argv = process.argv.slice(2);
 const stdin = readFileSync(0);
@@ -102,6 +105,10 @@ if (rootRun) {
   if (process.env.FAKE_SSH_NODE_UNSAFE === "1") {
     process.stderr.write("setup.sh: a user who is not root can change the Node or a folder above it; the root runner does not run it\n");
     process.exit(EXIT_UNSAFE_NODE);
+  }
+  if (process.env.FAKE_SSH_TAILSCALE_UNSAFE === "1") {
+    process.stderr.write("setup.sh: a user who is not root can change the tailscale CLI or a folder above it; root does not run it\n");
+    process.exit(EXIT_UNSAFE_TAILSCALE);
   }
   if (process.env.FAKE_SSH_TAMPER === "1") appendFileSync(join(stage, TAMPERED_FILE), "id\n");
   if (process.env.FAKE_SSH_GROW === "1") appendFileSync(join(stage, GROWN_FILE), Buffer.alloc(STAGE_BYTES_MAX));

@@ -14,7 +14,7 @@ import { copyFileSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFile
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SETUP_STEPS, setupHost } from "../../scripts/host-setup.mjs";
+import { HOST_TAILSCALE_PATHS, SETUP_STEPS, setupHost } from "../../scripts/host-setup.mjs";
 import { handle } from "../../scripts/hosts-helper.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +54,13 @@ const fixtureGit = (root, args) =>
   });
 const OWNER = "ef".repeat(32);
 const RELAY = "wss://relay.example.ts.net";
-const FACTS = Object.freeze({ os: "Linux", uid: "1000", node_bin: "/usr/bin/node", node: "24.1.0", systemd: "1", tailscale: "1", sudo: "1" });
+const FACTS = Object.freeze({ os: "Linux", uid: "1000", node_bin: "/usr/bin/node", node: "24.1.0", systemd: "1", tailscale_bin: "/usr/bin/tailscale", sudo: "1" });
+/** A manual install of the static tailscale binary, outside root's PATH. */
+const LOCAL_TAILSCALE = "/usr/local/bin/tailscale";
+/** setup.sh's own tailscale list, and a command line that runs tailscale by
+ * name, which root's PATH would not find in /usr/local/bin. */
+const SETUP_TAILSCALE_RE = /^readonly TAILSCALE_PATHS=\(([^)]*)\)$/m;
+const BARE_TAILSCALE_RE = /(?:^|[|;&(]|\$\()\s*tailscale\s/;
 /** Where host-setup.mjs makes its stages, and their name prefix. */
 const STAGE_DIR = "/tmp";
 const STAGE_PREFIX = "buzz-runner-setup.";
@@ -106,7 +112,7 @@ export async function setupSmoke({ check, temp }) {
   /** One setup; returns its progress, its result or error, and the ssh calls. */
   async function attempt(request, { entry = peer(), facts = FACTS, env = {} } = {}) {
     writeFileSync(log, "");
-    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
+    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_SSH_TAILSCALE_UNSAFE: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
     const events = [];
     let result;
     let error;
@@ -161,6 +167,23 @@ export async function setupSmoke({ check, temp }) {
   check("setup: a Node path that is not in the list stops the setup before the copy", failedAt(otherNode, "connect") && otherNode.calls.length === 1 && /at \/opt\/buzz-runner\/node or \/usr\/bin\/node/.test(otherNode.error.message), otherNode.error?.message);
   const userNode = await attempt({}, { env: { FAKE_SSH_NODE_UNSAFE: "1" } });
   check("setup: a Node that a non-root user can change fails the install step with that reason", failedAt(userNode, "install") && /not root can change \/usr\/bin\/node/.test(userNode.error.message), userNode.error?.message);
+  // One at a time: each attempt reads the one fake-ssh log.
+  const noTailscale = [];
+  for (const facts of [{ ...FACTS, tailscale_bin: undefined }, { ...FACTS, tailscale_bin: "/opt/tools/bin/tailscale" }]) noTailscale.push(await attempt({}, { facts }));
+  check(
+    "setup: no tailscale CLI at a listed path stops the setup before the copy",
+    noTailscale.every((outcome) => failedAt(outcome, "connect") && outcome.calls.length === 1 && /no tailscale CLI at \/usr\/bin\/tailscale or \/usr\/local\/bin\/tailscale/.test(outcome.error.message)),
+    noTailscale.map((outcome) => outcome.error?.message).join(" | "),
+  );
+  const userTailscale = await attempt({}, { facts: { ...FACTS, tailscale_bin: LOCAL_TAILSCALE }, env: { FAKE_SSH_TAILSCALE_UNSAFE: "1" } });
+  check("setup: a tailscale CLI that a non-root user can change fails the install step with that reason", failedAt(userTailscale, "install") && /not root can change \/usr\/local\/bin\/tailscale/.test(userTailscale.error.message), userTailscale.error?.message);
+  const setupScript = readFileSync(join(REPO, SETUP_SCRIPT), "utf8");
+  const setupCode = setupScript.split("\n").filter((line) => !/^\s*#/.test(line));
+  check(
+    "setup: setup.sh runs tailscale only by the paths that the probe looks in",
+    SETUP_TAILSCALE_RE.exec(setupScript)?.[1].split(/\s+/).join(" ") === HOST_TAILSCALE_PATHS.join(" ") && !setupCode.some((line) => BARE_TAILSCALE_RE.test(line)),
+    setupCode.filter((line) => BARE_TAILSCALE_RE.test(line)).join(" | "),
+  );
   const noPassword = await attempt({ sudoPassword: "" });
   check("setup: sudo that asks for a password, with none given, stops before the copy", failedAt(noPassword, "connect") && noPassword.calls.length === 1 && /enter it/.test(noPassword.error.message), noPassword.error?.message);
 
@@ -239,6 +262,8 @@ export async function setupSmoke({ check, temp }) {
   const asRoot = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, uid: "0" } });
   const runnerNode = await attempt({}, { facts: { ...FACTS, node_bin: RUNNER_NODE } });
   check("setup: the runner-only Node goes to the copy and to setup.sh", !runnerNode.error && runnerNode.calls[1]?.argv.at(-1).startsWith(`${RUNNER_NODE} -e `) && runnerNode.rootRuns[0]?.node === RUNNER_NODE, runnerNode.error?.message ?? JSON.stringify(runnerNode.rootRuns[0]?.node));
+  const localTailscale = await attempt({}, { facts: { ...FACTS, tailscale_bin: LOCAL_TAILSCALE } });
+  check("setup: a tailscale CLI in /usr/local/bin only passes the probe and the setup ends done", !localTailscale.error && localTailscale.rootRuns.length === 1, localTailscale.error?.message);
   check("setup: a root login runs setup.sh without sudo", !asRoot.error && rootCall(asRoot)?.argv.at(-1).startsWith("/bin/sh -c '/bin/bash -c "), asRoot.error?.message);
 
   // A host removed by hand whose id agents still name: the page reserves it.

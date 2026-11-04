@@ -25,11 +25,13 @@
 #
 # Exit: 0 done; 64 wrong arguments; 77 the machine has no ACL tag; 79 a
 # non-root user can change the Node (not 78, which install.sh uses for its
-# own config errors); 80 the stage is not what the helper sent; other codes
-# come from install.sh or tailscale.
+# own config errors); 80 the stage is not what the helper sent; 81 a
+# non-root user can change the tailscale CLI; 69 no tailscale CLI at
+# TAILSCALE_PATHS; other codes come from install.sh or tailscale.
 set -euo pipefail
 umask 077
 # The root PATH, so that no folder of the SSH user names a program here.
+# Programs outside it, such as the tailscale CLI, go by a fixed path.
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 # The helper makes the stage with Node's mkdtemp and this prefix. Root only
@@ -63,12 +65,19 @@ readonly SOCKET_PATH=/run/buzz-runner/api.sock
 # the system Node that other tools need. sudo clears the environment, so the
 # path comes as an argument and only these are taken.
 readonly NODE_PATHS=(/opt/buzz-runner/node /usr/bin/node)
-# The most symlinks to follow from a Node path to its file.
+# Where the tailscale CLI is on Linux (scripts/host-setup.mjs
+# HOST_TAILSCALE_PATHS): the packages put it in /usr/bin, a manual install
+# of the static binary often in /usr/local/bin, which the root PATH leaves
+# out. The first that is there is used, and only if root alone can change it.
+readonly TAILSCALE_PATHS=(/usr/bin/tailscale /usr/local/bin/tailscale)
+# The most symlinks to follow from a program path to its file.
 readonly LINK_MAX=8
 readonly EX_USAGE=64
+readonly EX_UNAVAILABLE=69
 readonly EX_NOPERM=77
 readonly EX_UNSAFE_NODE=79
 readonly EX_TAMPERED=80
+readonly EX_UNSAFE_TAILSCALE=81
 
 die() {
 	echo "setup.sh: $2" >&2
@@ -90,11 +99,11 @@ root_only() {
 	done
 }
 
-# The root runner runs this Node, so a user who can change it, or a link or
-# folder on its way (for example a version manager in a home), could run
-# code as the runner. Every hop of the link chain and the last file pass
-# root_only.
-node_root_only() {
+# Root runs this program (the runner's Node, the tailscale CLI), so a user
+# who can change it, or a link or folder on its way (for example a version
+# manager in a home), could run code as root. Every hop of the link chain
+# and the last file pass root_only.
+program_root_only() {
 	local hop=$1 target hops=0
 	root_only "$hop" || return 1
 	while [ -L "$hop" ]; do
@@ -161,7 +170,16 @@ known=0
 for path in "${NODE_PATHS[@]}"; do [ "$node" = "$path" ] && known=1; done
 [ "$known" -eq 1 ] || die "$EX_USAGE" "node must be one of ${NODE_PATHS[*]}: $node"
 [ -x "$node" ] || die "$EX_USAGE" "no Node at $node"
-node_root_only "$node" || die "$EX_UNSAFE_NODE" "a user who is not root can change $node or a folder above it; the root runner does not run it"
+program_root_only "$node" || die "$EX_UNSAFE_NODE" "a user who is not root can change $node or a folder above it; the root runner does not run it"
+tailscale=
+for path in "${TAILSCALE_PATHS[@]}"; do
+	if [ -x "$path" ]; then
+		tailscale=$path
+		break
+	fi
+done
+[ -n "$tailscale" ] || die "$EX_UNAVAILABLE" "no tailscale CLI at ${TAILSCALE_PATHS[*]}"
+program_root_only "$tailscale" || die "$EX_UNSAFE_TAILSCALE" "a user who is not root can change $tailscale or a folder above it; root does not run it"
 
 copy=$(mktemp -d "$COPY_TEMPLATE")
 trap 'rm -rf -- "${copy:?}"' EXIT
@@ -182,7 +200,7 @@ step serve
 # request from the machine itself, so a harness would pass the runner's
 # allowlist (runner/README.md, "Security notes"). The serve step therefore
 # needs a tag; the helper checks it too, but this is the last word.
-tags=$(tailscale status --json | "$node" -e '
+tags=$("$tailscale" status --json | "$node" -e '
 	let text = "";
 	process.stdin.on("data", (chunk) => (text += chunk)).on("end", () => {
 		const tags = JSON.parse(text).Self?.Tags ?? [];
@@ -190,6 +208,6 @@ tags=$(tailscale status --json | "$node" -e '
 	});
 ')
 [ "$tags" -gt 0 ] || die "$EX_NOPERM" "this machine has no ACL tag; tag it in the Tailscale admin console, then run the setup again"
-tailscale serve --bg --yes --https="$port" "unix:$SOCKET_PATH"
+"$tailscale" serve --bg --yes --https="$port" "unix:$SOCKET_PATH"
 
 step 'done'

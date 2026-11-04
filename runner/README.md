@@ -197,6 +197,20 @@ package manager. `installs/node/24` is the link that mise keeps to the
 newest 24.x; after a `mise install node@24` of a newer 24.x, run the setup
 again so that the runner restarts on it.
 
+### Tailscale CLI
+
+`deploy/setup.sh` runs `tailscale status` and `tailscale serve` as root.
+Root's `PATH` there has only the system folders, so the script takes the
+first of these paths that is there:
+
+1. `/usr/bin/tailscale`: where the Tailscale packages put it.
+2. `/usr/local/bin/tailscale`: a manual install of the static binary.
+
+It refuses the path (exit 81) with the same rule as the Node: root owns the
+path, each link on its way, the last file, and every folder above them, and
+no group or other user can write any of them. With no CLI at these paths,
+the setup stops before the copy.
+
 ### What the wrappers do
 
 `deploy/claude-wrapper` starts `claude`; `deploy/harness-wrapper` starts
