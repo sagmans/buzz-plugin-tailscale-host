@@ -60,8 +60,13 @@ STAGE_LIMIT_FILES=(
 	"$RUNNER_DIR/smoke/fake-ssh.mjs"
 	"$RUNNER_DIR/smoke/setup.mjs"
 )
-# One definition line per file, in the shell or the JS form those files use.
-STAGE_LIMIT_DEF_RE="^(readonly $STAGE_LIMIT_NAME=|const $STAGE_LIMIT_NAME = )([0-9][0-9_]*);?\$"
+# One definition line per file, in the form its own language reads. Bash
+# arithmetic takes digits only and reads a leading zero as octal, so a JS
+# separator or a padded value in setup.sh would break the copy step as root.
+STAGE_LIMIT_SH_DEF_RE="^readonly $STAGE_LIMIT_NAME=([1-9][0-9]*)\$"
+# The JS copies may keep _ groups for a readable literal; each _ must sit
+# between two digits, as JS requires, so the value parses the same there.
+STAGE_LIMIT_JS_DEF_RE="^const $STAGE_LIMIT_NAME = ([1-9][0-9]*(_[0-9]+)*);?\$"
 # Any assignment to the name, in any form, so that a copy outside the list
 # cannot hold its own value unseen; == and === comparisons do not match.
 STAGE_LIMIT_ASSIGN_RE="(^|[^A-Za-z0-9_])${STAGE_LIMIT_NAME}[[:space:]]*=([^=]|\$)"
@@ -316,7 +321,7 @@ check_private_data() {
 # file may assign the name. A tree without setup.sh (an older commit) has no
 # root copy limit to judge.
 check_stage_limit() {
-	local path defs value rc want="" want_path="" others
+	local path defs def_re value rc want="" want_path="" others
 	has_file "${STAGE_LIMIT_FILES[0]}" || return 0
 	for path in "${STAGE_LIMIT_FILES[@]}"; do
 		has_file "$path" || fail "$path is missing; it holds a copy of $STAGE_LIMIT_NAME (update STAGE_LIMIT_FILES if it moved)"
@@ -325,9 +330,16 @@ check_stage_limit() {
 		rc=0
 		defs="$(grep -E -- "$STAGE_LIMIT_ASSIGN_RE" "$path")" || rc=$?
 		[ "$rc" -le 1 ] || fail "could not read $path for $STAGE_LIMIT_NAME"
-		[ "$(printf '%s' "$defs" | grep -c '^')" -eq 1 ] && [[ "$defs" =~ $STAGE_LIMIT_DEF_RE ]] ||
-			fail "$path must define $STAGE_LIMIT_NAME exactly once, at the top level, as a plain number"
-		value="${BASH_REMATCH[2]//_/}"
+		# The file name is the only sign of the language that reads the copy;
+		# an unknown kind stops the check instead of a guess at its form.
+		case "$path" in
+		*.sh) def_re=$STAGE_LIMIT_SH_DEF_RE ;;
+		*.mjs | *.js) def_re=$STAGE_LIMIT_JS_DEF_RE ;;
+		*) fail "$path has no known $STAGE_LIMIT_NAME form; add one for its language" ;;
+		esac
+		[ "$(printf '%s' "$defs" | grep -c '^')" -eq 1 ] && [[ "$defs" =~ $def_re ]] ||
+			fail "$path must define $STAGE_LIMIT_NAME exactly once, at the top level, as a plain number its language reads"
+		value="${BASH_REMATCH[1]//_/}"
 		if [ -z "$want" ]; then
 			want="$value" want_path="$path"
 		elif [ "$value" != "$want" ]; then
