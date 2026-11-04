@@ -12,9 +12,10 @@
 // only the host keys that Tailscale reports for that peer (no trust on first
 // use). Only committed runner code goes, in a bundle built for this setup.
 // The SSH user owns the stage folder on the machine, so root never runs a
-// file from it: setup.sh comes in the root command itself, copies the stage
-// to a folder that only root can write, and checks each file there against
-// the SHA-256 manifest that the command pins. The sudo password goes only to
+// file from it: setup.sh comes in the root command itself, copies the
+// listed stage files to a folder that only root can write, at most
+// STAGE_BYTES_MAX bytes, and checks each file there against the SHA-256
+// manifest that the command pins. The sudo password goes only to
 // the stdin of sudo on the machine; it is never in an argument, a file, a
 // log line or a progress event.
 //
@@ -80,6 +81,10 @@ const SETUP_SCRIPT = "runner/deploy/setup.sh";
 /** The stage file that lists every other stage file with its SHA-256, in
  * sha256sum's `<hex>  <path>` form; setup.sh checks the copy against it. */
 const MANIFEST = "MANIFEST";
+/** The most bytes of listed files that root copies into /run, a small tmpfs
+ * that the whole machine needs (setup.sh STAGE_BYTES_MAX, keep them equal).
+ * A bigger stage stops here, before any copy, with a clear reason. */
+const STAGE_BYTES_MAX = 16_777_216;
 /** The checkout paths that the stage and the bundle come from. Root runs
  * them on the machine, so each must be as committed: no edit, no new file
  * (git leaves out what .gitignore names: the build output and the links). */
@@ -544,6 +549,8 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     const files = STAGE_FILES.map(([path, mode]) => ({ path, mode, data: readFileSync(join(root, path)).toString("base64") }));
     files.push({ path: BUNDLE, mode: BUNDLE_MODE, data: readFileSync(built.bundle).toString("base64") });
     files.push({ path: "config.json", mode: 0o644, data: Buffer.from(runnerConfig(root, { ...setup, login })).toString("base64") });
+    const stageBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.data, "base64"), 0);
+    if (stageBytes > STAGE_BYTES_MAX) throw new HostSetupError(`the runner files are ${stageBytes} bytes; setup.sh copies at most ${STAGE_BYTES_MAX}`, { step });
     const manifest = manifestOf(files);
     files.push(manifest.file);
     const copy = await run(ssh, sshArgs(peer, session, unpackCommand(node)), { input: JSON.stringify({ files }), timeoutMs: COPY_TIMEOUT_MS });

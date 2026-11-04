@@ -37,12 +37,15 @@ const ORIGIN = ADDRESS;
 const SERVE_ORIGIN = `${ORIGIN}:10000`;
 /** The runner-only Node path (scripts/host-setup.mjs NODE_PATHS). */
 const RUNNER_NODE = "/opt/buzz-runner/node";
-/** Stands in for scripts/build-runner.mjs: writes a bundle where --out says. */
+/** Stands in for scripts/build-runner.mjs: writes a bundle where --out says,
+ * padded to FAKE_BUNDLE_BYTES when a scenario needs a big one. */
 const FAKE_BUILD = `import { mkdirSync, writeFileSync } from "node:fs";
 const out = process.argv[process.argv.indexOf("--out") + 1];
 mkdirSync(out, { recursive: true });
-writeFileSync(out + "/buzz-runner.mjs", "// bundle\\n");
+writeFileSync(out + "/buzz-runner.mjs", "// bundle\\n".padEnd(Number(process.env.FAKE_BUNDLE_BYTES ?? 0), " "));
 `;
+/** setup.sh STAGE_BYTES_MAX: the most bytes of runner files root copies. */
+const STAGE_BYTES_MAX = 16_777_216;
 /** git for the fixture checkout only, without the user's own git config. */
 const fixtureGit = (root, args) =>
   execFileSync("/usr/bin/git", ["-C", root, ...args], {
@@ -98,7 +101,7 @@ export async function setupSmoke({ check, temp }) {
   /** One setup; returns its progress, its result or error, and the ssh calls. */
   async function attempt(request, { entry = peer(), facts = FACTS, env = {} } = {}) {
     writeFileSync(log, "");
-    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
+    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
     const events = [];
     let result;
     let error;
@@ -164,6 +167,14 @@ export async function setupSmoke({ check, temp }) {
     failedAt(tampered, "install") && /changed after the copy/.test(tampered.error.message) && tampered.configs.length === 0 && tampered.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."),
     tampered.error?.message,
   );
+  const grown = await attempt({}, { env: { FAKE_SSH_GROW: "1" } });
+  check(
+    "setup: a stage file grown past root's byte budget after the copy fails the install step and installs nothing",
+    failedAt(grown, "install") && /changed after the copy/.test(grown.error.message) && grown.configs.length === 0 && grown.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."),
+    grown.error?.message,
+  );
+  const big = await attempt({}, { env: { FAKE_BUNDLE_BYTES: String(STAGE_BYTES_MAX + 1) } });
+  check("setup: runner files bigger than root's byte budget stop the copy step before any copy", failedAt(big, "copy") && big.calls.length === 1 && /copies at most 16777216/.test(big.error.message), big.error?.message);
   check("setup: a failed setup removes its stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && wrong.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."), leftoverStages().join(","));
   const hostsAfterFailure = JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
   check("setup: a failed setup leaves hosts.json as it was", hostsAfterFailure.length === 1);

@@ -19,6 +19,8 @@
 //                      can change (its exit 79)
 //   FAKE_SSH_TAMPER    "1": a process of the SSH user changes a stage file
 //                      after the copy, before root reads it (exit 80)
+//   FAKE_SSH_GROW      "1": a process of the SSH user grows a stage file
+//                      past root's byte budget after the copy (exit 80)
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -30,6 +32,9 @@ const STAGE_RE = /\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}/;
 const ROOT_RUN_RE = /\/bin\/bash -c "\$\(printf %s ([A-Za-z0-9+/=]+) \| \/usr\/bin\/base64 -d\)" setup\.sh (\S+) (\d+) (\S+) ([0-9a-f]{64})/;
 const MANIFEST = "MANIFEST";
 const TAMPERED_FILE = "runner/deploy/install.sh";
+/** setup.sh STAGE_BYTES_MAX: the most bytes of listed files root copies. */
+const STAGE_BYTES_MAX = 16_777_216;
+const GROWN_FILE = "runner/dist/buzz-runner.mjs";
 const EXIT_TAMPERED = 80;
 const CHECK_LINK = "https://login.tailscale.com/a/smoke-check";
 const EXIT_SSH = 255;
@@ -72,13 +77,15 @@ const filesIn = (folder) =>
     .filter((entry) => entry.isFile())
     .map((entry) => relative(folder, join(entry.parentPath, entry.name)));
 /** setup.sh's copy_checked, on the stage itself: the manifest has the pinned
- * hash, and it lists every other file, each with its own hash. */
+ * hash, the files it lists stay within root's byte budget together, and each
+ * has its own hash. Root reads no other stage file. */
 function stageMatches(stage, pinned) {
   const manifest = readFileSync(join(stage, MANIFEST), "utf8");
   if (sha256(manifest) !== pinned) return false;
   const listed = manifest.split("\n").filter(Boolean).map((line) => [line.slice(0, 64), line.slice(66)]);
-  const present = filesIn(stage).filter((path) => path !== MANIFEST).sort();
-  return JSON.stringify(listed.map(([, path]) => path).sort()) === JSON.stringify(present) && listed.every(([hash, path]) => sha256(readFileSync(join(stage, path))) === hash);
+  const data = listed.map(([, path]) => readFileSync(join(stage, path)));
+  if (data.reduce((sum, bytes) => sum + bytes.length, 0) > STAGE_BYTES_MAX) return false;
+  return listed.every(([hash], index) => sha256(data[index]) === hash);
 }
 
 const rootRun = ROOT_RUN_RE.exec(command);
@@ -97,6 +104,7 @@ if (rootRun) {
     process.exit(EXIT_UNSAFE_NODE);
   }
   if (process.env.FAKE_SSH_TAMPER === "1") appendFileSync(join(stage, TAMPERED_FILE), "id\n");
+  if (process.env.FAKE_SSH_GROW === "1") appendFileSync(join(stage, GROWN_FILE), Buffer.alloc(STAGE_BYTES_MAX));
   if (!stageMatches(stage, pinned)) {
     process.stderr.write(`setup.sh: the stage at ${stage} is not what the helper sent; nothing was installed\n`);
     process.exit(EXIT_TAMPERED);

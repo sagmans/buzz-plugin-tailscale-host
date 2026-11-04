@@ -8,9 +8,10 @@
 # Trust: the SSH user owns the stage, so any process of that user can change
 # it until root reads it. So root never runs a file from the stage. The
 # helper sends this script in the root command itself, not as a stage file.
-# The script copies the stage into a fresh folder that only root can write,
-# and checks every file there against the SHA-256 manifest that the helper
-# pins in the command. Only then does install.sh run, from that copy.
+# The script copies the files that the SHA-256 manifest lists into a fresh
+# folder that only root can write, with bounded reads, and checks every file
+# there against the manifest that the helper pins in the command. Only then
+# does install.sh run, from that copy.
 #
 # Usage (as root): bash -c "<this script>" setup.sh <stage> <port> <node> <sha>
 #   <stage>  the folder the helper made: /tmp/buzz-runner-setup.<random>
@@ -40,6 +41,17 @@ readonly COPY_TEMPLATE=/run/buzz-runner-setup.XXXXXXXXXX
 # The stage file that lists `<sha256>  <path>` for every other stage file.
 readonly MANIFEST=MANIFEST
 readonly SHA_RE='^[0-9a-f]{64}$'
+# A manifest line as sha256sum writes it, for the paths the helper's unpack
+# program accepts (scripts/host-setup.mjs UNPACK).
+readonly MANIFEST_LINE_RE='^[0-9a-f]{64}  (runner/[A-Za-z0-9._/-]+|config\.json)$'
+# /run is a small tmpfs that the whole machine needs, and the SSH user can
+# grow a stage file while root reads it. So root reads at most these bytes
+# from the stage: the manifest, then all listed files together. The helper
+# refuses a bigger stage before the copy (host-setup.mjs STAGE_BYTES_MAX).
+readonly MANIFEST_BYTES_MAX=65536
+readonly STAGE_BYTES_MAX=16777216
+# The dd block size for the bounded reads.
+readonly READ_BLOCK=65536
 readonly PORT_RE='^[1-9][0-9]{0,4}$'
 readonly PORT_MAX=65535
 # install.sh's defaults (RUNNER_DIRNAME): the config it keeps and the socket
@@ -98,26 +110,41 @@ node_root_only() {
 	root_only "$(readlink -f -- "$1")"
 }
 
-# Copies the stage into the root-only folder and checks the copy, so that
-# install.sh reads exactly what the helper sent, and no user can change it
-# after the check. Fails if any file differs, is missing or is extra, or if
-# the copy holds anything but plain files and folders.
+# Reads one stage file into the copy, at most <max> bytes, and prints how
+# many it read. Fails on a link (nofollow) and never waits on a FIFO
+# (nonblock), so a swap in the stage cannot open a device as root or stop the
+# setup. One byte over <max> is read, so that a bigger file shows as too big.
+read_bounded() {
+	local from=$1 to=$2 max=$3
+	dd if="$from" of="$to" bs="$READ_BLOCK" count=$((max + 1)) \
+		iflag=nofollow,nonblock,count_bytes conv=excl status=none || return 1
+	stat -c %s -- "$to"
+}
+
+# Copies the files that the pinned manifest lists from the stage into the
+# root-only folder, then checks the copy, so that install.sh reads exactly
+# what the helper sent, and no user can change it after the check. Root
+# reads only the listed paths, each with a bounded read, so a stage file that
+# grows, or a file that is not listed, cannot fill /run. Fails if the
+# manifest or any file differs, is missing or is too big.
 copy_checked() {
-	local from=$1 want=$2 to=$3 got listed present
-	# -P copies a link as a link and -R makes a FIFO or a device a new node, so
-	# cp never reads through them; the find below refuses them.
-	cp -RP -- "$from/." "$to/" || return 1
-	[ -z "$(find "$to" -mindepth 1 ! -type f ! -type d -print -quit)" ] || return 1
-	# A stage file may carry a set-id bit or a mode for other users; the copy
-	# is root's alone.
-	chmod -R go-rwx,ug-s -- "$to" || return 1
-	[ -f "$to/$MANIFEST" ] || return 1
+	local from=$1 want=$2 to=$3 got size line path budget=$STAGE_BYTES_MAX
+	size=$(read_bounded "$from/$MANIFEST" "$to/$MANIFEST" "$MANIFEST_BYTES_MAX") || return 1
+	[ "$size" -le "$MANIFEST_BYTES_MAX" ] || return 1
 	got=$(sha256sum <"$to/$MANIFEST") || return 1
 	[ "${got%% *}" = "$want" ] || return 1
-	# Each manifest line is `<64 hex>  <path>`, as sha256sum writes it.
-	listed=$(cut -c67- -- "$to/$MANIFEST" | LC_ALL=C sort) || return 1
-	present=$(cd -- "$to" && find . -type f ! -path "./$MANIFEST" | sed 's|^\./||' | LC_ALL=C sort) || return 1
-	[ -n "$listed" ] && [ "$listed" = "$present" ] || return 1
+	# The pin makes the manifest the helper's own; the line check keeps every
+	# path inside the copy all the same.
+	[ -s "$to/$MANIFEST" ] || return 1
+	while IFS= read -r line; do
+		[[ "$line" =~ $MANIFEST_LINE_RE ]] || return 1
+		path=${line:66}
+		case "/$path/" in */../* | */./* | *//*) return 1 ;; esac
+		mkdir -p -- "$to/$(dirname -- "$path")" || return 1
+		size=$(read_bounded "$from/$path" "$to/$path" "$budget") || return 1
+		budget=$((budget - size))
+		[ "$budget" -ge 0 ] || return 1
+	done <"$to/$MANIFEST"
 	(cd -- "$to" && sha256sum --check --strict --quiet -- "$MANIFEST") || return 1
 }
 
