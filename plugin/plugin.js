@@ -144,7 +144,7 @@ const LABELS = Object.freeze({
   settingsIntro:
     "These hosts are in hosts.json. New agent of the type Tailscale host can run on each of them; the first is the default. A change here saves hosts.json and is in use at once. You can also edit hosts.json by hand, then select Check again.",
   addIntro:
-    "Add host installs buzz-runner on the machine over Tailscale SSH, with root, or aligns the runner already there, then adds the machine to hosts.json. The machine needs Linux, an ACL tag, Tailscale SSH and Node 24 at /usr/bin/node.",
+    "Add host installs buzz-runner on the machine over Tailscale SSH, with root, or aligns the runner already there, then adds the machine to hosts.json. The machine needs Linux, an ACL tag, Tailscale SSH and Node 24 or later at /opt/buzz-runner/node (for the runner only) or /usr/bin/node.",
   noHosts: "No Tailscale hosts. Add one in Settings > Plugins > Tailscale hosts.",
   helperMissing: "This version of Buzz Desktop cannot run the hosts helper, which this plugin needs to reach its hosts.",
   helperSilent:
