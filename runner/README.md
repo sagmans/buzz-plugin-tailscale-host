@@ -80,8 +80,9 @@ limit and the manifest check still apply to it. It checks each copied file
 against the manifest, and exits 80 on any difference or on a bigger file.
 The SSH user removes the stage after the install. If the helper is killed
 before that, the next copy to the machine removes the stage: it removes only
-the SSH user's own stage folders that are older than the longest setup. The
-manual steps here stay the reference.
+the SSH user's own stage folders whose time is more than twice the longest
+setup in the past or in the future. The manual steps here stay the
+reference.
 
 ```sh
 sudo runner/deploy/install.sh --dry-run                     # show every step, change nothing

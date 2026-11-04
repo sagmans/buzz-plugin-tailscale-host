@@ -153,7 +153,10 @@ const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tam
  * are older than any live setup can keep one: the install's timeout plus the
  * copy and the removal calls, twice for clock and slow-link margin. A live
  * setup of another device on the same machine is younger, so it keeps its
- * stage. */
+ * stage. The same distance into the future also counts as stale: only a clock
+ * that stepped back or a touched folder gives such an mtime, and without this
+ * that stage would stay until the clock catches up. A small step back keeps a
+ * live stage. */
 const STAGE_STALE_MS = 2 * (INSTALL_TIMEOUT_MS + 2 * COPY_TIMEOUT_MS);
 
 /** A setup step that failed, with the step and the reason the page shows. */
@@ -415,7 +418,7 @@ for (const name of fs.readdirSync(${JSON.stringify(dirname(STAGE_PREFIX))})) {
   if (!${STAGE_RE}.test(old)) continue;
   try {
     const st = fs.lstatSync(old);
-    if (!st.isDirectory() || st.uid !== process.getuid() || Date.now() - st.mtimeMs < ${STAGE_STALE_MS}) continue;
+    if (!st.isDirectory() || st.uid !== process.getuid() || Math.abs(Date.now() - st.mtimeMs) < ${STAGE_STALE_MS}) continue;
     fs.rmSync(old, { recursive: true, force: true });
     swept[0] += 1;
   } catch { swept[1] += 1; }

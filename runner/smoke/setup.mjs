@@ -67,6 +67,9 @@ const STAGE_PREFIX = "buzz-runner-setup.";
 /** How old a killed helper's stage is in the sweep scenario: far past
  * host-setup.mjs STAGE_STALE_MS. */
 const STALE_AGE_S = 86_400;
+/** A small clock step back on the machine: a live stage that looks this far
+ * in the future stays. */
+const SKEW_S = 60;
 const SETUP_SCRIPT = "runner/deploy/setup.sh";
 /** What the stage holds when root reads it: every copied file, the bundle,
  * the config and the manifest, and no setup.sh. */
@@ -232,13 +235,19 @@ export async function setupSmoke({ check, temp }) {
   check("setup: the manual steps name the sign-in command and the tag's port rule", done.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)), JSON.stringify(done.result?.manual));
   check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));
 
-  // A killed helper's stage: the next copy removes it, but keeps a young
-  // stage (a live setup of another device) and never follows a stage-named
-  // link to what it points at.
-  const staleAt = Date.now() / 1000 - STALE_AGE_S;
+  // A killed helper's stage: the next copy removes it, also when its time is
+  // far in the future (a clock that stepped back), but keeps a young stage and
+  // one a small step in the future (a live setup of another device) and never
+  // follows a stage-named link to what it points at.
+  const now = Date.now() / 1000;
+  const staleAt = now - STALE_AGE_S;
   const stale = mkdtempSync(`${STAGE_DIR}/${STAGE_PREFIX}`);
   writeFileSync(join(stale, "MANIFEST"), "old\n");
   utimesSync(stale, staleAt, staleAt);
+  const future = mkdtempSync(`${STAGE_DIR}/${STAGE_PREFIX}`);
+  utimesSync(future, now + STALE_AGE_S, now + STALE_AGE_S);
+  const skewed = mkdtempSync(`${STAGE_DIR}/${STAGE_PREFIX}`);
+  utimesSync(skewed, now + SKEW_S, now + SKEW_S);
   const young = mkdtempSync(`${STAGE_DIR}/${STAGE_PREFIX}`);
   const target = join(temp, "sweep-target");
   mkdirSync(target, { recursive: true });
@@ -250,11 +259,11 @@ export async function setupSmoke({ check, temp }) {
   const again = await attempt({ address: SERVE_ORIGIN });
   const copyDone = again.events.find((event) => event.step === "copy" && event.state === "done");
   check(
-    "setup: the next copy removes a killed helper's old stage, keeps a young one and follows no link",
-    !existsSync(stale) && existsSync(young) && existsSync(join(target, "keep")) && /, 1 old stage removed$/.test(copyDone?.detail ?? ""),
+    "setup: the next copy removes a killed helper's old and far-future stages, keeps a young and a near-future one and follows no link",
+    !existsSync(stale) && !existsSync(future) && existsSync(skewed) && existsSync(young) && existsSync(join(target, "keep")) && /, 2 old stages removed$/.test(copyDone?.detail ?? ""),
     copyDone?.detail,
   );
-  rmSync(young, { recursive: true, force: true });
+  for (const kept of [young, skewed]) rmSync(kept, { recursive: true, force: true });
   rmSync(link, { force: true });
   check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
   const custom = await attempt({ address: SERVE_ORIGIN }, { env: { FAKE_SSH_AGENT_USER: "agents" } });
