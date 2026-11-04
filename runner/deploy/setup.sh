@@ -82,6 +82,9 @@ readonly EX_UNSAFE_NODE=79
 readonly EX_TAMPERED=80
 readonly EX_UNSAFE_TAILSCALE=81
 readonly EX_HARNESS=82
+# install.sh's LOGIN_USER_RE: a login it would refuse gets no sign-in rule
+# here, and the setup goes on without it.
+readonly LOGIN_USER_RE='^[a-z_][a-z0-9_.-]{0,31}$'
 # buzz-app's Pi package.json and lock in the copy (host-setup.mjs PI_DEPS):
 # harnesses.sh installs the Pi packages from them.
 readonly PI_DEPS=runner/pi
@@ -167,6 +170,17 @@ copy_checked() {
 	(cd -- "$to" && sha256sum --check --strict --quiet -- "$MANIFEST") || return 1
 }
 
+# The login that ran this script through sudo, for the sign-in rule
+# (install.sh --login-user): Sign in then runs buzz-login with no second
+# password. sudo itself sets SUDO_USER and SUDO_UID, and both must name the
+# same account. Root, or no sudo at all (a root SSH login), needs no rule.
+sudo_login() {
+	local name=${SUDO_USER:-} uid=${SUDO_UID:-}
+	[ -n "$name" ] && [ -n "$uid" ] && [ "$uid" != 0 ] || return 1
+	[[ "$name" =~ $LOGIN_USER_RE ]] || return 1
+	[ "$(id -u -- "$name" 2>/dev/null)" = "$uid" ]
+}
+
 [ $# -eq 4 ] || die "$EX_USAGE" "usage: setup.sh <stage> <https-port> <node> <manifest-sha256>"
 stage=$1
 port=$2
@@ -223,13 +237,19 @@ if [ "$(value INSTALLED)" = 1 ]; then
 	echo "setup.sh: keeping the installed deployment's values, with the Node at $runner_node"
 fi
 config_path=/etc/$dirname/config.json
+login_args=()
+if login=$(sudo_login && printf '%s' "$SUDO_USER"); then
+	login_args=(--login-user "$login")
+else
+	echo "setup.sh: no sign-in rule: root, or no login that sudo names, ran this setup"
+fi
 # A config already on the host may hold the owner's own edits, so a first
 # install takes the generated one and every later run keeps what is there.
 if [ -f "$config_path" ]; then
 	echo "setup.sh: keeping $config_path"
-	NODE_BIN=$runner_node /bin/bash "$install_sh" --bundle "$bundle"
+	NODE_BIN=$runner_node /bin/bash "$install_sh" --bundle "$bundle" "${login_args[@]}"
 else
-	NODE_BIN=$runner_node /bin/bash "$install_sh" --bundle "$bundle" --config "$copy/config.json"
+	NODE_BIN=$runner_node /bin/bash "$install_sh" --bundle "$bundle" --config "$copy/config.json" "${login_args[@]}"
 fi
 printf '@@agent-user %s\n' "$(value AGENT_USER)"
 

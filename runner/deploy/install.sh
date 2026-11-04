@@ -10,12 +10,17 @@
 # them by hand lets one drift; here they come from one set of values below.
 #
 # Usage (as root, from a checkout with a built bundle):
-#   sudo runner/deploy/install.sh [--bundle FILE] [--config FILE] [--no-start] [--dry-run]
+#   sudo runner/deploy/install.sh [--bundle FILE] [--config FILE] [--login-user NAME] [--no-start] [--dry-run]
 #
 #   --bundle FILE  the runner bundle (default: runner/dist/buzz-runner.mjs)
 #   --config FILE  install FILE as the runner config (default: keep the
 #                  installed one; a first install without it stops before
 #                  start, with the example config to edit)
+#   --login-user NAME
+#                  let the login NAME run buzz-login as the harness user
+#                  without a password, so that Sign in on the Settings page
+#                  asks for none (default: keep the installed rule, if any);
+#                  setup.sh passes the login that ran it through sudo
 #   --no-start     install everything, but do not enable or restart
 #   --dry-run      print every step, change nothing (no root needed)
 #   --print-values print the host values as NAME=value lines and change
@@ -58,6 +63,11 @@ readonly SERVICE=buzz-runner
 readonly UNIT_PATH=/etc/systemd/system/$SERVICE.service
 readonly SUDOERS_PATH=/etc/sudoers.d/$SERVICE
 readonly LOGIN_FRONT=/usr/local/bin/buzz-login
+# The sign-in rule (--login-user), in its own file: install.sh reads the
+# installed wrapper rules back from SUDOERS_PATH by their order, and a run
+# without --login-user keeps this file as it is. No "." in the name, as
+# sudo skips such files in /etc/sudoers.d.
+readonly LOGIN_SUDOERS_PATH=/etc/sudoers.d/buzz-login
 readonly NODE_MAJOR_MIN=24
 # Groups that would let the runner user (and so a stolen agent session)
 # become root or reach the container daemon.
@@ -66,6 +76,10 @@ readonly PRIVILEGED_GROUPS='sudo admin wheel docker lxd adm'
 # user), as a usr-merged distribution places them.
 readonly WRAPPER_TOOLS='/bin/bash /usr/bin/env /usr/bin/id /usr/bin/prlimit /usr/bin/setpriv /usr/bin/flock'
 readonly USER_RE='^[a-z_][a-z0-9_-]{0,31}$'
+# A login is an existing account, not one this script makes, so it may have
+# a "." as the SSH login on the Settings page may (host-setup.mjs
+# SSH_USER_RE). None of these characters is special in sudoers.
+readonly LOGIN_USER_RE='^[a-z_][a-z0-9_.-]{0,31}$'
 readonly DIRNAME_RE='^[a-z0-9][a-z0-9._-]{0,63}$'
 readonly PATH_RE='^/[A-Za-z0-9._/+-]+$'
 # How long the service may take to report active after a restart.
@@ -79,6 +93,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 runner_dir=$(dirname -- "$here")
 bundle=$runner_dir/dist/buzz-runner.mjs
 config_src=
+login_user=
 start=1
 dry_run=0
 print_values=0
@@ -111,6 +126,11 @@ while [ $# -gt 0 ]; do
 	--config)
 		[ $# -ge 2 ] || die "$EX_USAGE" "--config needs a file"
 		config_src=$2
+		shift 2
+		;;
+	--login-user)
+		[ $# -ge 2 ] || die "$EX_USAGE" "--login-user needs a user name"
+		login_user=$2
 		shift 2
 		;;
 	--no-start)
@@ -254,6 +274,13 @@ check_value RUNNER_USER "$RUNNER_USER" "$USER_RE"
 check_value AGENT_USER "$AGENT_USER" "$USER_RE"
 check_value RUNNER_DIRNAME "$RUNNER_DIRNAME" "$DIRNAME_RE"
 [ "$RUNNER_USER" != "$AGENT_USER" ] || die "$EX_USAGE" "RUNNER_USER and AGENT_USER must differ: the harness user must not read the keys"
+if [ -n "$login_user" ]; then
+	[[ "$login_user" =~ $LOGIN_USER_RE ]] || die "$EX_USAGE" "--login-user has an unsafe value: $login_user"
+	# The runner user may start only the two wrappers, and the harness user
+	# needs no rule to be itself.
+	[ "$login_user" != "$RUNNER_USER" ] && [ "$login_user" != "$AGENT_USER" ] ||
+		die "$EX_USAGE" "--login-user must be the owner's login, not $login_user"
+fi
 for name in AGENT_HOME NODE_BIN LIB_DIR LIBEXEC_DIR CLAUDE_WRAPPER HARNESS_WRAPPER CLAUDE_DIR CODEX_BIN GOOSE_BIN PI_MODULES; do
 	check_value "$name" "${!name}" "$PATH_RE"
 done
@@ -288,6 +315,11 @@ if [ "$dry_run" -eq 0 ]; then
 	[ -x "$NODE_BIN" ] || die "$EX_CONFIG" "no Node at $NODE_BIN (set NODE_BIN)"
 	node_major=$("$NODE_BIN" -p 'process.versions.node.split(".")[0]')
 	[ "$node_major" -ge "$NODE_MAJOR_MIN" ] || die "$EX_CONFIG" "Node $node_major at $NODE_BIN; the runner needs $NODE_MAJOR_MIN or newer"
+	if [ -n "$login_user" ]; then
+		login_uid=$(id -u -- "$login_user" 2>/dev/null) || die "$EX_USAGE" "--login-user names no user on this host: $login_user"
+		# Root needs no rule, and a rule for it would only hide a mistake.
+		[ "$login_uid" -ne 0 ] || die "$EX_USAGE" "--login-user must not be root"
+	fi
 fi
 
 # The config must agree with what this run installs; checked before any
@@ -381,6 +413,18 @@ awk -v runner="$RUNNER_USER" -v agent="$AGENT_USER" -v claude="$CLAUDE_WRAPPER" 
 	NF { exit 3 }
 	END { if (n != 2) exit 3 }
 ' "$here/sudoers.template" >"$stage/sudoers" || die "$EX_SOFTWARE" "sudoers.template must hold exactly the two wrapper rules"
+# The sign-in rule: only buzz-login, by its fixed root-owned path, and only as
+# the harness user. buzz-login gives that user nothing new (its header), so
+# the rule saves the owner a second password, and grants no other program.
+if [ -n "$login_user" ]; then
+	{
+		echo "# buzz-login: the owner's login may run the harness sign-in tool as the"
+		echo "# harness user without a password (Sign in on the Settings page)."
+		echo "# install.sh --login-user writes this file; delete it to ask again."
+		echo "$login_user ALL=($AGENT_USER) NOPASSWD: $LOGIN_FRONT"
+	} >"$stage/sudoers-login"
+	note "sign-in rule for $LOGIN_SUDOERS_PATH: $(tail -n 1 -- "$stage/sudoers-login")"
+fi
 cp -- "$here/pi-launch.mjs" "$stage/pi-launch.mjs"
 
 # ---- Users -----------------------------------------------------------------
@@ -422,11 +466,16 @@ run install -o root -g root -m 0644 "$stage/pi-launch.mjs" "$LIBEXEC_DIR/pi-laun
 run install -o root -g root -m 0644 "$stage/buzz-login.mjs" "$LIBEXEC_DIR/buzz-login.mjs"
 run install -o root -g root -m 0755 "$stage/buzz-login" "$LOGIN_FRONT"
 
-# visudo checks the rendered rule before it can lock sudo out.
+# visudo checks each rendered rule before it can lock sudo out, and both
+# before either is installed, so a bad sign-in rule leaves sudo as it was.
 if [ "$dry_run" -eq 0 ]; then
 	visudo -cf "$stage/sudoers" >/dev/null || die "$EX_SOFTWARE" "rendered sudoers rule does not parse"
+	[ -z "$login_user" ] || visudo -cf "$stage/sudoers-login" >/dev/null || die "$EX_SOFTWARE" "rendered sign-in rule does not parse"
 fi
 run install -o root -g root -m 0440 "$stage/sudoers" "$SUDOERS_PATH"
+# After buzz-login is in place above, so that the rule never names a
+# missing tool.
+[ -z "$login_user" ] || run install -o root -g root -m 0440 "$stage/sudoers-login" "$LOGIN_SUDOERS_PATH"
 run install -o root -g root -m 0644 "$stage/$SERVICE.service" "$UNIT_PATH"
 
 # ---- Config ----------------------------------------------------------------

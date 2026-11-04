@@ -313,6 +313,10 @@ const COMMAND_MAX = 300;
 // The SSH login and sudo password fields (scripts/host-setup.mjs rules).
 const SSH_USER_MAX = 32;
 const PASSWORD_MAX = 256;
+// Add host gives its login a sudo rule for buzz-login only (install.sh
+// --login-user), so a sign-in asks no password. Hosts set up before that
+// rule, or by another login, still need one.
+const SIGNIN_PASSWORD_HELP = "Leave it empty for the login that ran Add host: sudo asks it no password for a sign-in. Only a host that an older Add host or another login set up needs it. Not saved.";
 const RELAY_MAX = 300;
 // The relay the runner's agents connect to: the community the owner has
 // open, as Desktop names it (an https:// or wss:// origin), as wss://.
@@ -1156,6 +1160,8 @@ export async function apply(ctx) {
       });
       if (disposed) return;
       const result = parseSetupResult(reply);
+      // The sign-in starts with the login that the setup used: the setup
+      // gave that login the sign-in rule, so sudo asks it no password.
       if (result.hostId) sshLogins.set(result.hostId, sshUser);
       setupForm = null;
       setSetupRun({ state: "done", result });
@@ -2575,7 +2581,7 @@ export async function apply(ctx) {
       ),
       h(
         Field,
-        { label: "sudo password", controlId: ids.password, description: LABELS.sudoHelp },
+        { label: "sudo password", controlId: ids.password, description: SIGNIN_PASSWORD_HELP },
         h(Input, { id: ids.password, type: "password", value: values.password, maxLength: PASSWORD_MAX, autoComplete: "off", onChange: typed("password") }),
       ),
       blocked ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, "A sign-in runs on another host. Finish it first.") : null,

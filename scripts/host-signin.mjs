@@ -14,8 +14,10 @@
 // from hosts.json, ssh accepts only the host keys that Tailscale reports for
 // that peer (as host-setup.mjs does), and the command is fixed words. The
 // harness user comes from buzz-login itself, which install.sh wrote as root.
-// The sudo password goes only to sudo's prompt on the machine's terminal,
-// which sudo reads with echo off; sudo's prompt is a random marker, so the
+// Add host gives its login a sudo rule for buzz-login only (install.sh
+// --login-user), so sudo asks that login no password and none is sent; an
+// older setup or another login still needs one. The sudo password goes only
+// to sudo's prompt on the machine's terminal, which sudo reads with echo off; sudo's prompt is a random marker, so the
 // password is sent only when sudo asks for it, and a second ask (a refused
 // password) ends the run instead of sending it again. What the owner types
 // goes only to the terminal. Both are masked in the output that goes back to
@@ -264,7 +266,7 @@ export class HostSignIn {
       this.#scan = this.#scan.slice(at + this.#marker.length);
       this.#markers += 1;
       if (this.#markers > 1) return this.#stop("sudo refused the password");
-      if (!this.#request.sudoPassword) return this.#stop("sudo on the machine asks for a password: enter it, then start the sign-in again");
+      if (!this.#request.sudoPassword) return this.#stop("sudo on the machine asks for a password: enter it, or run Add host again with this login, then start the sign-in again");
       this.#child.stdin.write(`${this.#request.sudoPassword}\r`);
     }
     this.#scan = this.#scan.slice(-this.#marker.length);

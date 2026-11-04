@@ -155,10 +155,13 @@ Then select **Add a host** on the page:
    5), and let only your login reach port 10000 in the tailnet policy.
 5. Select **Sign in to the harnesses**, or select the host in the list. Each
    harness shows its state, with a **Sign in** button. Choose how to sign in,
-   type the SSH login and the sudo password, and select **Start**. The page
-   shows the host's terminal: open the sign-in link it shows, then type the
-   code or key into **Answer** and select **Send**. Do this once for each
-   harness. **Show what is signed in** lists what each harness has.
+   type the SSH login, and select **Start**. The sudo password is not needed:
+   Add host lets its login run the sign-in tool `buzz-login` as the harness
+   user without one. Only a host that an older Add host or another login set
+   up asks for it. The page shows the host's terminal: open the sign-in link
+   it shows, then type the code or key into **Answer** and select **Send**.
+   Do this once for each harness. **Show what is signed in** lists what each
+   harness has.
 
 The setup copies only committed runner code: if `runner/` in this folder
 has changes that are not committed, it stops before it connects. It builds
@@ -230,6 +233,12 @@ The Buzz mobile app runs no plugins, but hosted agents do not need them:
   hashes in the root command. The sudo password goes only to the stdin of
   `sudo` on the machine. It is not in an argument, a file, a log or the
   page, and it is not saved.
+- **Add host** gives its SSH login one sudo rule,
+  `/etc/sudoers.d/buzz-login`: that login may run
+  `/usr/local/bin/buzz-login` as the harness user without a password, and
+  nothing else. So **Sign in** asks no second password. Any process of
+  that login can then change the harness sign-ins without a password. To
+  ask for it again, delete the file as root.
 - The runner API has no TCP port. It listens on a Unix socket that only
   `tailscale serve` reaches, and it accepts only the Tailscale logins in its
   `allowedLogins`. Allow only your own devices to reach the host in the

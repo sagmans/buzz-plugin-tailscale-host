@@ -447,6 +447,7 @@ async function setupScenarios({ check, temp }) {
   check("setup: the helper refuses a setup with an unknown key", extra === "unknown setup keys: host", extra);
 
   installValuesSmoke({ check, temp });
+  loginRuleSmoke({ check, temp });
 }
 
 /** A deployment that install.sh made with its own names (the environment of
@@ -468,6 +469,9 @@ const CUSTOM = Object.freeze({
   PI_MODULES: "/opt/harness/pi/node_modules",
 });
 const INSTALL_SH = join(REPO, "runner/deploy/install.sh");
+/** A login for the sign-in rule's dry run: any valid name, as a dry run
+ * looks up no account. */
+const LOGIN_SMOKE_USER = "owner";
 
 /** Writes CUSTOM's deployment under `base`, without the lines in `drop`. */
 function writeDeployment(base, drop = []) {
@@ -520,4 +524,45 @@ function installValuesSmoke({ check, temp }) {
   writeDeployment(base);
   const real = values({}, ["--no-start"]);
   check("install: INSTALLED_ROOT is refused by a run that changes the host", real.code === 64 && /needs --dry-run or --print-values/.test(real.stderr), real.stderr);
+}
+
+/** The sign-in rule (install.sh --login-user, which setup.sh passes): one
+ * sudo rule for buzz-login only, as the harness user, so Sign in asks no
+ * second password. A dry run shows the rule and its install and changes
+ * nothing. setup.sh names a login only when sudo's own SUDO_USER and
+ * SUDO_UID name one account that is not root. */
+function loginRuleSmoke({ check, temp }) {
+  const base = join(temp, "login-rule");
+  rmSync(base, { recursive: true, force: true });
+  mkdirSync(base, { recursive: true });
+  const bundle = join(base, "buzz-runner.mjs");
+  writeFileSync(bundle, "");
+  const dry = (...args) => spawnSync("bash", [INSTALL_SH, "--dry-run", "--bundle", bundle, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, INSTALLED_ROOT: base } });
+  const rule = `${LOGIN_SMOKE_USER} ALL=(buzz-agent) NOPASSWD: /usr/local/bin/buzz-login`;
+  const given = dry("--login-user", LOGIN_SMOKE_USER);
+  check(
+    "install: --login-user plans one sign-in rule for buzz-login only, as the harness user, in /etc/sudoers.d/buzz-login",
+    given.status === 0 && given.stdout.includes(`sign-in rule for /etc/sudoers.d/buzz-login: ${rule}\n`) && /would run: install -o root -g root -m 0440 \S+\/sudoers-login \/etc\/sudoers\.d\/buzz-login\n/.test(given.stdout),
+    given.stderr || given.stdout.slice(-400),
+  );
+  const none = dry();
+  check("install: a run without --login-user plans no sign-in rule", none.status === 0 && !none.stdout.includes("sudoers.d/buzz-login"), none.stderr);
+  const refused = ["buzz-agent", "buzz-runner", `${LOGIN_SMOKE_USER} ALL=(ALL) NOPASSWD: ALL`, `${LOGIN_SMOKE_USER},root`, "Root"].map((name) => dry("--login-user", name));
+  check("install: --login-user refuses the runner user, the harness user and a name that is not one login (exit 64)", refused.every((run) => run.status === 64 && /--login-user (has an unsafe value|must be the owner's login)/.test(run.stderr)), refused.map((run) => run.status).join(","));
+
+  const setupScript = readFileSync(join(REPO, "runner/deploy/setup.sh"), "utf8");
+  const pattern = (text) => text.split("\n").find((line) => line.startsWith("readonly LOGIN_USER_RE="));
+  const installPattern = pattern(readFileSync(INSTALL_SH, "utf8"));
+  check("setup: setup.sh takes the same login names as install.sh --login-user", Boolean(installPattern) && pattern(setupScript) === installPattern, pattern(setupScript));
+  const fn = /^sudo_login\(\) \{\n[\s\S]*?\n\}\n/m.exec(setupScript)?.[0] ?? "";
+  const me = execFileSync("id", ["-un"], { encoding: "utf8" }).trim();
+  const myUid = String(process.getuid());
+  const names = (env) => spawnSync("/bin/bash", ["-c", `${installPattern}\n${fn}\nsudo_login && printf '%s' "$SUDO_USER"`], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
+  const named = names({ SUDO_USER: me, SUDO_UID: myUid });
+  const odd = [{}, { SUDO_USER: me }, { SUDO_USER: me, SUDO_UID: String(Number(myUid) + 1) }, { SUDO_USER: "root", SUDO_UID: "0" }, { SUDO_USER: "x y", SUDO_UID: myUid }].map(names);
+  check(
+    "setup: setup.sh gives the rule to sudo's caller only, when SUDO_USER and SUDO_UID name one account that is not root",
+    Boolean(fn) && named.status === 0 && named.stdout === me && odd.every((run) => run.status !== 0 && run.stdout === "") && /--login-user "\$login"/.test(setupScript),
+    JSON.stringify([named.status, named.stdout, odd.map((run) => run.status)]),
+  );
 }

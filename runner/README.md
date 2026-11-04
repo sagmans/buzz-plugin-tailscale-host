@@ -142,7 +142,11 @@ What it does, in order. It stops at the first failure:
    paths and wrappers as this install, and not the example owner. A mismatch
    stops the run before any change.
 3. Renders the wrappers, `buzz-login`, the unit and the sudoers rule for these
-   values. The sudoers rule passes `visudo -cf` before it is installed.
+   values. With `--login-user <login>`, it also renders the sign-in rule
+   `/etc/sudoers.d/buzz-login`: that login may run `/usr/local/bin/buzz-login`
+   as the harness user without a password. Each rule passes `visudo -cf`
+   before either is installed. A run without `--login-user` keeps the
+   installed sign-in rule. **Add host** passes the login that ran it.
 4. Creates the runner user (system, no login shell, refused when it is in
    `sudo`, `admin`, `wheel`, `docker`, `lxd` or `adm`) and the harness user
    (home 0700, no login shell).
@@ -154,7 +158,7 @@ What it does, in order. It stops at the first failure:
 | User | Role | Rule |
 | --- | --- | --- |
 | `buzz-runner` | Runs the runner, owns the agent keys | System user, no login shell, NOT in any group with sudo or docker rights |
-| `buzz-agent` | Runs every harness and owns the workspaces | Reached only through the two sudoers lines (one per wrapper) |
+| `buzz-agent` | Runs every harness and owns the workspaces | Reached only through the two sudoers lines (one per wrapper), and by the owner's login for `buzz-login` only (the sign-in rule) |
 
 The owner's steps after install:
 
