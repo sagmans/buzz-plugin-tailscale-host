@@ -26,7 +26,7 @@
 // call the runner as its owner (runner/README.md, "Security notes").
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -158,6 +158,20 @@ const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tam
  * that stage would stay until the clock catches up. A small step back keeps a
  * live stage. */
 const STAGE_STALE_MS = 2 * (INSTALL_TIMEOUT_MS + 2 * COPY_TIMEOUT_MS);
+/** The setup's own work folder on this device (the bundle, the pinned
+ * known_hosts), in the user's temp folder, and the name mkdtemp gives it. */
+const WORK_PREFIX = "buzz-setup-";
+const WORK_RE = /^buzz-setup-[A-Za-z0-9]{6}$/;
+/** A killed helper never runs its work folder removal either, so each setup
+ * first removes this user's own work folders that are older than any live
+ * setup can keep one: every step's timeout, the stage removal on both paths,
+ * and the last health try, twice for clock and kill-grace margin. A setup that
+ * still runs in another helper on this device is younger, so it keeps its
+ * folder. As with stages, the same distance into the future also counts as
+ * stale (a clock that stepped back), and a small step back keeps a live
+ * folder. */
+const WORK_STALE_MS =
+  2 * (STATUS_TIMEOUT_MS + 2 * GIT_TIMEOUT_MS + BUILD_TIMEOUT_MS + CONNECT_TIMEOUT_MS + 3 * COPY_TIMEOUT_MS + INSTALL_TIMEOUT_MS + HEALTH_TIMEOUT_MS + HEALTH_TRY_MS + HEALTH_RETRY_MS);
 
 /** A setup step that failed, with the step and the reason the page shows. */
 export class HostSetupError extends Error {
@@ -509,6 +523,42 @@ async function waitHealthy(origin, fetchImpl) {
   throw new HostSetupError(`${origin} did not answer /v1/health (${last}). Check that the tailnet policy lets this device reach port ${RUNNER_PORT}.`, { step: "health" });
 }
 
+/** Removes the work folders of killed helpers (WORK_STALE_MS) from the temp
+ * folder, the same way the copy removes stale stages on the machine: only
+ * real folders (lstat, so no link is followed) that this user owns, so a
+ * shared temp folder never loses a file of another user. Without a user id
+ * (no POSIX) nothing can be checked, so nothing is removed. Returns
+ * [removed, not removed]; a folder that stays holds no secret, so the counts
+ * only show in the step's detail. */
+function sweepWork(dir) {
+  const swept = [0, 0];
+  const uid = process.getuid?.();
+  if (uid === undefined) return swept;
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return swept;
+  }
+  for (const name of names) {
+    if (!WORK_RE.test(name)) continue;
+    const old = join(dir, name);
+    try {
+      const st = lstatSync(old);
+      if (!st.isDirectory() || st.uid !== uid || Math.abs(Date.now() - st.mtimeMs) < WORK_STALE_MS) continue;
+      rmSync(old, { recursive: true, force: true });
+      swept[0] += 1;
+    } catch {
+      swept[1] += 1;
+    }
+  }
+  return swept;
+}
+
+/** "N old <noun>s removed" and "N ... not removed", for a step's detail. */
+const sweptText = ([removed, kept], noun) =>
+  [removed && `${removed} old ${noun}${removed === 1 ? "" : "s"} removed`, kept && `${kept} old ${noun}${kept === 1 ? "" : "s"} not removed`].filter(Boolean);
+
 /** The steps that stay with the user, with commands to copy. The harness
  * user is the one setup.sh reported, so an aligned host with its own names
  * gets its own sign-in command. */
@@ -539,7 +589,8 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     step = next;
     progress("running");
   };
-  const work = mkdtempSync(join(tmpdir(), "buzz-setup-"));
+  const workSwept = sweepWork(tmpdir());
+  const work = mkdtempSync(join(tmpdir(), WORK_PREFIX));
   // Set once the copy made a stage, and cleared once the install step has
   // removed it, so that a failure between the two still removes it.
   let cleanup;
@@ -549,7 +600,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     const status = await getStatus();
     const peer = findPeer(status, setup.address);
     const login = selfLogin(status);
-    progress("done", `${peer.dnsName}, ${peer.tags.join(", ")}`);
+    progress("done", [peer.dnsName, ...peer.tags, ...sweptText(workSwept, "work folder")].join(", "));
 
     begin("bundle");
     const built = await buildBundle(root, work, progress);
@@ -601,8 +652,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     cleanup = () => run(ssh, sshArgs(peer, session, `rm -rf -- ${stage}`), { timeoutMs: COPY_TIMEOUT_MS }).catch(() => undefined);
     // A stale stage that stays is no risk (it holds no secret), so it only
     // shows in the step's detail and does not stop the setup.
-    const sweptText = [removed && `${removed} old stage${removed === 1 ? "" : "s"} removed`, kept && `${kept} old stage${kept === 1 ? "" : "s"} not removed`].filter(Boolean);
-    progress("done", [`${files.length} files`, ...sweptText].join(", "));
+    progress("done", [`${files.length} files`, ...sweptText([removed, kept], "stage")].join(", "));
 
     begin("install");
     const script = readFileSync(join(root, SETUP_SCRIPT), "utf8");

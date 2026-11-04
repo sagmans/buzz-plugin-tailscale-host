@@ -4,7 +4,8 @@
 // tagged Linux peer only, ssh pinned to Tailscale's host keys, the sudo
 // password only on sudo's stdin, root running setup.sh from its command and
 // a stage that matches the pinned manifest, the stage removed on every
-// exit, and a killed helper's old stage removed by the next copy) and what
+// exit, a killed helper's old stage removed by the next copy, and its old
+// work folder on this device removed by the next setup) and what
 // the user sees: each step's progress and the host added to hosts.json.
 // The real install on a systemd machine is a host test (runner/README.md).
 //
@@ -64,8 +65,11 @@ const BARE_TAILSCALE_RE = /(?:^|[|;&(]|\$\()\s*tailscale\s/;
 /** Where host-setup.mjs makes its stages, and their name prefix. */
 const STAGE_DIR = "/tmp";
 const STAGE_PREFIX = "buzz-runner-setup.";
-/** How old a killed helper's stage is in the sweep scenario: far past
- * host-setup.mjs STAGE_STALE_MS. */
+/** The prefix of a setup's work folder on this device (host-setup.mjs
+ * WORK_PREFIX), in the user's temp folder. */
+const WORK_PREFIX = "buzz-setup-";
+/** How old a killed helper's stage and work folder are in the sweep
+ * scenario: far past host-setup.mjs STAGE_STALE_MS and WORK_STALE_MS. */
 const STALE_AGE_S = 86_400;
 /** A small clock step back on the machine: a live stage that looks this far
  * in the future stays. */
@@ -256,6 +260,20 @@ export async function setupSmoke({ check, temp }) {
   const link = `${STAGE_DIR}/${STAGE_PREFIX}smokeLink${process.pid}`;
   symlinkSync(target, link);
   lutimesSync(link, staleAt, staleAt);
+  // The same for a killed helper's work folder on this device, past and
+  // future: a link with a work folder's exact name (mkdtemp's six
+  // characters) must stay too.
+  const staleWork = mkdtempSync(join(tmpdir(), WORK_PREFIX));
+  writeFileSync(join(staleWork, "known_hosts"), "old\n");
+  utimesSync(staleWork, staleAt, staleAt);
+  const futureWork = mkdtempSync(join(tmpdir(), WORK_PREFIX));
+  utimesSync(futureWork, now + STALE_AGE_S, now + STALE_AGE_S);
+  const skewedWork = mkdtempSync(join(tmpdir(), WORK_PREFIX));
+  utimesSync(skewedWork, now + SKEW_S, now + SKEW_S);
+  const youngWork = mkdtempSync(join(tmpdir(), WORK_PREFIX));
+  const workLink = join(tmpdir(), `${WORK_PREFIX}${`LinkXX${process.pid}`.slice(-6)}`);
+  symlinkSync(target, workLink);
+  lutimesSync(workLink, staleAt, staleAt);
   const again = await attempt({ address: SERVE_ORIGIN });
   const copyDone = again.events.find((event) => event.step === "copy" && event.state === "done");
   check(
@@ -264,7 +282,15 @@ export async function setupSmoke({ check, temp }) {
     copyDone?.detail,
   );
   for (const kept of [young, skewed]) rmSync(kept, { recursive: true, force: true });
+  const machineDone = again.events.find((event) => event.step === "machine" && event.state === "done");
+  check(
+    "setup: the next setup removes a killed helper's old and far-future work folders, keeps a young and a near-future one and follows no link",
+    !existsSync(staleWork) && !existsSync(futureWork) && existsSync(skewedWork) && existsSync(youngWork) && existsSync(workLink) && existsSync(join(target, "keep")) && /, 2 old work folders removed$/.test(machineDone?.detail ?? ""),
+    machineDone?.detail,
+  );
   rmSync(link, { force: true });
+  for (const kept of [youngWork, skewedWork]) rmSync(kept, { recursive: true, force: true });
+  rmSync(workLink, { force: true });
   check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
   const custom = await attempt({ address: SERVE_ORIGIN }, { env: { FAKE_SSH_AGENT_USER: "agents" } });
   check("setup: the sign-in command names the harness user that setup.sh reports", !custom.error && custom.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u agents /usr/local/bin/buzz-login`), JSON.stringify(custom.result?.manual ?? custom.error?.message));
