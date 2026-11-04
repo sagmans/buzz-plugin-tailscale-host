@@ -8,12 +8,16 @@
 // work folder on this device removed by the next setup) and what
 // the user sees: each step's progress and the host added to hosts.json.
 // The real install on a systemd machine is a host test (runner/README.md).
+// The scenarios hold a lock for this whole device, so two checkouts can run
+// scripts/check at the same time (see SETUP_LOCK_PORT).
 //
 // Called from run.mjs with its `check`; adds PASS/FAIL lines.
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { HOST_TAILSCALE_PATHS, SETUP_STEPS, setupHost } from "../../scripts/host-setup.mjs";
 import { handle } from "../../scripts/hosts-helper.mjs";
@@ -74,6 +78,19 @@ const STALE_AGE_S = 86_400;
 /** A small clock step back on the machine: a live stage that looks this far
  * in the future stays. */
 const SKEW_S = 60;
+/** The lock of the setup scenarios. They make and sweep stages in the shared
+ * /tmp and work folders in the user's temp folder, so the sweep of a run in
+ * another checkout removes this run's test folders, and its live folders
+ * break this run's counts. A loopback listen is the lock: the kernel frees it
+ * when the holder dies, so a killed run leaves no stale lock, and Node has no
+ * flock. The port is below the ephemeral ports of Linux (from 32768) and
+ * macOS (from 49152), so an outgoing connection cannot hold it. */
+const SETUP_LOCK_HOST = "127.0.0.1";
+const SETUP_LOCK_PORT = 29_517;
+/** How long a run waits for the lock: many setup runs (about 5 s each), and
+ * well inside scripts/check SMOKE_TIMEOUT_SECONDS. */
+const SETUP_LOCK_WAIT_MS = 180_000;
+const SETUP_LOCK_RETRY_MS = 200;
 const SETUP_SCRIPT = "runner/deploy/setup.sh";
 /** What the stage holds when root reads it: every copied file, the bundle,
  * the config and the manifest, and no setup.sh. */
@@ -94,8 +111,50 @@ const peer = (overrides = {}) => ({
 const statusWith = (entry) => ({ Self: { UserID: 7 }, User: { 7: { LoginName: LOGIN } }, Peer: { node: entry } });
 const leftoverStages = () => readdirSync(STAGE_DIR).filter((name) => name.startsWith(STAGE_PREFIX));
 
+/** One try to take the lock: the listening server, or the listen error. */
+function listenOnce() {
+  const server = createServer((socket) => socket.destroy());
+  return new Promise((done) => {
+    server.once("error", (error) => done({ error }));
+    server.listen({ host: SETUP_LOCK_HOST, port: SETUP_LOCK_PORT, exclusive: true }, () => done({ server }));
+  });
+}
+
+/** Waits for the lock while another run holds it. Returns the server that
+ * holds it, or the reason that it could not take it. */
+async function takeSetupLock() {
+  const started = Date.now();
+  for (let attempt = 1; ; attempt += 1) {
+    const { server, error } = await listenOnce();
+    if (server) {
+      // A lost close must not keep the smoke process alive.
+      server.unref();
+      return { server };
+    }
+    const waited = Date.now() - started;
+    if (error.code !== "EADDRINUSE" || waited >= SETUP_LOCK_WAIT_MS) {
+      return { reason: `listen ${SETUP_LOCK_HOST}:${SETUP_LOCK_PORT} failed after ${attempt} attempts in ${waited} ms: ${error.code ?? error.message}` };
+    }
+    await sleep(SETUP_LOCK_RETRY_MS);
+  }
+}
+
 /** @param {{check: (name: string, ok: unknown, detail?: string) => void, temp: string}} deps */
-export async function setupSmoke({ check, temp }) {
+export async function setupSmoke(deps) {
+  const lock = await takeSetupLock();
+  // Without the lock the scenarios would give random results, so it is one
+  // failed check and no scenario.
+  deps.check("setup: the setup scenarios hold the lock of this device", lock.server, lock.reason);
+  if (!lock.server) return;
+  try {
+    await setupScenarios(deps);
+  } finally {
+    await new Promise((done) => lock.server.close(done));
+  }
+}
+
+/** @param {{check: (name: string, ok: unknown, detail?: string) => void, temp: string}} deps */
+async function setupScenarios({ check, temp }) {
   const root = join(temp, "setup-root");
   for (const file of TREE) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
