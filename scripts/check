@@ -119,6 +119,11 @@ PRIVATE_PATTERNS=(
 # RFC 2606 example domains, GitHub's shared SSH user, the documented harness
 # user's home, and all-zero placeholder keys and ids.
 PRIVATE_ALLOWED_RE='@example\.(com|org|net|invalid)|^git@github\.com$|^/home/buzz-agent/$|(^|[^0-9a-f])0{64}([^0-9a-f]|$)|^00000000-0000-4000-8000-000000000000$'
+# A release's pinned SHA-256 is public by design and has a key's shape, so
+# the setup's root scripts may pin one, but only on a whole line of this
+# form, in these files, so that a key cannot pass as a pin anywhere else.
+HASH_PIN_LINE_RE='^readonly [A-Z][A-Z0-9_]*_SHA256_[A-Z0-9_]+=[0-9a-f]{64}$'
+HASH_PIN_FILES_RE='^runner/deploy/node-setup\.sh$'
 # Files copied from the hook template stay byte-identical to it, so their
 # style is the template's concern; repo-owned shell lives elsewhere.
 TEMPLATE_SHELL_RE='^(\.githooks/[^/]+|\.githooks/lib/.*|scripts/setup-hooks)$'
@@ -293,6 +298,21 @@ check_install_dry_run() {
 	fi
 }
 
+# Drops the path:line:match hits that sit on a hash pin line of a pin file
+# (HASH_PIN_LINE_RE, HASH_PIN_FILES_RE); every other hit passes through.
+drop_hash_pins() {
+	local hit path rest line
+	while IFS= read -r hit; do
+		path=${hit%%:*}
+		rest=${hit#*:}
+		line=${rest%%:*}
+		if [[ "$path" =~ $HASH_PIN_FILES_RE ]] && awk -v n="$line" 'NR == n' "$path" | grep -q -E -- "$HASH_PIN_LINE_RE"; then
+			continue
+		fi
+		printf '%s\n' "$hit"
+	done
+}
+
 # Fail on any private-data shape; print path:line:match so it is fixed in one
 # pass. Allowed public matches are filtered per match, so an allowed value on
 # a line cannot hide a private one next to it.
@@ -304,7 +324,7 @@ check_private_data() {
 			match_text = $0
 			sub(/^[^:]*:[0-9]+:/, "", match_text)
 			if (match_text !~ allowed) print
-		}' || true)"
+		}' | drop_hash_pins || true)"
 		if [ -n "$hits" ]; then
 			echo >&2 "❌ $CHECK: private-data pattern '$pattern' matched:"
 			printf '%s\n' "$hits" | sed 's/^/   /' >&2
