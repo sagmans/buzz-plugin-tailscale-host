@@ -151,7 +151,10 @@ async function hostPeer(hostsPath, id, getStatus) {
 /** The terminal as plain lines: escape sequences out, a carriage return
  * starts its line again (a spinner or a progress line redraws in place), and
  * only the last lines stay. A sequence or a CR+LF that a chunk splits is
- * held for the next chunk. */
+ * held for the next chunk. Lines are kept whole and cut only in `text`,
+ * after the mask: a cut first could split a secret that is longer than a
+ * line's bound, and its first part would then show unmasked. RAW_MAX bounds
+ * what a whole line can hold. */
 class Screen {
   lines = [];
   current = "";
@@ -174,14 +177,16 @@ class Screen {
         this.lines.push(this.current);
         this.current = "";
       } else if (part === "\r") this.current = "";
-      else this.current = (this.current + part).slice(0, SCREEN_LINE_MAX);
+      else this.current += part;
     }
     this.lines.splice(0, Math.max(0, this.lines.length - SCREEN_LINES));
     return text;
   }
 
-  text() {
-    return [...this.lines, this.current].join("\n");
+  /** The screen as the page may see it: `mask` runs on each whole line,
+   * then the line is cut to its bound. */
+  text(mask) {
+    return [...this.lines, this.current].map((line) => mask(line).slice(0, SCREEN_LINE_MAX)).join("\n");
   }
 }
 
@@ -214,9 +219,13 @@ export class HostSignIn {
   /** What the page may see: the screen with the sudo marker named and every
    * secret masked. */
   #output() {
-    let text = this.#screen.text().replaceAll(this.#marker, "sudo password: ");
-    for (const secret of this.#secrets) text = text.replaceAll(secret, MASK);
-    return text;
+    return this.#screen.text((line) => this.#mask(line.replaceAll(this.#marker, "sudo password: ")));
+  }
+
+  #mask(text) {
+    let masked = text;
+    for (const secret of this.#secrets) masked = masked.replaceAll(secret, MASK);
+    return masked;
   }
 
   #emit() {
@@ -300,7 +309,7 @@ export class HostSignIn {
   #result(host, code, stderr) {
     if (this.#failure) throw new HostSignInError(this.#failure);
     if (code === EXIT_NO_TOOL) throw new HostSignInError(`${host.label} has no ${LOGIN_TOOL}: run Add host for it first`);
-    if (code === EXIT_SSH) throw new HostSignInError(`ssh failed: ${clip(stderr.trim().split("\n").at(-1) || "exit 255")}`);
+    if (code === EXIT_SSH) throw new HostSignInError(`ssh failed: ${clip(this.#mask(stderr).trim().split("\n").at(-1) || "exit 255")}`);
     return { code, output: this.#output() };
   }
 
@@ -325,7 +334,8 @@ export class HostSignIn {
       child.stderr.on("data", (chunk) => {
         count(chunk);
         const text = chunk.toString("utf8");
-        stderr = (stderr + text).slice(-SCREEN_LINE_MAX);
+        // Kept whole (RAW_MAX bounds it) and cut only after the mask.
+        stderr += text;
         this.#watchLink(text);
       });
       // A write after the session ended is no error of the owner's.

@@ -96,6 +96,13 @@ export async function signinSmoke({ check, temp }) {
   check("signin: the Tailscale SSH check link is streamed to the page", ok.events.some((event) => event.link === "https://login.tailscale.com/a/smoke-signin"), JSON.stringify(ok.events.map((event) => event.link)));
   check("signin: the last event carries the whole last screen", ok.events.at(-1)?.state === "ended" && ok.events.at(-1)?.output === ok.reply?.output);
 
+  // A key longer than a screen line's bound, which the CLI prints back: the
+  // mask runs before the cut, so no part of it shows.
+  const LONG_KEY = "long-typed-line ".repeat(500).trim();
+  const long = await attempt({}, { env: { FAKE_SSH_ECHO: "1" }, answer: LONG_KEY });
+  const longSeen = JSON.stringify([long.events, long.reply]);
+  check("signin: a typed line longer than a screen line is masked whole", long.reply?.code === 0 && long.reply.output.includes(`You typed: ${MASK}\n`) && !longSeen.includes("long-typed-line"), long.error ?? JSON.stringify(long.reply?.output.slice(-300)));
+
   const wrong = await attempt({ sudoPassword: "not-it" }, { answer: undefined });
   check("signin: a refused sudo password ends the run and is not sent again", /sudo refused the password/.test(wrong.error ?? "") && wrong.calls[0]?.stdin === "not-it\r", `${wrong.error} ${JSON.stringify(wrong.calls[0]?.stdin)}`);
   const none = await attempt({ sudoPassword: "" }, { answer: undefined });
