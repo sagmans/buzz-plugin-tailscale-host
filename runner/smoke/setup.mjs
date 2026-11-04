@@ -25,10 +25,24 @@ import { handle } from "../../scripts/hosts-helper.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const FAKE_SSH = resolve(HERE, "fake-ssh.mjs");
-/** The files the setup copies (host-setup.mjs STAGE_FILES), and setup.sh
- * and node-setup.sh, which go in root commands; the bundle comes from FAKE_BUILD, so no
- * runner build is needed. */
-const TREE = ["runner/README.md", "runner/buzz-runner.service", "runner/config.example.json", "runner/deploy/install.sh", "runner/deploy/setup.sh", "runner/deploy/node-setup.sh", "runner/deploy/check-config.mjs", "runner/deploy/sudoers.template", "runner/deploy/claude-wrapper", "runner/deploy/harness-wrapper", "runner/deploy/buzz-login", "runner/deploy/buzz-login.mjs", "runner/deploy/pi-launch.mjs"];
+/** The files the setup copies (host-setup.mjs STAGE_FILES), setup.sh and
+ * node-setup.sh, which go in root commands, and .gitignore, which keeps the
+ * fixture's buzz-app clone out of the clean-commit check; the bundle comes
+ * from FAKE_BUILD, so no runner build is needed. */
+const TREE = [".gitignore", "runner/README.md", "runner/buzz-runner.service", "runner/config.example.json", "runner/deploy/install.sh", "runner/deploy/setup.sh", "runner/deploy/node-setup.sh", "runner/deploy/harnesses.sh", "runner/deploy/check-config.mjs", "runner/deploy/sudoers.template", "runner/deploy/claude-wrapper", "runner/deploy/harness-wrapper", "runner/deploy/buzz-login", "runner/deploy/buzz-login.mjs", "runner/deploy/pi-launch.mjs"];
+/** The Pi package files in the fixture's buzz-app clone (host-setup.mjs
+ * PI_DEPS_SOURCE), and where the stage holds them (PI_DEPS). */
+const PI_SOURCE = "runner/buzz-app/src/bundled/pi/deps";
+const PI_STAGE = "runner/pi";
+const PI_FILES = Object.freeze({ "package.json": '{"name":"smoke-pi"}\n', "package-lock.json": '{"lockfileVersion":3,"packages":{}}\n' });
+/** The harness paths, as each file that names them pins them: install.sh's
+ * defaults, the wrappers' and buzz-login's own copies, and harnesses.sh,
+ * which installs them. A pin bump must change all of them. */
+const HARNESS_PIN_SOURCES = Object.freeze({
+  "runner/deploy/install.sh": 'printf "%s\\n" "$DEFAULT_HARNESS_ROOT/$PIN_CLAUDE" "$DEFAULT_HARNESS_ROOT/$PIN_CODEX" "$DEFAULT_HARNESS_ROOT/$PIN_GOOSE" "$DEFAULT_HARNESS_ROOT/$PIN_PI"',
+  "runner/deploy/harnesses.sh": 'printf "%s\\n" "$CLAUDE_PIN" "$CODEX_PIN" "$GOOSE_PIN" "$PI_PIN"',
+});
+const HARNESS_PIN_LINE_RE = /^readonly (?:DEFAULT_HARNESS_ROOT|PIN_[A-Z]+|HARNESS_ROOT|[A-Z]+_VERSION|[A-Z]+_PIN)=\S+$/;
 const HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISmokeHostKeySmokeHostKeySmokeHostKeySmoke";
 const OTHER_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherHostKeyOtherHostKeyOtherHostKeyOther";
 const PASSWORD = "smoke sudo pass";
@@ -95,7 +109,7 @@ const SETUP_SCRIPT = "runner/deploy/setup.sh";
 const NODE_SETUP_SCRIPT = "runner/deploy/node-setup.sh";
 /** What the stage holds when root reads it: every copied file, the bundle,
  * the config and the manifest, and no root script. */
-const STAGE_TREE = [...TREE.filter((file) => file !== SETUP_SCRIPT && file !== NODE_SETUP_SCRIPT), "runner/dist/buzz-runner.mjs", "config.json", "MANIFEST"].sort();
+const STAGE_TREE = [...TREE.filter((file) => file !== SETUP_SCRIPT && file !== NODE_SETUP_SCRIPT && file !== ".gitignore"), ...Object.keys(PI_FILES).map((name) => `${PI_STAGE}/${name}`), "runner/dist/buzz-runner.mjs", "config.json", "MANIFEST"].sort();
 /** The ssh calls that run setup.sh and node-setup.sh as root. */
 const rootCall = (outcome) => outcome.calls.find((call) => / setup\.sh \/tmp\/buzz-runner-setup\./.test(call.argv.at(-1)));
 const nodeCall = (outcome) => outcome.calls.find((call) => call.argv.at(-1).endsWith(" node-setup.sh'"));
@@ -167,6 +181,10 @@ async function setupScenarios({ check, temp }) {
   fixtureGit(root, ["init", "-q", "--template="]);
   fixtureGit(root, ["add", "-A"]);
   fixtureGit(root, ["commit", "-q", "--no-gpg-sign", "-m", "fixture"]);
+  // The linked clone is not part of the commit (.gitignore), as in a real
+  // checkout.
+  mkdirSync(join(root, PI_SOURCE), { recursive: true });
+  for (const [name, text] of Object.entries(PI_FILES)) writeFileSync(join(root, PI_SOURCE, name), text);
   const hostsPath = join(temp, "setup-hosts.json");
   writeFileSync(hostsPath, `${JSON.stringify({ hosts: [{ id: "first", label: "first/host", origin: "https://first.example.ts.net:10000" }] }, null, 2)}\n`);
   const log = join(temp, "fake-ssh.log");
@@ -180,7 +198,7 @@ async function setupScenarios({ check, temp }) {
   /** One setup; returns its progress, its result or error, and the ssh calls. */
   async function attempt(request, { entry = peer(), facts = FACTS, env = {} } = {}) {
     writeFileSync(log, "");
-    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_SSH_TAILSCALE_UNSAFE: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_AGENT_USER: "", FAKE_SSH_NODE_EXIT: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
+    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_SSH_TAILSCALE_UNSAFE: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_AGENT_USER: "", FAKE_SSH_NODE_EXIT: "0", FAKE_SSH_HARNESS_EXIT: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
     const events = [];
     let result;
     let error;
@@ -199,6 +217,7 @@ async function setupScenarios({ check, temp }) {
       error,
       calls: lines.filter((line) => line.argv),
       configs: lines.filter((line) => line.config).map((line) => line.config),
+      pis: lines.filter((line) => line.pi).map((line) => line.pi),
       rootRuns: lines.filter((line) => line.rootRun).map((line) => line.rootRun),
       nodeRuns: lines.filter((line) => line.nodeRun).map((line) => line.nodeRun),
     };
@@ -233,7 +252,7 @@ async function setupScenarios({ check, temp }) {
   const noNode = await attempt({}, { env: { FAKE_SSH_NODE_EXIT: "69" } });
   check("setup: a failed Node install stops the setup before the copy, with its reason", failedAt(noNode, "node") && noNode.calls.length === 2 && /no \/usr\/bin\/curl or \/usr\/bin\/wget/.test(noNode.error.message), noNode.error?.message);
   const userNode = await attempt({}, { env: { FAKE_SSH_NODE_UNSAFE: "1" } });
-  check("setup: a Node that a non-root user can change fails the install step with that reason", failedAt(userNode, "install") && /not root can change \/opt\/buzz-runner\/node/.test(userNode.error.message), userNode.error?.message);
+  check("setup: a Node that a non-root user can change fails setup.sh's first step with that reason", failedAt(userNode, "harnesses") && /not root can change \/opt\/buzz-runner\/node/.test(userNode.error.message), userNode.error?.message);
   // One at a time: each attempt reads the one fake-ssh log.
   const noTailscale = [];
   for (const facts of [{ ...FACTS, tailscale_bin: undefined }, { ...FACTS, tailscale_bin: "/opt/tools/bin/tailscale" }]) noTailscale.push(await attempt({}, { facts }));
@@ -243,7 +262,7 @@ async function setupScenarios({ check, temp }) {
     noTailscale.map((outcome) => outcome.error?.message).join(" | "),
   );
   const userTailscale = await attempt({}, { facts: { ...FACTS, tailscale_bin: LOCAL_TAILSCALE }, env: { FAKE_SSH_TAILSCALE_UNSAFE: "1" } });
-  check("setup: a tailscale CLI that a non-root user can change fails the install step with that reason", failedAt(userTailscale, "install") && /not root can change \/usr\/local\/bin\/tailscale/.test(userTailscale.error.message), userTailscale.error?.message);
+  check("setup: a tailscale CLI that a non-root user can change fails setup.sh's first step with that reason", failedAt(userTailscale, "harnesses") && /not root can change \/usr\/local\/bin\/tailscale/.test(userTailscale.error.message), userTailscale.error?.message);
   const setupScript = readFileSync(join(REPO, SETUP_SCRIPT), "utf8");
   const setupCode = setupScript.split("\n").filter((line) => !/^\s*#/.test(line));
   check(
@@ -258,15 +277,31 @@ async function setupScenarios({ check, temp }) {
   check("setup: a refused sudo password fails the Node step, the first root run, before any copy", failedAt(wrong, "node") && wrong.error.message === "sudo refused the password" && wrong.calls.length === 2, wrong.error?.message);
   const tampered = await attempt({}, { env: { FAKE_SSH_TAMPER: "1" } });
   check(
-    "setup: a stage file changed after the copy fails the install step, installs nothing and removes the stage",
-    failedAt(tampered, "install") && /changed after the copy/.test(tampered.error.message) && tampered.configs.length === 0 && tampered.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."),
+    "setup: a stage file changed after the copy fails setup.sh's first step, installs nothing and removes the stage",
+    failedAt(tampered, "harnesses") && /changed after the copy/.test(tampered.error.message) && tampered.configs.length === 0 && tampered.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."),
     tampered.error?.message,
   );
   const grown = await attempt({}, { env: { FAKE_SSH_GROW: "1" } });
   check(
-    "setup: a stage file grown past root's byte budget after the copy fails the install step and installs nothing",
-    failedAt(grown, "install") && /changed after the copy/.test(grown.error.message) && grown.configs.length === 0 && grown.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."),
+    "setup: a stage file grown past root's byte budget after the copy fails setup.sh's first step and installs nothing",
+    failedAt(grown, "harnesses") && /changed after the copy/.test(grown.error.message) && grown.configs.length === 0 && grown.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."),
     grown.error?.message,
+  );
+  const badHarness = await attempt({}, { env: { FAKE_SSH_HARNESS_EXIT: "1" } });
+  check(
+    "setup: a failed harness install fails the harnesses step with its reason, before the install, and removes the stage",
+    failedAt(badHarness, "harnesses") && /Codex 0\.164\.0 does not match its pinned SHA-256/.test(badHarness.error.message) && /runner\/README\.md, "Harnesses"/.test(badHarness.error.message) && !badHarness.events.some((event) => event.step === "install") && badHarness.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."),
+    badHarness.error?.message,
+  );
+  const pins = Object.entries(HARNESS_PIN_SOURCES).map(([file, print]) => {
+    const lines = readFileSync(join(REPO, file), "utf8").split("\n").filter((line) => HARNESS_PIN_LINE_RE.test(line));
+    return spawnSync("/bin/bash", ["-c", `${lines.join("\n")}\n${print}`], { encoding: "utf8" }).stdout.trim().split("\n");
+  });
+  const wrapperPins = ["runner/deploy/harness-wrapper", "runner/deploy/buzz-login.mjs"].map((file) => readFileSync(join(REPO, file), "utf8"));
+  check(
+    "setup: harnesses.sh installs the harnesses at the paths that install.sh, the wrapper and buzz-login pin",
+    pins[0].length === 4 && JSON.stringify(pins[0]) === JSON.stringify(pins[1]) && pins[0].every((path, index) => index === 0 || wrapperPins[0].includes(`=${path}\n`)) && wrapperPins[1].includes(`const CLAUDE_DIR = "${pins[0][0]}";`),
+    JSON.stringify(pins),
   );
   const big = await attempt({}, { env: { FAKE_BUNDLE_BYTES: String(STAGE_BYTES_MAX + 1) } });
   check("setup: runner files bigger than root's byte budget stop the copy step before any copy", failedAt(big, "copy") && big.calls.length === 2 && big.error?.message.includes(`copies at most ${STAGE_BYTES_MAX}`), big.error?.message);
@@ -299,12 +334,17 @@ async function setupScenarios({ check, temp }) {
   check("setup: the root command pins the manifest of every stage file", /^[0-9a-f]{64}$/.test(rootRun?.pinned ?? "") && done.configs.length === 1, rootRun?.pinned);
   check("setup: the stage goes after the install, as the SSH user", done.calls.at(-1)?.argv.at(-1) === `rm -rf -- ${rootRun?.stage}` && !done.calls.at(-1).argv.join(" ").includes("sudo"));
   const config = done.configs[0];
+  check(
+    "setup: the stage holds the Pi package files of the linked buzz-app clone, and each harness shows on the page",
+    JSON.stringify(done.pis) === JSON.stringify([PI_FILES]) && done.events.some((event) => event.step === "harnesses" && event.state === "done" && event.detail === "claude installed, codex installed, goose installed, pi installed"),
+    JSON.stringify(done.events.filter((event) => event.step === "harnesses")),
+  );
   check("setup: the first-install config names this owner, relay and Tailscale login", config?.ownerPubkey === OWNER && JSON.stringify(config.relays) === JSON.stringify([RELAY]) && JSON.stringify(config.allowedLogins) === JSON.stringify([LOGIN]) && config.runAsUser === "buzz-agent", JSON.stringify(config));
   const hosts = JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
   check("setup: the machine joins hosts.json with its serve origin and the given name", hosts.length === 2 && hosts[1].id === MACHINE && hosts[1].label === "smoke/box" && hosts[1].origin === ORIGIN && done.result?.added === true, JSON.stringify(hosts));
   check("setup: the health check goes to the new origin, on the runner port", health.at(-1) === `${SERVE_ORIGIN}/v1/health` && done.result?.version === "0.0.0-smoke");
   check("setup: the copy and setup.sh run on the runner-only Node", rootRun?.port === "10000" && rootRun.node === RUNNER_NODE && done.calls[2]?.argv.at(-1).startsWith(`${RUNNER_NODE} -e `), JSON.stringify(rootRun && { port: rootRun.port, node: rootRun.node }));
-  check("setup: the manual steps name the sign-in command and the tag's port rule", done.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)), JSON.stringify(done.result?.manual));
+  check("setup: the manual steps name the sign-in command and the tag's port rule, and no harness install", !done.result?.manual?.some((step) => step.id === "harnesses") && done.result?.manual?.some((step) => step.command === `ssh -t owner@${DNS} sudo -u buzz-agent /usr/local/bin/buzz-login`) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)), JSON.stringify(done.result?.manual));
   check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));
 
   // A killed helper's stage: the next copy removes it, also when its time is

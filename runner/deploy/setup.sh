@@ -11,7 +11,7 @@
 # The script copies the files that the SHA-256 manifest lists into a fresh
 # folder that only root can write, with bounded reads, and checks every file
 # there against the manifest that the helper pins in the command. Only then
-# does install.sh run, from that copy.
+# do harnesses.sh and install.sh run, from that copy.
 #
 # Usage (as root): bash -c "<this script>" setup.sh <stage> <port> <node> <sha>
 #   <stage>  the folder the helper made: /tmp/buzz-runner-setup.<random>
@@ -20,16 +20,18 @@
 #            gives it to the runner (an installed runner keeps its own Node)
 #   <sha>    the SHA-256 of the stage's MANIFEST, in lowercase hex
 #
-# stdout: install.sh's lines, one `@@step <name>` line as each step starts,
-# which the helper turns into the page's progress, and one
-# `@@agent-user <name>` line, for the page's sign-in command. No line holds
-# a secret: the sudo password never reaches this script.
+# stdout: harnesses.sh's `@@harness` lines, install.sh's lines, one
+# `@@step <name>` line as each step starts, which the helper turns into the
+# page's progress, and one `@@agent-user <name>` line, for the page's sign-in
+# command. No line holds a secret: the sudo password never reaches this
+# script.
 #
 # Exit: 0 done; 64 wrong arguments; 77 the machine has no ACL tag; 79 a
 # non-root user can change the Node (not 78, which install.sh uses for its
 # own config errors); 80 the stage is not what the helper sent; 81 a
-# non-root user can change the tailscale CLI; 69 no tailscale CLI at
-# TAILSCALE_PATHS; other codes come from install.sh or tailscale.
+# non-root user can change the tailscale CLI; 82 a harness install failed
+# (harnesses.sh says why); 69 no tailscale CLI at TAILSCALE_PATHS; other
+# codes come from install.sh or tailscale.
 set -euo pipefail
 umask 077
 # The root PATH, so that no folder of the SSH user names a program here.
@@ -79,6 +81,10 @@ readonly EX_NOPERM=77
 readonly EX_UNSAFE_NODE=79
 readonly EX_TAMPERED=80
 readonly EX_UNSAFE_TAILSCALE=81
+readonly EX_HARNESS=82
+# buzz-app's Pi package.json and lock in the copy (host-setup.mjs PI_DEPS):
+# harnesses.sh installs the Pi packages from them.
+readonly PI_DEPS=runner/pi
 
 die() {
 	echo "setup.sh: $2" >&2
@@ -189,7 +195,6 @@ copy=$(mktemp -d "$COPY_TEMPLATE")
 trap 'rm -rf -- "${copy:?}"' EXIT
 copy_checked "$stage" "$sha" "$copy" || die "$EX_TAMPERED" "the stage at $stage is not what the helper sent; nothing was installed"
 
-step install
 install_sh=$copy/runner/deploy/install.sh
 bundle=$copy/runner/dist/buzz-runner.mjs
 # An installed deployment keeps its own names, folders and Node, as the owner
@@ -200,6 +205,17 @@ bundle=$copy/runner/dist/buzz-runner.mjs
 values=$(/usr/bin/env -u INSTALLED_ROOT /bin/bash "$install_sh" --print-values)
 value() { sed -n "s/^$1=//p" <<<"$values"; }
 dirname=$(value RUNNER_DIRNAME)
+
+# Before the install, so that the runner starts with every harness there.
+# The paths are the deployment's own, so an installed host with its own
+# harness paths keeps them. harnesses.sh uses the Node that this script
+# checked: its npm installs Pi.
+step harnesses
+/bin/bash "$copy/runner/deploy/harnesses.sh" "$node" "$copy/$PI_DEPS" \
+	"$(value CLAUDE_DIR)" "$(value CODEX_BIN)" "$(value GOOSE_BIN)" "$(value PI_MODULES)" ||
+	die "$EX_HARNESS" "a harness install failed (exit $?); the runner was not installed"
+
+step install
 runner_node=$node
 if [ "$(value INSTALLED)" = 1 ]; then
 	runner_node=$(value NODE_BIN)

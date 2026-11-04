@@ -7,7 +7,8 @@
 // removal. It never runs node-setup.sh either: its download and install are
 // a host test (runner/README.md, "Node"). For the root run it does
 // what setup.sh does before install.sh: it checks the stage against the
-// manifest hash that the command pins. It never runs install.sh: that needs
+// manifest hash that the command pins. It never runs harnesses.sh (its
+// downloads are a host test, runner/README.md, "Harnesses") nor install.sh: that needs
 // root and systemd, and has its own dry run. The real setup.sh is a host
 // test (runner/README.md, "Deploy").
 //
@@ -29,6 +30,8 @@
 //                      host with its own names does; unset: no report
 //   FAKE_SSH_NODE_EXIT  node-setup.sh's exit code (0 or unset: it installs
 //                      the runner's Node and names it)
+//   FAKE_SSH_HARNESS_EXIT "1": harnesses.sh fails a download check, so
+//                      setup.sh stops before the install (its exit 82)
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -53,6 +56,16 @@ const EXIT_SSH = 255;
 const EXIT_SUDO = 1;
 const EXIT_UNSAFE_NODE = 79;
 const EXIT_UNSAFE_TAILSCALE = 81;
+const EXIT_HARNESS = 82;
+/** What harnesses.sh reports on a first install: each harness at its pin. */
+const HARNESS_LINES = [
+  "@@harness claude installed /usr/local/lib/buzz-harness/claude/2.1.316",
+  "@@harness codex installed /usr/local/lib/buzz-harness/codex/0.164.0/bin/codex",
+  "@@harness goose installed /usr/local/lib/buzz-harness/goose/1.57.0/goose-acp",
+  "@@harness pi installed /usr/local/lib/buzz-harness/pi/1.4.0/node_modules",
+];
+/** The Pi package files in the stage (host-setup.mjs PI_DEPS). */
+const PI_DEPS = "runner/pi";
 
 const argv = process.argv.slice(2);
 const stdin = readFileSync(0);
@@ -142,10 +155,18 @@ if (rootRun) {
     process.stderr.write(`setup.sh: the stage at ${stage} is not what the helper sent; nothing was installed\n`);
     process.exit(EXIT_TAMPERED);
   }
-  // What setup.sh would install as the config, for the scenario to check.
-  appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ config: JSON.parse(readFileSync(`${stage}/config.json`, "utf8")) })}\n`);
+  // What setup.sh would install as the config, and the Pi package files
+  // harnesses.sh would install from, for the scenario to check.
+  const pi = Object.fromEntries(["package.json", "package-lock.json"].map((name) => [name, readFileSync(join(stage, PI_DEPS, name), "utf8")]));
+  appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ config: JSON.parse(readFileSync(`${stage}/config.json`, "utf8")), pi })}\n`);
+  process.stdout.write("@@step harnesses\n");
+  if (process.env.FAKE_SSH_HARNESS_EXIT === "1") {
+    process.stdout.write(`${HARNESS_LINES[0]}\n`);
+    process.stderr.write("harnesses.sh: the download of Codex 0.164.0 does not match its pinned SHA-256; nothing was installed\nsetup.sh: a harness install failed (exit 70); the runner was not installed\n");
+    process.exit(EXIT_HARNESS);
+  }
   const agentUser = process.env.FAKE_SSH_AGENT_USER ? `@@agent-user ${process.env.FAKE_SSH_AGENT_USER}\n` : "";
-  process.stdout.write(`@@step install\ninstall.sh: buzz-runner is active.\n${agentUser}@@step serve\n@@step done\n`);
+  process.stdout.write(`${HARNESS_LINES.join("\n")}\n@@step install\ninstall.sh: buzz-runner is active.\n${agentUser}@@step serve\n@@step done\n`);
   process.exit(0);
 }
 const removal = /^rm -rf -- (\S+)$/.exec(command);

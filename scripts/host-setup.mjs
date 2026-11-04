@@ -3,8 +3,9 @@
 // host (Add host). The page cannot reach a machine itself, so the hosts
 // helper (scripts/hosts-helper.mjs) runs this module and streams each step
 // back as progress. The steps repeat runner/README.md, "Deploy": copy a
-// runner tree to the machine, run install.sh as root, then `tailscale serve`,
-// and add the machine to hosts.json, the one host list.
+// runner tree to the machine, install the harnesses and run install.sh as
+// root, then `tailscale serve`, and add the machine to hosts.json, the one
+// host list.
 //
 // Trust: this runs root commands on the chosen machine, with the user's own
 // SSH access. So every value that reaches the machine is checked here, the
@@ -20,9 +21,10 @@
 // log line or a progress event.
 //
 // The runner's own Node comes first (node-setup.sh, in its own root command),
-// so the machine needs no Node before the setup. The steps that need the
-// user's own hands stay manual and are returned as a list: the harness
-// installs and sign-ins (a browser or a key), and the port rule in the
+// so the machine needs no Node before the setup, and setup.sh installs each
+// missing harness at its pinned path (harnesses.sh) before the runner. The
+// steps that need the user's own hands stay manual and are returned as a
+// list: the harness sign-ins (a browser or a key), and the port rule in the
 // tailnet policy (no policy token here). A machine without an ACL
 // tag is refused before any change: on an untagged machine, a harness could
 // call the runner as its owner (runner/README.md, "Security notes").
@@ -54,6 +56,11 @@ export const NODE_PATHS = Object.freeze(["/opt/buzz-runner/node", "/usr/bin/node
 export const RUNNER_NODE = NODE_PATHS[0];
 /** node-setup.sh's line that names the Node it installed or kept. */
 const NODE_LINE_RE = /^@@node (\/\S+) (\d+\.\d+\.\d+)$/;
+/** harnesses.sh's line for each harness: kept, installed, or missing (its
+ * path is not the pin, so the setup does not install it). */
+const HARNESS_LINE_RE = /^@@harness (claude|codex|goose|pi) (kept|installed|missing) (\/\S+)$/;
+/** setup.sh's line as each of its steps starts (SETUP_STEPS). */
+const STEP_LINE_RE = /^@@step (install|serve)$/;
 /** Where the tailscale CLI may be on the machine, first match wins. setup.sh
  * has the same list (TAILSCALE_PATHS): root runs the CLI by path, because
  * its PATH leaves out /usr/local/bin, and the probe looks in the same places
@@ -78,7 +85,17 @@ const STAGE_FILES = Object.freeze([
   ["runner/deploy/buzz-login", 0o755],
   ["runner/deploy/buzz-login.mjs", 0o644],
   ["runner/deploy/pi-launch.mjs", 0o644],
+  ["runner/deploy/harnesses.sh", 0o755],
 ]);
+/** buzz-app's Pi package.json and lock, from the linked clone that the
+ * bundle comes from (scripts/build-runner.mjs checks its revision and that it
+ * has no edits), and where the stage puts them (setup.sh PI_DEPS): the Pi
+ * packages that harnesses.sh installs must be the ones that pi.ts pins in the
+ * bundle, or pi-launch.mjs refuses them. */
+const PI_DEPS_SOURCE = "runner/buzz-app/src/bundled/pi/deps";
+const PI_DEPS = "runner/pi";
+const PI_DEPS_FILES = Object.freeze(["package.json", "package-lock.json"]);
+const PI_DEPS_MODE = 0o644;
 /** Where the bundle goes in the stage (install.sh reads it there), and its
  * mode on the machine. */
 const BUNDLE = "runner/dist/buzz-runner.mjs";
@@ -104,7 +121,7 @@ const TREE_PATHS = Object.freeze(["runner", "scripts/build-runner.mjs"]);
 const CONFIG_EXAMPLE = "runner/config.example.json";
 const BUILD_RUNNER = "scripts/build-runner.mjs";
 /** The page's step list, in order (plugin.js SETUP_STEPS). */
-export const SETUP_STEPS = Object.freeze(["machine", "bundle", "connect", "node", "copy", "install", "serve", "hosts", "health"]);
+export const SETUP_STEPS = Object.freeze(["machine", "bundle", "connect", "node", "copy", "harnesses", "install", "serve", "hosts", "health"]);
 
 /** A Linux login name, as install.sh's USER_RE allows. Empty means ssh's
  * default, the local user name. */
@@ -144,6 +161,13 @@ const GIT_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 300_000;
 const COPY_TIMEOUT_MS = 120_000;
 const NODE_TIMEOUT_MS = 960_000;
+/** setup.sh's harness step: three downloads (harnesses.sh DOWNLOAD_TIMEOUT_S
+ * each, with a margin) and two npm runs (NPM_TIMEOUT_S each, with a margin).
+ * setup.sh runs in one root command, so its timeout is this plus the
+ * install's. */
+const HARNESS_DOWNLOAD_MS = 960_000;
+const HARNESS_NPM_MS = 360_000;
+const HARNESSES_TIMEOUT_MS = 3 * HARNESS_DOWNLOAD_MS + 2 * HARNESS_NPM_MS;
 const INSTALL_TIMEOUT_MS = 600_000;
 const HEALTH_TIMEOUT_MS = 120_000;
 const HEALTH_TRY_MS = 20_000;
@@ -155,7 +179,7 @@ const STATUS_MAX = 16_777_216;
 /** Lines of install output a failure keeps for the page. */
 const TAIL_LINES = 12;
 const LINE_MAX = 300;
-const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tampered: 80, unsafeTailscale: 81 });
+const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tampered: 80, unsafeTailscale: 81, harness: 82 });
 /** A helper that is killed (the app quits, the process gets SIGKILL) never
  * runs its stage removal, so each copy removes the SSH user's own stages that
  * are older than any live setup can keep one: the install's timeout plus the
@@ -165,7 +189,7 @@ const SETUP_EXIT = Object.freeze({ readStdin: 90, noTag: 77, unsafeNode: 79, tam
  * that stepped back or a touched folder gives such an mtime, and without this
  * that stage would stay until the clock catches up. A small step back keeps a
  * live stage. */
-const STAGE_STALE_MS = 2 * (INSTALL_TIMEOUT_MS + 2 * COPY_TIMEOUT_MS);
+const STAGE_STALE_MS = 2 * (HARNESSES_TIMEOUT_MS + INSTALL_TIMEOUT_MS + 2 * COPY_TIMEOUT_MS);
 /** The setup's own work folder on this device (the bundle, the pinned
  * known_hosts), in the user's temp folder, and the name mkdtemp gives it. */
 const WORK_PREFIX = "buzz-setup-";
@@ -179,7 +203,7 @@ const WORK_RE = /^buzz-setup-[A-Za-z0-9]{6}$/;
  * stale (a clock that stepped back), and a small step back keeps a live
  * folder. */
 const WORK_STALE_MS =
-  2 * (STATUS_TIMEOUT_MS + 2 * GIT_TIMEOUT_MS + BUILD_TIMEOUT_MS + CONNECT_TIMEOUT_MS + NODE_TIMEOUT_MS + 3 * COPY_TIMEOUT_MS + INSTALL_TIMEOUT_MS + HEALTH_TIMEOUT_MS + HEALTH_TRY_MS + HEALTH_RETRY_MS);
+  2 * (STATUS_TIMEOUT_MS + 2 * GIT_TIMEOUT_MS + BUILD_TIMEOUT_MS + CONNECT_TIMEOUT_MS + NODE_TIMEOUT_MS + 3 * COPY_TIMEOUT_MS + HARNESSES_TIMEOUT_MS + INSTALL_TIMEOUT_MS + HEALTH_TIMEOUT_MS + HEALTH_TRY_MS + HEALTH_RETRY_MS);
 
 /** A setup step that failed, with the step and the reason the page shows. */
 export class HostSetupError extends Error {
@@ -373,7 +397,9 @@ async function cleanCommit(root) {
 }
 
 /** A fresh runner bundle of the clean commit, in the setup's own folder: a
- * bundle left in the checkout may come from code that is no longer there. */
+ * bundle left in the checkout may come from code that is no longer there.
+ * The Pi package files are read right after the build, from the clone that
+ * the build just checked, so they match the lock in the bundle. */
 async function buildBundle(root, work, progress) {
   const commit = await cleanCommit(root);
   progress("running", `Building the runner bundle of ${commit}`);
@@ -382,7 +408,13 @@ async function buildBundle(root, work, progress) {
   const bundle = join(out, BUNDLE.split("/").pop());
   if (result.code !== 0 || !existsSync(bundle))
     throw new HostSetupError(`the runner build failed (see runner/README.md, "Build"): ${clip(result.stderr.trim().split("\n").pop() ?? result.code)}`, { step: "bundle" });
-  return { bundle, commit };
+  let piDeps;
+  try {
+    piDeps = PI_DEPS_FILES.map((name) => ({ path: `${PI_DEPS}/${name}`, mode: PI_DEPS_MODE, data: readFileSync(join(root, PI_DEPS_SOURCE, name)).toString("base64") }));
+  } catch (error) {
+    throw new HostSetupError(`the Pi package files are not in the buzz-app clone (${PI_DEPS_SOURCE}; scripts/link-toolchain): ${clip(error.message)}`, { step: "bundle", cause: error });
+  }
+  return { bundle, commit, piDeps };
 }
 
 /** The runner config for a first install: the example, with this owner, this
@@ -573,7 +605,6 @@ const sweptText = ([removed, kept], noun) =>
 function manualSteps(peer, sshUser, agentUser) {
   const at = `${sshUser ? `${sshUser}@` : ""}${peer.dnsName}`;
   return [
-    { id: "harnesses", text: "Install each harness at its pinned path, root-owned, and verify each download (runner/README.md, \"Deploy\", step 1)." },
     { id: "sign-in", text: "Sign each harness in as the harness user.", command: `ssh -t ${at} sudo -u ${agentUser} /usr/local/bin/buzz-login` },
     { id: "policy", text: `In the tailnet policy, let only your own login reach port ${RUNNER_PORT} on ${peer.tags.join(", ")}.` },
   ];
@@ -634,12 +665,13 @@ async function nodeStep(peer, session, { ssh, access, root, sudoPassword }) {
   return { path: found[1], version: found[2] };
 }
 
-/** The copy step: the runner tree, a fresh bundle, the first-install config
- * and their manifest, into a new stage folder as the SSH user. */
-async function copyStep(peer, session, { ssh, root, bundle, config }) {
+/** The copy step: the runner tree, a fresh bundle, the Pi package files,
+ * the first-install config and their manifest, into a new stage folder as
+ * the SSH user. */
+async function copyStep(peer, session, { ssh, root, bundle, piDeps, config }) {
   const fail = (message) => new HostSetupError(message, { step: "copy" });
   const files = STAGE_FILES.map(([path, mode]) => ({ path, mode, data: readFileSync(join(root, path)).toString("base64") }));
-  files.push({ path: BUNDLE, mode: BUNDLE_MODE, data: readFileSync(bundle).toString("base64") });
+  files.push({ path: BUNDLE, mode: BUNDLE_MODE, data: readFileSync(bundle).toString("base64") }, ...piDeps);
   files.push({ path: "config.json", mode: 0o644, data: Buffer.from(config).toString("base64") });
   const stageBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.data, "base64"), 0);
   if (stageBytes > STAGE_BYTES_MAX) throw fail(`the runner files are ${stageBytes} bytes; setup.sh copies at most ${STAGE_BYTES_MAX}`);
@@ -653,20 +685,30 @@ async function copyStep(peer, session, { ssh, root, bundle, config }) {
   return { stage, sha: manifest.sha, count: files.length, swept: [swept[0] ?? 0, swept[1] ?? 0] };
 }
 
-/** The install and serve steps: setup.sh as root, which installs from its
- * root-only copy of the stage and reports each step it starts. */
+/** The harness, install and serve steps: setup.sh as root, which installs
+ * from its root-only copy of the stage and reports each step it starts. Each
+ * harness line shows on the page as it comes, so a long download is not an
+ * idle step (plugin.js SETUP_IDLE_MS). */
 async function installStep(peer, session, { ssh, access, root, staged, tailscale, sudoPassword, progress, begin }) {
   const script = readFileSync(join(root, SETUP_SCRIPT), "utf8");
   const command = rootCommand({ access, script, name: "setup.sh", args: [staged.stage, RUNNER_PORT, RUNNER_NODE, staged.sha] });
   let agentUser = DEFAULT_AGENT_USER;
+  const harnesses = [];
   const install = await run(ssh, sshArgs(peer, session, command), {
     input: access === "password" ? `${sudoPassword}\n` : "",
-    timeoutMs: INSTALL_TIMEOUT_MS,
+    timeoutMs: HARNESSES_TIMEOUT_MS + INSTALL_TIMEOUT_MS,
     onLine: (line) => {
-      agentUser = AGENT_USER_LINE_RE.exec(line.trim())?.[1] ?? agentUser;
-      if (/^@@step serve$/.test(line.trim())) {
-        progress("done");
-        begin("serve");
+      const text = line.trim();
+      agentUser = AGENT_USER_LINE_RE.exec(text)?.[1] ?? agentUser;
+      const harness = HARNESS_LINE_RE.exec(text);
+      if (harness) {
+        harnesses.push(`${harness[1]} ${harness[2]}`);
+        progress("running", harnesses.join(", "));
+      }
+      const next = STEP_LINE_RE.exec(text)?.[1];
+      if (next) {
+        progress("done", next === "install" ? harnesses.join(", ") : undefined);
+        begin(next);
       }
     },
   });
@@ -677,6 +719,7 @@ async function installStep(peer, session, { ssh, access, root, staged, tailscale
         [SETUP_EXIT.unsafeNode]: (last) => `${last || "a user who is not root can change the runner's Node or a folder above it"} (runner/README.md, "Node")`,
         [SETUP_EXIT.tampered]: "the stage folder on the machine changed after the copy, so nothing was installed; a process of the SSH user may have changed it",
         [SETUP_EXIT.unsafeTailscale]: `a user who is not root can change ${tailscale} or a folder above it; root does not run it (runner/README.md, "Tailscale CLI")`,
+        [SETUP_EXIT.harness]: (last) => `${last || "a harness install failed"} (runner/README.md, "Harnesses")`,
       }) ?? "the install did not end in time",
     );
   return { agentUser };
@@ -725,7 +768,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     progress("done", `Node ${runnerNode.version} at ${runnerNode.path}`);
 
     begin("copy");
-    const staged = await copyStep(peer, session, { ssh, root, bundle: built.bundle, config: runnerConfig(root, { ...setup, login }) });
+    const staged = await copyStep(peer, session, { ssh, root, bundle: built.bundle, piDeps: built.piDeps, config: runnerConfig(root, { ...setup, login }) });
     // The SSH user removes the stage: root never deletes in a folder that
     // another user owns.
     cleanup = () => run(ssh, sshArgs(peer, session, `rm -rf -- ${staged.stage}`), { timeoutMs: COPY_TIMEOUT_MS }).catch(() => undefined);
@@ -733,7 +776,7 @@ export async function setupHost(request, { hostsPath, onProgress = () => {}, dep
     // shows in the step's detail and does not stop the setup.
     progress("done", [`${staged.count} files`, ...sweptText(staged.swept, "stage")].join(", "));
 
-    begin("install");
+    begin("harnesses");
     const installed = await installStep(peer, session, { ssh, access, root, staged, tailscale, sudoPassword: setup.sudoPassword, progress, begin }).finally(async () => {
       // setup.sh has its own root-only copy by now, so the stage goes on
       // every outcome of the install.

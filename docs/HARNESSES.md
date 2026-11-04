@@ -84,6 +84,8 @@ activity injectable for an Activity tab.
 Each harness is installed once by root, read-only, at a pinned path. The
 wrappers run only those paths, and `harness-wrapper <id> --path` reports the
 path, so the runner can tell an installed harness from a missing one.
+**Add host** installs a missing harness with `runner/deploy/harnesses.sh`
+(runner/README.md, "Harnesses").
 
 | Harness | Default path | Supply chain checks |
 | --- | --- | --- |

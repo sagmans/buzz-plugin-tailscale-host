@@ -110,8 +110,9 @@ set that value in the environment.
 This also applies to the harness pins (`CLAUDE_DIR`, `CODEX_BIN`,
 `GOOSE_BIN`, `PI_MODULES`). An installed host keeps the harness paths that
 it has, so a pin bump in this script does not reach it. To move an installed
-host to a new pin, install that harness version at its path, then run the
-script again with the variable set to that path.
+host to a new pin, install that harness version at its path (see
+[Harnesses](#harnesses)), then run the script again with the variable set to
+that path.
 
 The defaults apply to a first install:
 
@@ -159,7 +160,8 @@ The owner's steps after install:
 
 1. Install each harness at its pinned path (`CLAUDE_DIR`, `CODEX_BIN`,
    `GOOSE_BIN`, `PI_MODULES`), root-owned and read-only. Verify each download
-   (checksum, signature or provenance) first.
+   (checksum, signature or provenance) first. **Add host** does this step
+   (see [Harnesses](#harnesses)).
 2. Sign each harness in as the harness user: `sudo -u buzz-agent
    /usr/local/bin/buzz-login status`, then `buzz-login <harness>`.
 3. Check sudo for the nologin user: `sudo -u buzz-runner sudo -n -u buzz-agent
@@ -224,6 +226,44 @@ To move to a newer Node, change the pin in `deploy/node-setup.sh` (the
 version and both SHA-256 values), then run **Add host** again for the
 machine: an older Node at the link is replaced. The installed runner keeps
 the Node path that its unit names, which is the same link.
+
+### Harnesses
+
+The setup from the Settings page installs each missing harness as root,
+with `deploy/harnesses.sh`, before it installs the runner. `deploy/setup.sh`
+runs the script from its root-only copy of the stage, after the copy passed
+the pinned manifest.
+
+| Harness | Download | Check |
+| --- | --- | --- |
+| Claude Code | `claude` from `downloads.claude.ai` | SHA-256 from the release's signed `manifest.json` |
+| Codex | `codex-package-<arch>-unknown-linux-musl.tar.gz` from the GitHub release | SHA-256 of the release asset |
+| Goose | `goose-acp-<arch>-unknown-linux-gnu.tar.gz` from the GitHub release | The SHA-256 that buzz-app pins, with a GitHub attestation |
+| Pi | `npm ci --ignore-scripts` of buzz-app's Pi lock, from `registry.npmjs.org` | The lock's integrity hashes, then `npm audit signatures` |
+
+For each harness, the script does this:
+
+1. A harness that is there stays as it is: an earlier setup, or your own
+   install.
+2. A missing harness whose path is not the pinned path stays missing. The
+   page shows it as not installed.
+3. Otherwise the script downloads the release into a new folder under
+   `/usr/local/lib/buzz-harness` that only root can write. It checks the
+   SHA-256 that it pins before it unpacks anything, makes every file
+   root-owned and not writable by a group or other user, and moves the
+   version folder into place with one rename.
+
+npm runs on the runner's Node, with no npm config of the machine and no
+package scripts. The Pi package files come from the buzz-app clone that the
+runner bundle comes from, so `deploy/pi-launch.mjs` accepts the packages.
+
+A failed download or check stops the setup before the runner install
+(exit 82). Nothing of that harness is installed.
+
+To move to a new harness version, change its pin in `deploy/harnesses.sh`,
+`deploy/install.sh`, the wrappers and `deploy/buzz-login.mjs` (the smoke run
+fails when they differ). An installed host keeps its harness paths, as
+described in the Deploy section.
 
 ### Tailscale CLI
 

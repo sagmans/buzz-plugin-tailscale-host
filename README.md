@@ -129,8 +129,9 @@ that the machine:
 - has the tailscale CLI at `/usr/bin/tailscale` or `/usr/local/bin/tailscale`,
   and only root may change it (see `runner/README.md`, "Tailscale CLI"),
 - has systemd, and `curl` or `wget` at `/usr/bin`, with access to
-  `nodejs.org`. The setup installs the runner's own Node there (see
-  `runner/README.md`, "Node").
+  `nodejs.org`, `downloads.claude.ai`, `github.com` and
+  `registry.npmjs.org`. The setup installs the runner's own Node and the
+  harnesses from there (see `runner/README.md`, "Node" and "Harnesses").
 
 Then:
 
@@ -140,11 +141,12 @@ Then:
    the owner key and the relay: they come from the identity and community
    that are open in the app.
 3. Select **Add host**. The page shows each step: check the machine, build
-   the runner, connect, install the runner's Node, copy, install,
-   `tailscale serve`, add to `hosts.json`, check the runner. If Tailscale
-   SSH asks for a check, the page shows the link to open.
-4. Do the steps that the page lists at the end: install and sign in each
-   harness, and let only your login reach port 10000 in the tailnet policy.
+   the runner, connect, install the runner's Node, copy, install the
+   harnesses, install, `tailscale serve`, add to `hosts.json`, check the
+   runner. If Tailscale SSH asks for a check, the page shows the link to
+   open.
+4. Do the steps that the page lists at the end: sign in each harness, and
+   let only your login reach port 10000 in the tailnet policy.
 
 The setup copies only committed runner code: if `runner/` in this folder
 has changes that are not committed, it stops before it connects. It builds
@@ -155,7 +157,8 @@ setup updates the runner, keeps the config on the machine, and keeps the
 entry in `hosts.json`. The same is true for a machine with a runner that is
 not listed yet. The runner keeps its own users, folders and Node, also when
 they are not the defaults (runner/README.md, "Deploy"). It also keeps its
-harness pins, so a pin bump does not reach an installed host.
+harness paths, and a harness that is there stays as it is. The setup
+installs a missing harness only at its pinned path.
 
 The plugin reads and saves `hosts.json` and calls the hosts through
 `scripts/hosts-helper.mjs`. The build grants the plugin one host process:

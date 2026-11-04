@@ -123,7 +123,7 @@ PRIVATE_ALLOWED_RE='@example\.(com|org|net|invalid)|^git@github\.com$|^/home/buz
 # the setup's root scripts may pin one, but only on a whole line of this
 # form, in these files, so that a key cannot pass as a pin anywhere else.
 HASH_PIN_LINE_RE='^readonly [A-Z][A-Z0-9_]*_SHA256_[A-Z0-9_]+=[0-9a-f]{64}$'
-HASH_PIN_FILES_RE='^runner/deploy/node-setup\.sh$'
+HASH_PIN_FILES_RE='^runner/deploy/(node-setup|harnesses)\.sh$'
 # Files copied from the hook template stay byte-identical to it, so their
 # style is the template's concern; repo-owned shell lives elsewhere.
 TEMPLATE_SHELL_RE='^(\.githooks/[^/]+|\.githooks/lib/.*|scripts/setup-hooks)$'
