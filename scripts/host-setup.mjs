@@ -87,8 +87,9 @@ const SETUP_SCRIPT = "runner/deploy/setup.sh";
  * sha256sum's `<hex>  <path>` form; setup.sh checks the copy against it. */
 const MANIFEST = "MANIFEST";
 /** The most bytes of listed files that root copies into /run, a small tmpfs
- * that the whole machine needs (setup.sh STAGE_BYTES_MAX, keep them equal).
- * A bigger stage stops here, before any copy, with a clear reason. */
+ * that the whole machine needs (setup.sh STAGE_BYTES_MAX; scripts/check fails
+ * when they differ). A bigger stage stops here, before any copy, with a
+ * clear reason. */
 const STAGE_BYTES_MAX = 16_777_216;
 /** The checkout paths that the stage and the bundle come from. Root runs
  * them on the machine, so each must be as committed: no edit, no new file

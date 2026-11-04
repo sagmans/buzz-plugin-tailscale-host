@@ -49,6 +49,22 @@ INSTALL_SH="$RUNNER_DIR/deploy/install.sh"
 CONFIG_EXAMPLE="$RUNNER_DIR/config.example.json"
 TOOLCHAIN_LINK="$RUNNER_DIR/buzz-app"
 RUNNER_LOCKFILE="$RUNNER_DIR/pnpm-lock.yaml"
+# The root copy limit lives in each file that enforces or tests it: setup.sh
+# enforces it as root, the helper refuses a bigger stage before the copy, and
+# the smoke fakes probe its edge. A one-sided change would let the helper
+# send a stage that root refuses, or let the smoke test a limit nobody uses.
+STAGE_LIMIT_NAME=STAGE_BYTES_MAX
+STAGE_LIMIT_FILES=(
+	"$RUNNER_DIR/deploy/setup.sh"
+	scripts/host-setup.mjs
+	"$RUNNER_DIR/smoke/fake-ssh.mjs"
+	"$RUNNER_DIR/smoke/setup.mjs"
+)
+# One definition line per file, in the shell or the JS form those files use.
+STAGE_LIMIT_DEF_RE="^(readonly $STAGE_LIMIT_NAME=|const $STAGE_LIMIT_NAME = )([0-9][0-9_]*);?\$"
+# Any assignment to the name, in any form, so that a copy outside the list
+# cannot hold its own value unseen; == and === comparisons do not match.
+STAGE_LIMIT_ASSIGN_RE="(^|[^A-Za-z0-9_])${STAGE_LIMIT_NAME}[[:space:]]*=([^=]|\$)"
 # Buzz manifest limits (buzz-app crates/plugin-manager): id shape and length,
 # description size in bytes.
 MANIFEST_ID_RE='^[a-z][a-z0-9.-]{0,79}$'
@@ -293,6 +309,40 @@ check_private_data() {
 	[ "$found" -eq 0 ] || fail "remove the private data above (use neutral words such as \"the user\" or example.com)"
 }
 
+# Every copy of the root copy limit must hold the same number, so the helper,
+# root and the smoke agree on one limit. Fails closed: each listed file must
+# exist and assign the name once, in a plain top-level definition (a renamed,
+# computed, shadowed or removed limit would escape the compare), and no other
+# file may assign the name. A tree without setup.sh (an older commit) has no
+# root copy limit to judge.
+check_stage_limit() {
+	local path defs value rc want="" want_path="" others
+	has_file "${STAGE_LIMIT_FILES[0]}" || return 0
+	for path in "${STAGE_LIMIT_FILES[@]}"; do
+		has_file "$path" || fail "$path is missing; it holds a copy of $STAGE_LIMIT_NAME (update STAGE_LIMIT_FILES if it moved)"
+		# Every assignment counts, at any indent, so that a second, shadowing
+		# definition inside a function cannot hold its own value unseen.
+		rc=0
+		defs="$(grep -E -- "$STAGE_LIMIT_ASSIGN_RE" "$path")" || rc=$?
+		[ "$rc" -le 1 ] || fail "could not read $path for $STAGE_LIMIT_NAME"
+		[ "$(printf '%s' "$defs" | grep -c '^')" -eq 1 ] && [[ "$defs" =~ $STAGE_LIMIT_DEF_RE ]] ||
+			fail "$path must define $STAGE_LIMIT_NAME exactly once, at the top level, as a plain number"
+		value="${BASH_REMATCH[2]//_/}"
+		if [ -z "$want" ]; then
+			want="$value" want_path="$path"
+		elif [ "$value" != "$want" ]; then
+			fail "$STAGE_LIMIT_NAME is $value in $path but $want in $want_path; keep every copy equal"
+		fi
+	done
+	rc=0
+	others="$(grep -l -I -E -- "$STAGE_LIMIT_ASSIGN_RE" "${files[@]}")" || rc=$?
+	[ "$rc" -le 1 ] || fail "could not scan the tree for $STAGE_LIMIT_NAME"
+	for path in "${STAGE_LIMIT_FILES[@]}"; do
+		others="$(printf '%s\n' "$others" | grep -v -x -F -- "$path" || true)"
+	done
+	[ -z "$others" ] || fail "$STAGE_LIMIT_NAME is assigned outside STAGE_LIMIT_FILES: ${others//$'\n'/ }"
+}
+
 # The runner's own packages, exactly as its lockfile pins them: the judged
 # tree is built and smoke-tested with them, never with whatever is installed.
 install_runner_packages() {
@@ -386,6 +436,7 @@ check_json
 check_manifest
 check_shell
 check_private_data
+check_stage_limit
 if [ "$quick" -eq 1 ]; then
 	exit 0
 fi

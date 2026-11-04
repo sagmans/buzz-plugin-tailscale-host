@@ -202,7 +202,7 @@ export async function setupSmoke({ check, temp }) {
     grown.error?.message,
   );
   const big = await attempt({}, { env: { FAKE_BUNDLE_BYTES: String(STAGE_BYTES_MAX + 1) } });
-  check("setup: runner files bigger than root's byte budget stop the copy step before any copy", failedAt(big, "copy") && big.calls.length === 1 && /copies at most 16777216/.test(big.error.message), big.error?.message);
+  check("setup: runner files bigger than root's byte budget stop the copy step before any copy", failedAt(big, "copy") && big.calls.length === 1 && big.error?.message.includes(`copies at most ${STAGE_BYTES_MAX}`), big.error?.message);
   check("setup: a failed setup removes its stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && wrong.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."), leftoverStages().join(","));
   const hostsAfterFailure = JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
   check("setup: a failed setup leaves hosts.json as it was", hostsAfterFailure.length === 1);

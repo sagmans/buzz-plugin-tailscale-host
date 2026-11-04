@@ -59,10 +59,10 @@ settings. Do not edit the files that come from the hook template:
   or deletes a file in the SSH user's stage: `setup.sh` goes in the root
   command, and it installs from a root-only copy that matches the pinned
   SHA-256 manifest; root copies only the listed files, with bounded reads
-  (`STAGE_BYTES_MAX`, the same in both files); one setup at a time; the
-  stage folder removed on every exit, and the stale stages of a killed
-  helper removed by the next copy, as the SSH user. Add a smoke check for
-  each rule you change (`runner/smoke/setup.mjs`).
+  (`STAGE_BYTES_MAX`; `scripts/check` fails when its copies differ); one
+  setup at a time; the stage folder removed on every exit, and the stale
+  stages of a killed helper removed by the next copy, as the SSH user. Add
+  a smoke check for each rule you change (`runner/smoke/setup.mjs`).
 - Do not change the manifest `id` (`sagmans.tailscale-host`), the type id
   (`tailscale-host`) or the storage key shapes. Saved agents match on them.
   A new storage shape needs a new key suffix and a migration.
