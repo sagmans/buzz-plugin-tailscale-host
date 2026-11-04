@@ -73,12 +73,15 @@ README, "Add a host from the app"). It copies the files to a stage folder
 in `/tmp` as the SSH user. Root never runs a file from that folder: the root
 command carries `deploy/setup.sh` itself, which copies the files that the
 pinned SHA-256 manifest lists to a folder under `/run` that only root can
-write. It reads at most 16 MiB of them, and no link or other stage file. It
-checks each copied file against the manifest, and exits 80 on any difference
-or on a bigger file. The SSH user removes the stage after the install. If
-the helper is killed before that, the next copy to the machine removes the
-stage: it removes only the SSH user's own stage folders that are older than
-the longest setup. The manual steps here stay the reference.
+write. It reads at most 16 MiB of them, and no other stage file. It refuses
+a listed file that is itself a link. A link to a folder on the way to that
+file is followed, so the read can come from outside the stage; the size
+limit and the manifest check still apply to it. It checks each copied file
+against the manifest, and exits 80 on any difference or on a bigger file.
+The SSH user removes the stage after the install. If the helper is killed
+before that, the next copy to the machine removes the stage: it removes only
+the SSH user's own stage folders that are older than the longest setup. The
+manual steps here stay the reference.
 
 ```sh
 sudo runner/deploy/install.sh --dry-run                     # show every step, change nothing

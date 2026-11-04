@@ -121,9 +121,12 @@ program_root_only() {
 }
 
 # Reads one stage file into the copy, at most <max> bytes, and prints how
-# many it read. Fails on a link (nofollow) and never waits on a FIFO
-# (nonblock), so a swap in the stage cannot open a device as root or stop the
-# setup. One byte over <max> is read, so that a bigger file shows as too big.
+# many it read. Fails when the file itself is a link (nofollow), and never
+# waits on a FIFO (nonblock), so a swap in the stage cannot stop the setup.
+# nofollow does not cover a folder link on the path: such a read can come
+# from any file outside the stage, but the <max> bound and the manifest
+# check in copy_checked still hold for it. One byte over <max> is read, so
+# that a bigger file shows as too big.
 read_bounded() {
 	local from=$1 to=$2 max=$3
 	dd if="$from" of="$to" bs="$READ_BLOCK" count=$((max + 1)) \
