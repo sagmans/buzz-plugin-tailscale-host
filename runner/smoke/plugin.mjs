@@ -1000,6 +1000,15 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       JSON.stringify(sectionButtons) === JSON.stringify(["Claude", "Codex", "Goose", "Pi"].map((title) => `Sign in to ${title} on ${ADDED_HOST.label}`)) && section().querySelector("h3")?.textContent === "Harnesses",
       JSON.stringify(sectionButtons),
     );
+    // Once the owner left the result, Add a host means another host, not the old result.
+    await press(setupButton("Add a host"));
+    await until(setupForm, "add form after a finished setup");
+    check(
+      "plugin: Add a host after a finished setup is a blank form, not the old result",
+      !setupPage.node.querySelector('[aria-label="Still to do"]') && fieldControl(setupForm(), "Name")?.value === "" && fieldControl(setupForm(), "Address")?.value === "",
+    );
+    await press(setupPage.node.querySelector(`button[data-host="${ADDED_HOST.id}"]`));
+    await until(section, "the host's harnesses again");
     await act(async () => setupPage.node.querySelector(`button[aria-label="Sign in to Claude on ${ADDED_HOST.label}"]`).click());
     const startForm = () => setupPage.node.querySelector('form[aria-label="Start a sign-in"]');
     await until(startForm, "sign-in form");

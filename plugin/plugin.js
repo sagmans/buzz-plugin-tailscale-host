@@ -2861,6 +2861,16 @@ export async function apply(ctx) {
     React.useEffect(() => {
       void readHostsFile();
     }, []);
+    // A finished setup's result is for one look: the next Add a host is a new
+    // host. A failed one stays, because its error and its form are still to do.
+    // This hangs on the view and not on AddHostView, which also goes away while
+    // the hosts file reloads, and a setup that ended unseen still shows once.
+    React.useEffect(() => {
+      if (view !== ADD_VIEW) return undefined;
+      return () => {
+        if (setupRun.state === "done") resetSetup();
+      };
+    }, [view]);
     const ready = file.state === "ready";
     const selected = view === ADD_VIEW ? undefined : list.find((host) => host.id === view) ?? list[0];
     const signinHost = run.state === "running" && run.hostId !== selected?.id ? list.find((host) => host.id === run.hostId) : undefined;
