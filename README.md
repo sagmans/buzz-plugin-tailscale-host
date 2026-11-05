@@ -102,8 +102,13 @@ The first host is the default for new agents.
 
 ### Hosts in the app
 
-`hosts.json` is the one host list. Open **Settings > Plugins > Tailscale
-hosts** to see its hosts with their address and status, and to change it:
+`hosts.json` is the one host list. Open **Tailscale hosts** in the left
+panel. The page lists the hosts on the left, each with its status. On the
+right it shows the selected host's address and harnesses, or **Add a host**.
+**Settings > Plugins > Tailscale hosts** shows a summary and opens the page.
+A Desktop without plugin pages shows the whole page in that card.
+
+Use the page to change the list:
 
 | Action | Rule |
 | --- | --- |
@@ -133,26 +138,27 @@ that the machine:
   `registry.npmjs.org`. The setup installs the runner's own Node and the
   harnesses from there (see `runner/README.md`, "Node" and "Harnesses").
 
-Then:
+Then select **Add a host** on the page:
 
 1. Type a name and the machine's address: its MagicDNS name, for example
    `https://runner-host.example.ts.net`. The runner port is not needed.
-2. Type the SSH login and, if sudo asks for one, the sudo password. Check
-   the owner key and the relay: they come from the identity and community
-   that are open in the app.
-3. Select **Add host**. The page shows each step: check the machine, build
-   the runner, connect, install the runner's Node, copy, install the
-   harnesses, install, `tailscale serve`, add to `hosts.json`, check the
-   runner. If Tailscale SSH asks for a check, the page shows the link to
-   open.
+2. Type the SSH login and, if sudo asks for one, the sudo password. Under
+   **Identity and relay**, check the owner key and the relay: they come from
+   the identity and community that are open in the app.
+3. Select **Add host**. The form closes and the page shows each step: check
+   the machine, build the runner, connect, install the runner's Node, copy,
+   install the harnesses, install, `tailscale serve`, add to `hosts.json`,
+   check the runner. If Tailscale SSH asks for a check, the page shows the
+   link to open. If a step fails, **Back to the form** keeps what you typed,
+   except the password.
 4. Do the steps that the page lists at the end: sign in each harness (step
    5), and let only your login reach port 10000 in the tailnet policy.
-5. Select **Sign in** in that step, or under **Sign in to the harnesses**
-   on the page. Choose a sign-in, type the SSH login and the sudo password,
-   and select **Start**. The page shows the host's terminal: open the
-   sign-in link it shows, then type the code or key into **Answer** and
-   select **Send**. Do this once for each harness.
-   **Show what is signed in** lists what each harness has.
+5. Select **Sign in to the harnesses**, or select the host in the list. Each
+   harness shows its state, with a **Sign in** button. Choose how to sign in,
+   type the SSH login and the sudo password, and select **Start**. The page
+   shows the host's terminal: open the sign-in link it shows, then type the
+   code or key into **Answer** and select **Send**. Do this once for each
+   harness. **Show what is signed in** lists what each harness has.
 
 The setup copies only committed runner code: if `runner/` in this folder
 has changes that are not committed, it stops before it connects. It builds

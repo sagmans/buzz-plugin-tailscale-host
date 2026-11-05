@@ -67,7 +67,7 @@ BUZZ_RUNNER_BUNDLE=<dir>/buzz-runner.mjs node runner/smoke/run.mjs
 `deploy/install.sh` installs or updates everything as root. Run it again after
 each build; it is idempotent.
 
-The plugin's Settings page does the install and step 4 below (`tailscale
+The plugin's Tailscale hosts page does the install and step 4 below (`tailscale
 serve`) for you when you add a host, over Tailscale SSH (see the root
 README, "Add a host from the app"). It copies the files to a stage folder
 in `/tmp` as the SSH user. Root never runs a file from that folder: the root
@@ -163,7 +163,7 @@ The owner's steps after install:
    (checksum, signature or provenance) first. **Add host** does this step
    (see [Harnesses](#harnesses)).
 2. Sign each harness in as the harness user. **Sign in** on the plugin's
-   Settings page runs this for you over Tailscale SSH. By hand: `sudo -u
+   Tailscale hosts page runs this for you over Tailscale SSH. By hand: `sudo -u
    buzz-agent /usr/local/bin/buzz-login status`, then `buzz-login
    <harness>`.
 3. Check sudo for the nologin user: `sudo -u buzz-runner sudo -n -u buzz-agent
@@ -193,7 +193,7 @@ The runner service and the harness wrapper (as root, through sudo) run on
 Node 24 or later. A user who can change that Node, or a link or folder on
 its way to it, could thus run code as root.
 
-The setup from the Settings page gives the runner its own Node first, as
+The setup from the Tailscale hosts page gives the runner its own Node first, as
 root, with `deploy/node-setup.sh`. The script comes in the root command, as
 `deploy/setup.sh` does. It keeps a Node that is already at
 `/opt/buzz-runner/node` when it is the pinned version or newer and only
@@ -231,7 +231,7 @@ the Node path that its unit names, which is the same link.
 
 ### Harnesses
 
-The setup from the Settings page installs each missing harness as root,
+The setup from the Tailscale hosts page installs each missing harness as root,
 with `deploy/harnesses.sh`, before it installs the runner. `deploy/setup.sh`
 runs the script from its root-only copy of the stage, after the copy passed
 the pinned manifest.

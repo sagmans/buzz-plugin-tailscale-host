@@ -109,8 +109,8 @@ version fixes a security issue.
 Rules:
 
 - The owner signs in on the host with `buzz-login`, as the harness user:
-  from the Settings page (**Sign in**, `scripts/host-signin.mjs`), or in a
-  shell on the host.
+  from the Tailscale hosts page (**Sign in**, `scripts/host-signin.mjs`), or
+  in a shell on the host.
 - **Sign in** sends only fixed `buzz-login` commands. A key typed there goes
   from the page to the hosts helper and on to the terminal on the host. It
   is never saved or logged, and it is masked in the output that the page
