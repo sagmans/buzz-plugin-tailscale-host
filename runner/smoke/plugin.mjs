@@ -959,6 +959,13 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await act(async () => setupForm().requestSubmit());
     await until(() => setupPage.node.querySelector('li[data-step="machine"][data-state="failed"]') && setupButton("Back to the form"), "failed setup");
     check("plugin: a failed setup marks its step and says why, in place of the form", !setupForm() && setupPage.node.querySelector("[role=alert]")?.textContent === "No such machine." && !setupPage.node.innerHTML.includes("bad pass"));
+    // Add a host must answer on an ended setup's own view, as Back to the form does.
+    await press(setupButton("Add a host"));
+    await until(setupForm, "form from Add a host on an ended setup");
+    check("plugin: Add a host on an ended setup goes to the form", !setupPage.node.querySelector("[role=alert]") && fieldControl(setupForm(), "Name")?.value === "Bad Box");
+    await typeText(fieldControl(setupForm(), "sudo password"), "bad pass");
+    await act(async () => setupForm().requestSubmit());
+    await until(() => setupButton("Back to the form"), "failed setup again");
     await press(setupButton("Back to the form"));
     check(
       "plugin: back at the form, the values stay and the password is gone",

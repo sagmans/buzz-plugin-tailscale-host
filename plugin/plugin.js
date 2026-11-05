@@ -2878,6 +2878,12 @@ export async function apply(ctx) {
       setView(id);
       setNotice("");
     };
+    // The button must always answer: on an ended setup's own view, it goes to
+    // the form. From elsewhere it opens the view, so an unseen end shows first.
+    const onAdd = () => {
+      if (view === ADD_VIEW) resetSetup();
+      select(ADD_VIEW);
+    };
     // A save changes the hosts, so each is asked again for its status.
     const remove = (host) => {
       if (!active()) return;
@@ -2895,7 +2901,7 @@ export async function apply(ctx) {
       h(
         "div",
         { style: COLUMNS_STYLE },
-        h(HostList, { list, selected, adding: !selected, ready, running: setup.state === "running", onSelect: select, onAdd: () => select(ADD_VIEW) }),
+        h(HostList, { list, selected, adding: !selected, ready, running: setup.state === "running", onSelect: select, onAdd }),
         h(
           "div",
           { className: "grid gap-4", style: DETAIL_STYLE },
