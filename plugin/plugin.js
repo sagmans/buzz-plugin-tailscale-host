@@ -141,13 +141,16 @@ const LABELS = Object.freeze({
   save: "Save",
   saving: "Saving…",
   // The plugin's Settings page.
-  settingsIntro:
-    "These hosts are in hosts.json. New agent of the type Tailscale host can run on each of them; the first is the default. A change here saves hosts.json and is in use at once. You can also edit hosts.json by hand, then select Check again.",
-  addIntro:
-    "Add host installs buzz-runner on the machine over Tailscale SSH, with root, or aligns the runner already there, then adds the machine to hosts.json. It also installs the runner's own Node and each harness that the machine does not have yet. Then sign each harness in, under \"Sign in to the harnesses\" above. The machine needs Linux, an ACL tag, Tailscale SSH, and curl or wget.",
-  signInTitle: "Sign in to the harnesses",
-  signInIntro:
-    "An agent can work only when its harness on the host is signed in: Claude, Codex, Goose or Pi. Select Sign in for a host, choose the harness, and select Start. The host's terminal shows here: open the link that it shows, type the code or key in Answer, and select Send. Do this once for each harness.",
+  summaryIntro: "New agent can run on each of these hosts. Add hosts and sign their harnesses in on the Tailscale hosts page.",
+  hostsFileNote: "New agent offers these hosts; the first is the default. You can also edit hosts.json by hand, then select Check again.",
+  addIntro: "This installs buzz-runner on the machine over Tailscale SSH, or aligns the runner already there. It also installs the runner's own Node and each harness that the machine does not have yet.",
+  addNeeds: "The machine needs Linux, an ACL tag, Tailscale SSH, and curl or wget.",
+  sshLoginHelp: "The Linux user that Tailscale SSH signs you in as. Empty: your user name here.",
+  sudoHelp: "Only for a login that sudo asks a password of. It goes to sudo on the machine, and is not saved.",
+  signInTitle: "Harnesses",
+  harnessesIntro: "An agent can work only when its harness on this host is signed in.",
+  signInIntro: "This runs on the host's own terminal, as the harness user.",
+  signInSteps: "Follow the terminal: open the link that it shows, type the code or key in Answer, and select Send.",
   noHosts: "No Tailscale hosts. Add one in Settings > Plugins > Tailscale hosts.",
   helperMissing: "This version of Buzz Desktop cannot run the hosts helper, which this plugin needs to reach its hosts.",
   helperSilent:
@@ -198,6 +201,36 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const SETTINGS_CARD_ID = "hosts";
 const SETTINGS_TITLE = "Tailscale hosts";
 const SETTINGS_GROUP = "Plugins";
+// The Hosts page in the left panel, as Usage has one. Its icon is an image
+// because Desktop takes only a data: image for a page. The stroke is a mid
+// gray: an image cannot use the theme's currentColor.
+const HOSTS_PAGE_ID = "hosts";
+const HOSTS_PAGE_ICON =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='7' rx='2'/%3E%3Crect x='3' y='13' width='18' height='7' rx='2'/%3E%3Cpath d='M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6'/%3E%3C/svg%3E";
+const PAGE_ICON_SIZE = 16;
+const STEP_MARK_SIZE = 16;
+// The page's view that shows Add a host instead of one host. A host id starts
+// with a letter or a digit (HOST_ID), so it can never equal this.
+const ADD_VIEW = "+add";
+// What a state's dot looks like: Desktop's status tokens, so that the dots
+// follow the theme. The words beside a dot carry the meaning.
+const TONE_COLORS = Object.freeze({ good: "var(--status-online)", wait: "var(--status-away)", bad: "var(--color-danger)", off: "var(--status-offline)" });
+// The page's layout. Desktop's Tailwind build holds only the classes that
+// Desktop itself uses, so a size that it lacks is an inline style here.
+const DOT_STYLE = Object.freeze({ display: "inline-block", flex: "none", width: "0.5rem", height: "0.5rem", borderRadius: "50%" });
+const COLUMNS_STYLE = Object.freeze({ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: "1.5rem" });
+const LIST_STYLE = Object.freeze({ flex: "1 1 15rem", maxWidth: "20rem", minWidth: 0 });
+const DETAIL_STYLE = Object.freeze({ flex: "3 1 24rem", minWidth: 0 });
+const CARD_STYLE = Object.freeze({ padding: "1.25rem", borderRadius: "0.75rem", border: "1px solid var(--border-standard)" });
+const FIELDSET_STYLE = Object.freeze({ border: 0, margin: 0, padding: 0, minWidth: 0 });
+const LEGEND_STYLE = Object.freeze({ padding: 0, marginBottom: "0.5rem" });
+const DISCLOSED_STYLE = Object.freeze({ marginTop: "0.75rem" });
+const STEP_ROW_STYLE = Object.freeze({ display: "flex", alignItems: "flex-start", gap: "0.75rem" });
+const STEP_MARK_STYLE = Object.freeze({ display: "flex", flex: "none", alignItems: "center", justifyContent: "center", width: "1rem", height: "1.25rem" });
+const GROW_STYLE = Object.freeze({ flex: "1 1 auto", minWidth: 0 });
+const TERMINAL_STYLE = Object.freeze({ padding: "0.75rem", borderRadius: "0.5rem", border: "1px solid var(--border-standard)", fontFamily: "ui-monospace, monospace" });
+const PAGE_SCROLL_STYLE = Object.freeze({ flex: "1 1 0", minHeight: 0, overflowY: "auto" });
+const PAGE_BODY_STYLE = Object.freeze({ padding: "var(--space-panel-inset, 1.25rem)", maxWidth: "64rem" });
 const ORIGIN_EXAMPLE = "https://runner-host.example.ts.net";
 // The port of the runner's tailscale serve (scripts/build-plugin.mjs
 // RUNNER_PORT). The owner knows the machine, not where the runner listens,
@@ -225,24 +258,47 @@ const SETUP_IDLE_MS = 1020000;
 // The only links a setup shows: a Tailscale SSH check, which the user opens
 // to approve the connection (scripts/host-setup.mjs CHECK_LINK_RE).
 const CHECK_LINK = /^https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.-]{1,200}$/;
-// The sign-ins that Sign in offers, with the words the page shows: the
-// helper takes only these keys (scripts/host-signin.mjs SIGNIN_COMMANDS).
-const SIGNIN_COMMANDS = Object.freeze([
-  ["status", "Show what is signed in"],
-  ["claude", "Claude: sign in with claude.ai"],
-  ["claude-console", "Claude: sign in with the Anthropic Console"],
-  ["codex-device", "Codex: sign in with a device code"],
-  ["codex-api-key", "Codex: enter an API key"],
-  ["goose-key", "Goose: enter a provider key"],
-  ["goose-oauth", "Goose: sign in with a device code"],
-  ["goose-default", "Goose: choose the default model"],
-  ["pi-key", "Pi: enter a provider key"],
-  ["pi-oauth", "Pi: sign in"],
-  ["pi-default", "Pi: choose the default model"],
+// The sign-ins that the Hosts page offers, by harness, with the words the page
+// shows: the helper takes only these keys (scripts/host-signin.mjs
+// SIGNIN_COMMANDS). The first method of a harness is its usual one.
+const SIGNIN_HARNESSES = Object.freeze([
+  {
+    id: "claude-code",
+    title: "Claude",
+    methods: [
+      ["claude", "claude.ai account", "Sign in with a browser and a Claude subscription."],
+      ["claude-console", "Anthropic Console", "Sign in with a browser and API billing."],
+    ],
+  },
+  {
+    id: "codex",
+    title: "Codex",
+    methods: [
+      ["codex-device", "Device code", "Sign in with a browser and a one-time code."],
+      ["codex-api-key", "API key", "Type a key in Answer."],
+    ],
+  },
+  {
+    id: "goose",
+    title: "Goose",
+    methods: [
+      ["goose-key", "Provider key", "Type a provider key in Answer."],
+      ["goose-oauth", "Device code", "Sign in with a browser and a one-time code."],
+      ["goose-default", "Default model", "Choose the model that new agents start with."],
+    ],
+  },
+  {
+    id: "pi",
+    title: "Pi",
+    methods: [
+      ["pi-key", "Provider key", "Type a provider key in Answer."],
+      ["pi-oauth", "Browser", "Sign in with a browser."],
+      ["pi-default", "Default model", "Choose the model that new agents start with."],
+    ],
+  },
 ]);
-// The id of the setup's "sign each harness in" step (scripts/host-setup.mjs
-// manualSteps): the page puts a Sign in button in that step.
-const SIGN_IN_STEP = "sign-in";
+// The sign-in command that only shows what is signed in; it has no harness.
+const SIGNIN_STATUS = "status";
 // The longest a sign-in may stay without new output: the owner signs in
 // in a browser meanwhile, and the helper ends a sign-in after 20 min.
 const SIGNIN_IDLE_MS = 1260000;
@@ -473,10 +529,10 @@ function makeIcons(h) {
   };
 }
 
-/** Desktop's Tabler outline icons (chevron-down, check), kept apart from
+/** Desktop's Tabler outline icons (chevron-down, check, x, loader-2), kept apart from
  * the harness marks so a harness id can never pick one. */
 function makeGlyphs(h) {
-  // Desktop's Tabler outline icons (chevron-down, check), drawn as Tabler
+  // Desktop's Tabler outline icons, drawn as Tabler
   // draws them so global `.tabler-icon` rules apply alike. MIT © Tabler.
   const tabler = (name, d) =>
     function TablerIcon({ size = 24, className, ...props }) {
@@ -499,7 +555,12 @@ function makeGlyphs(h) {
         h("path", { d }),
       );
     };
-  return { caret: tabler("chevron-down", "M6 9l6 6l6 -6"), check: tabler("check", "M5 12l5 5l10 -10") };
+  return {
+    caret: tabler("chevron-down", "M6 9l6 6l6 -6"),
+    check: tabler("check", "M5 12l5 5l10 -10"),
+    cross: tabler("x", "M18 6l-12 12M6 6l12 12"),
+    spinner: tabler("loader-2", "M12 3a9 9 0 1 0 9 9"),
+  };
 }
 
 /** Moves the agent-to-host map of earlier builds to this build's keys and
@@ -1017,8 +1078,14 @@ export async function apply(ctx) {
   // Desktop's community reader, if any (injected at the end of apply): it
   // names the owner and the relay a new host's config gets.
   let communityReader;
-  const SETUP_IDLE = Object.freeze({ state: "idle", steps: Object.freeze({}), result: undefined, error: undefined });
+  const SETUP_IDLE = Object.freeze({ state: "idle", label: "", steps: Object.freeze({}), result: undefined, error: undefined });
   let setupRun = SETUP_IDLE;
+  // The add form's values while a setup runs or after it failed, so that the
+  // owner corrects one field and not all. Never the password.
+  let setupForm = null;
+  // The SSH login last used on each host, so that the next sign-in there asks
+  // only for the password. In memory only; a login name is not a secret.
+  const sshLogins = new Map();
   const setSetupRun = (change) => {
     setupRun = Object.freeze({ ...setupRun, ...change });
     emit();
@@ -1033,9 +1100,8 @@ export async function apply(ctx) {
   }
 
   /** What a finished setup reports: the host it added and the steps left
-   * to the owner, each with a command to copy. The host id and the step id
-   * let the sign-in step offer its Sign in button in place; an id that is
-   * not valid gives no button. */
+   * to the owner, each with a command to copy. The host id lets the result
+   * open that host; an id that is not valid gives no button. */
   function parseSetupResult(reply) {
     const manual = Array.isArray(reply.manual) ? reply.manual.slice(0, MANUAL_MAX) : [];
     const hostId = typeof reply.host?.id === "string" && HOST_ID.test(reply.host.id) ? reply.host.id : undefined;
@@ -1048,7 +1114,7 @@ export async function apply(ctx) {
         manual
           .filter((entry) => entry && typeof entry.text === "string")
           .map((entry) =>
-            Object.freeze({ id: entry.id === SIGN_IN_STEP ? SIGN_IN_STEP : undefined, text: text(entry.text, DETAIL_MAX), command: text(entry.command, COMMAND_MAX) }),
+            Object.freeze({ text: text(entry.text, DETAIL_MAX), command: text(entry.command, COMMAND_MAX) }),
           ),
       ),
     });
@@ -1078,7 +1144,7 @@ export async function apply(ctx) {
    * and nowhere else: not into the store, a log or an error. */
   async function startSetup({ address, sshUser, sudoPassword, ownerPubkey, relay, label }) {
     if (setupRun.state === "running") throw new HostConfigError("A setup is already running.", { op: "setup" });
-    setSetupRun({ ...SETUP_IDLE, state: "running" });
+    setSetupRun({ ...SETUP_IDLE, state: "running", label });
     // Ids that agents on this device still name stay taken, so a new host
     // never takes over the agents of a host removed by hand.
     const reservedIds = [...new Set(placedHostIds().filter((id) => typeof id === "string" && HOST_ID.test(id)))];
@@ -1089,19 +1155,27 @@ export async function apply(ctx) {
         if (entry && !disposed) setSetupRun({ steps: Object.freeze({ ...setupRun.steps, [entry[0]]: entry[1] }) });
       });
       if (disposed) return;
-      setSetupRun({ state: "done", result: parseSetupResult(reply) });
+      const result = parseSetupResult(reply);
+      if (result.hostId) sshLogins.set(result.hostId, sshUser);
+      setupForm = null;
+      setSetupRun({ state: "done", result });
       void refresh();
     } catch (error) {
       if (!disposed) setSetupRun({ state: "failed", error: errorText(error) });
     }
   }
 
+  /** Back to the form, once a setup has ended. */
+  function resetSetup() {
+    if (setupRun.state !== "running") setSetupRun(SETUP_IDLE);
+  }
+
   // ---- Harness sign-in -------------------------------------------------------
-  // Settings > Tailscale hosts > Sign in: the one sign-in that may run, a
+  // The Hosts page > a host > Sign in: the one sign-in that may run, a
   // terminal on the machine that runs buzz-login as the harness user
   // (scripts/host-signin.mjs). Kept here, as the setup is, so a sign-in that
   // waits for the owner's browser goes on when the page closes and opens.
-  const SIGNIN_IDLE = Object.freeze({ state: "idle", hostId: "", output: "", link: undefined, error: undefined, code: undefined });
+  const SIGNIN_IDLE = Object.freeze({ state: "idle", hostId: "", harness: null, output: "", link: undefined, error: undefined, code: undefined });
   let signinRun = SIGNIN_IDLE;
   const setSigninRun = (change) => {
     signinRun = Object.freeze({ ...signinRun, ...change });
@@ -1110,9 +1184,9 @@ export async function apply(ctx) {
 
   /** Runs one sign-in through the helper. The password goes into the
    * request and nowhere else: not into the store, a log or an error. */
-  async function startSignIn({ hostId, sshUser, sudoPassword, command }) {
+  async function startSignIn({ hostId, harness, sshUser, sudoPassword, command }) {
     if (signinRun.state === "running") throw new HostConfigError("A sign-in is already running.", { op: "signin" });
-    setSigninRun({ ...SIGNIN_IDLE, state: "running", hostId });
+    setSigninRun({ ...SIGNIN_IDLE, state: "running", hostId, harness });
     try {
       const reply = await helper.call({ op: "signin", signin: { host: hostId, sshUser, sudoPassword, command } }, SIGNIN_IDLE_MS, (event) => {
         if (disposed || !event) return;
@@ -1132,6 +1206,11 @@ export async function apply(ctx) {
    * kept: a line may be a key. */
   const sendSignInInput = (line) => helper.call({ op: "signin-input", text: line }, REQUEST_TIMEOUT_MS);
   const cancelSignIn = () => helper.call({ op: "signin-cancel" }, REQUEST_TIMEOUT_MS);
+
+  /** Forgets a sign-in that has ended, so that the next one starts clean. */
+  function resetSignIn() {
+    if (signinRun.state !== "running") setSigninRun(SIGNIN_IDLE);
+  }
 
   function fileHost(list, id) {
     const host = list.find((entry) => entry.id === id);
@@ -2152,7 +2231,7 @@ export async function apply(ctx) {
     );
   }
 
-  // ---- The plugin's Settings page -------------------------------------------
+  // ---- The Hosts page and the Settings card ---------------------------------
 
   /** Edit form for one listed host: a plain save of hosts.json, with no
    * setup. Errors stay beside the form until the owner types again. */
@@ -2214,50 +2293,89 @@ export async function apply(ctx) {
     );
   }
 
-  const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for you", done: "Done", failed: "Failed" });
+  // The state of one step, in the words and with the mark the page shows.
+  const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for you", failed: "Failed" });
 
-  /** The setup's steps in order, each with its state and what it found. */
+  /** Desktop's content header (shared/design-system/ui/Header.tsx): one
+   * heading shape for every part of the page, so the parts read as sections. */
+  function ContentHeader({ title, subtitle, actions, level = 2, inline = false }) {
+    return h(
+      "div",
+      { "data-buzz-ui": "", className: "buzz-content-header", "data-inline": inline || undefined },
+      h(
+        "div",
+        { className: "buzz-content-header-copy" },
+        h(`h${level}`, { className: "buzz-content-header-title" }, title),
+        subtitle ? h("p", { className: "buzz-content-header-subtitle" }, subtitle) : null,
+      ),
+      actions ? h("div", { className: "buzz-content-header-actions" }, actions) : null,
+    );
+  }
+
+  /** A state a reader takes in at a glance. The word beside it carries the
+   * meaning, so the color is never the only signal. */
+  function StateDot({ tone }) {
+    return h("span", { "aria-hidden": "true", "data-tone": tone, style: { ...DOT_STYLE, background: TONE_COLORS[tone] } });
+  }
+
+  /** The mark of one setup step: pending, running, waiting, done or failed. */
+  function StepMark({ state }) {
+    if (state === "done") return h(glyphs.check, { size: STEP_MARK_SIZE, "aria-hidden": "true", style: { color: TONE_COLORS.good } });
+    if (state === "failed") return h(glyphs.cross, { size: STEP_MARK_SIZE, "aria-hidden": "true", style: { color: TONE_COLORS.bad } });
+    if (state === "running") return h(glyphs.spinner, { size: STEP_MARK_SIZE, "aria-hidden": "true", className: "motion-safe:animate-spin" });
+    return h(StateDot, { tone: state === "waiting" ? "wait" : "off" });
+  }
+
+  /** A link the owner must open, set apart from the steps and the terminal
+   * so that it is not lost among them. Only a checked Tailscale link comes
+   * here (CHECK_LINK). */
+  function ApproveLink({ link }) {
+    return h(
+      "p",
+      { className: "m-0 text-body-sm" },
+      "Open this link to approve the connection: ",
+      h("a", { href: link, target: "_blank", rel: "noopener noreferrer" }, link),
+    );
+  }
+
+  /** The setup's steps in order, each with its mark and what it found. */
   function SetupSteps({ run }) {
     return h(
       "ol",
-      { "aria-label": "Setup steps", "aria-live": "polite", className: "m-0 grid gap-2 list-decimal pl-6 text-body-sm" },
+      { "aria-label": "Setup steps", "aria-live": "polite", className: "m-0 grid gap-3 list-none p-0 text-body-sm" },
       SETUP_STEPS.map(([key, words]) => {
         const step = run.steps[key];
+        const state = step ? step.state : "pending";
         return h(
           "li",
-          { key, "data-step": key, "data-state": step ? step.state : "pending" },
-          h("span", { className: step?.state === "failed" ? "text-danger" : undefined }, `${words}: ${step ? STEP_WORDS[step.state] : "Not started"}`),
-          step?.detail ? h("span", { className: "block text-secondary whitespace-pre-wrap" }, step.detail) : null,
-          step?.link
-            ? h(
-                "span",
-                { className: "block" },
-                "Open this link to approve the connection: ",
-                h("a", { href: step.link, target: "_blank", rel: "noopener noreferrer" }, step.link),
-              )
-            : null,
+          { key, "data-step": key, "data-state": state, style: STEP_ROW_STYLE },
+          h("span", { style: STEP_MARK_STYLE }, h(StepMark, { state })),
+          h(
+            "span",
+            { className: state === "pending" ? "text-secondary" : undefined, style: GROW_STYLE },
+            h("span", { className: state === "failed" ? "text-danger" : undefined }, words),
+            STEP_WORDS[state] ? h("span", { className: "text-secondary" }, ` · ${STEP_WORDS[state]}`) : null,
+            step?.detail ? h("span", { className: "block text-secondary whitespace-pre-wrap" }, step.detail) : null,
+            step?.link ? h(ApproveLink, { link: step.link }) : null,
+          ),
         );
       }),
     );
   }
 
   /** The steps a setup leaves to the owner, with a command to copy where a
-   * step has one. The sign-in step has its own Sign in button: the owner
-   * reads this at the end of the page, far from the sign-in section, and
-   * the button opens that section for this host. It shows only once the
-   * host is listed, as a sign-in runs only on a listed host. */
-  function SetupResult({ result, onSignIn }) {
+   * step has one. Signing the harnesses in is the next thing to do and it
+   * has its own place on the host's details, so the button goes there. It
+   * shows only once the host is listed: a sign-in runs only on a listed
+   * host. */
+  function SetupResult({ result, onOpenHost, onAddAnother }) {
     const list = useStore(() => HOSTS);
     const listed = Boolean(result.hostId && list.some((host) => host.id === result.hostId));
-    const signIn = (entry) =>
-      entry.id === SIGN_IN_STEP && listed && onSignIn
-        ? h("span", { className: "flex items-center gap-2" }, h(Button, { size: "sm", variant: "prominent", "aria-label": `Sign in on ${result.label}`, onClick: () => onSignIn(result.hostId) }, "Sign in"))
-        : null;
     return h(
       "div",
-      { "aria-label": "Still to do", role: "group", className: "grid gap-2 text-body-sm" },
+      { "aria-label": "Still to do", role: "group", className: "grid gap-3 text-body-sm" },
       h("p", { role: "status", className: "m-0" }, `${result.added ? "Added" : "Already listed:"} ${result.label}${result.version ? ` (buzz-runner ${result.version})` : ""}. New agent can use it now.`),
-      h("p", { className: "m-0" }, "Still to do:"),
+      h("h3", { className: "text-label-sm" }, "Next"),
       h(
         "ol",
         { className: "m-0 grid gap-2 list-decimal pl-6" },
@@ -2274,23 +2392,60 @@ export async function apply(ctx) {
                   h(Button, { size: "sm", onClick: () => void navigator.clipboard?.writeText(entry.command).catch(() => undefined) }, "Copy"),
                 )
               : null,
-            signIn(entry),
           ),
         ),
+      ),
+      h(
+        "div",
+        { className: "flex items-center gap-2" },
+        listed ? h(Button, { variant: "prominent", "aria-label": `Sign in on ${result.label}`, onClick: () => onOpenHost(result.hostId) }, "Sign in to the harnesses") : null,
+        h(Button, { onClick: onAddAnother }, "Add another host"),
       ),
     );
   }
 
-  /** Settings > Tailscale hosts > Add a host. Add host runs a setup: it
-   * installs buzz-runner on the machine the address names, or aligns the
-   * runner already there, then lists the host; each step shows here. */
-  function AddHostForm({ active, disabled, onSignIn }) {
-    const run = useStore(() => setupRun);
+  /** The setup's heading: what it does now, or how it ended. */
+  function setupTitle(run) {
+    const name = run.label || "the host";
+    if (run.state === "failed") return `Could not add ${name}`;
+    return run.state === "done" ? `Added ${name}` : `Adding ${name}`;
+  }
+
+  /** How far the setup is, in words: the count a long setup is judged by. */
+  function setupProgressLine(run) {
+    if (run.state === "failed") return "The setup stopped.";
+    if (run.state === "done") return "The setup is done.";
+    const done = SETUP_STEPS.filter(([key]) => run.steps[key]?.state === "done").length;
+    return `Step ${Math.min(done + 1, SETUP_STEPS.length)} of ${SETUP_STEPS.length}. You can leave this page: the setup goes on.`;
+  }
+
+  /** Add a host, once the setup started: the steps and their end. The form
+   * goes away so that the page shows one thing to look at. */
+  function SetupProgress({ run, onOpenHost }) {
+    return h(
+      "section",
+      { "aria-label": "Setup", className: "grid gap-4", style: CARD_STYLE },
+      h(ContentHeader, { title: setupTitle(run), subtitle: setupProgressLine(run) }),
+      h(SetupSteps, { run }),
+      run.state === "failed"
+        ? h(
+            "div",
+            { className: "grid gap-3" },
+            h("p", { role: "alert", className: "buzz-field-error" }, run.error),
+            h("div", null, h(Button, { onClick: resetSetup }, "Back to the form")),
+          )
+        : null,
+      run.state === "done" && run.result ? h(SetupResult, { result: run.result, onOpenHost, onAddAnother: resetSetup }) : null,
+    );
+  }
+
+  /** Add a host, the form. The fields that most owners never change start
+   * closed, and open when one of them is empty: a setup cannot run then. */
+  function AddHostForm({ active, disabled }) {
     const defaults = React.useMemo(communityDefaults, []);
-    const [values, setValues] = React.useState({ label: "", origin: "", sshUser: "", password: "", ...defaults });
+    const [values, setValues] = React.useState({ label: "", origin: "", sshUser: "", ...defaults, ...setupForm, password: "" });
     const [error, setError] = React.useState("");
     const ids = { label: React.useId(), origin: React.useId(), user: React.useId(), password: React.useId(), owner: React.useId(), relay: React.useId() };
-    const running = run.state === "running";
     const typed = (key) => (event) => {
       const { value } = event.target;
       setValues((now) => ({ ...now, [key]: value }));
@@ -2298,7 +2453,7 @@ export async function apply(ctx) {
     };
     const submit = (event) => {
       event.preventDefault();
-      if (!active() || running) return;
+      if (!active() || setupRun.state === "running") return;
       let setup;
       try {
         setup = checkNewHost(values);
@@ -2310,87 +2465,131 @@ export async function apply(ctx) {
       const sudoPassword = values.password;
       setValues((now) => ({ ...now, password: "" }));
       setError("");
+      // A failed setup comes back to these values, with no password.
+      setupForm = Object.freeze({ label: values.label, origin: values.origin, sshUser: values.sshUser, ownerPubkey: values.ownerPubkey, relay: values.relay });
       void startSetup({ ...setup, sudoPassword });
     };
     const field = (id, key, name, description, input = {}) =>
       h(
         Field,
         { label: name, controlId: id, description },
-        h(Input, { id, value: values[key], autoComplete: "off", autoCapitalize: "none", spellCheck: false, disabled: running, onChange: typed(key), ...input }),
+        h(Input, { id, value: values[key], autoComplete: "off", autoCapitalize: "none", spellCheck: false, onChange: typed(key), ...input }),
       );
     return h(
       "form",
-      { "aria-label": "Add a host", className: "grid gap-3", onSubmit: submit },
-      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.addIntro),
-      field(ids.label, "label", "Name", "Shown in New agent and in each agent's settings.", { maxLength: LABEL_MAX }),
-      field(ids.origin, "origin", "Address", `The machine's https:// MagicDNS name. Example: ${ORIGIN_EXAMPLE}`, { maxLength: ORIGIN_MAX, inputMode: "url", placeholder: ORIGIN_EXAMPLE }),
-      field(ids.user, "sshUser", "SSH login", "The Linux user that Tailscale SSH signs you in as. Empty: your user name here.", { maxLength: SSH_USER_MAX }),
-      field(ids.password, "password", "sudo password", "Only for a login that sudo asks a password of. It goes to sudo on the machine, and is not saved.", { type: "password", maxLength: PASSWORD_MAX }),
-      field(ids.owner, "ownerPubkey", "Owner key", "Your key in hex. Only you can make agents on this runner.", { maxLength: 64 }),
-      field(ids.relay, "relay", "Relay", `The relay the agents connect to. Example: ${RELAY_EXAMPLE}`, { maxLength: RELAY_MAX, inputMode: "url" }),
+      { "aria-label": "Add a host", className: "grid gap-5", style: CARD_STYLE, onSubmit: submit },
+      h(ContentHeader, { title: "Add a host", subtitle: `${LABELS.addIntro} ${LABELS.addNeeds}` }),
+      h(
+        "fieldset",
+        { className: "grid gap-3", style: FIELDSET_STYLE },
+        h("legend", { className: "text-label-sm", style: LEGEND_STYLE }, "Machine"),
+        field(ids.label, "label", "Name", "Shown in New agent and in each agent's settings.", { maxLength: LABEL_MAX }),
+        field(ids.origin, "origin", "Address", "The machine's https:// MagicDNS name, with no port.", { maxLength: ORIGIN_MAX, inputMode: "url", placeholder: ORIGIN_EXAMPLE }),
+      ),
+      h(
+        "fieldset",
+        { className: "grid gap-3", style: FIELDSET_STYLE },
+        h("legend", { className: "text-label-sm", style: LEGEND_STYLE }, "Access"),
+        field(ids.user, "sshUser", "SSH login", LABELS.sshLoginHelp, { maxLength: SSH_USER_MAX }),
+        field(ids.password, "password", "sudo password", LABELS.sudoHelp, { type: "password", maxLength: PASSWORD_MAX }),
+      ),
+      h(
+        "details",
+        { open: !defaults.ownerPubkey || !defaults.relay || undefined, className: "grid gap-3" },
+        h("summary", { className: "text-label-sm" }, "Identity and relay"),
+        h(
+          "div",
+          { className: "grid gap-3", style: DISCLOSED_STYLE },
+          field(ids.owner, "ownerPubkey", "Owner key", "Your key in hex. Only you can make agents on this runner.", { maxLength: 64 }),
+          field(ids.relay, "relay", "Relay", `The relay the agents connect to. Example: ${RELAY_EXAMPLE}`, { maxLength: RELAY_MAX, inputMode: "url" }),
+        ),
+      ),
       error ? h("p", { role: "alert", className: "buzz-field-error" }, error) : null,
-      h("div", null, h(Button, { type: "submit", variant: "prominent", loading: running, disabled: disabled && !running }, "Add host")),
-      run.state === "idle" ? null : h(SetupSteps, { run }),
-      run.state === "failed" ? h("p", { role: "alert", className: "buzz-field-error" }, run.error) : null,
-      // The sign-in starts with the login that the setup used, so the owner
-      // types only the password again.
-      run.state === "done" && run.result ? h(SetupResult, { result: run.result, onSignIn: onSignIn && ((hostId) => onSignIn(hostId, values.sshUser.trim())) }) : null,
+      h("div", null, h(Button, { type: "submit", variant: "prominent", disabled }, "Add host")),
     );
   }
 
-  /** Settings > Tailscale hosts > Sign in, the start: the sign-in to run
-   * and how to reach root on the host. */
-  function SignInStart({ host, sshUser = "", active, running, mine, onClose }) {
-    const [values, setValues] = React.useState({ sshUser, password: "", command: SIGNIN_COMMANDS[0][0] });
-    const ids = { user: React.useId(), password: React.useId() };
+  /** Add a host: the form, or the setup once there is one. */
+  function AddHostView({ active, disabled, onOpenHost }) {
+    const run = useStore(() => setupRun);
+    return run.state === "idle" ? h(AddHostForm, { active, disabled }) : h(SetupProgress, { run, onOpenHost });
+  }
+
+  /** One choice of a group, drawn as Desktop's Radio card. A native input
+   * keeps the keyboard and the form's own behavior; the plugin cannot use
+   * Desktop's Base UI component. */
+  function RadioCard({ name, label, description, checked, disabled, onSelect }) {
+    return h(
+      "label",
+      { className: "buzz-choice", "data-variant": "card", "data-size": "md" },
+      h("input", { type: "radio", className: "sr-only", name, checked, disabled, onChange: onSelect }),
+      h(
+        "span",
+        { "aria-hidden": "true", "data-buzz-ui": "", className: "buzz-radio", "data-variant": "card", "data-size": "md", "data-checked": checked ? "" : undefined, "data-unchecked": checked ? undefined : "" },
+        checked ? h("span", { className: "buzz-radio-indicator" }) : null,
+      ),
+      h(
+        "span",
+        null,
+        h("span", { className: "buzz-choice-label" }, label),
+        description ? h("span", { className: "buzz-choice-description" }, description) : null,
+      ),
+    );
+  }
+
+  /** The sign-in form: how to sign in, and how to reach root on the host. */
+  function SignInStart({ host, signing, active, blocked, onClose }) {
+    const harness = SIGNIN_HARNESSES.find((entry) => entry.id === signing.harness);
+    const [values, setValues] = React.useState({ sshUser: sshLogins.get(host.id) ?? "", password: "", command: harness ? harness.methods[0][0] : SIGNIN_STATUS });
+    const ids = { user: React.useId(), password: React.useId(), methods: React.useId() };
     const typed = (key) => (event) => {
       const { value } = event.target;
       setValues((now) => ({ ...now, [key]: value }));
     };
     const start = (event) => {
       event.preventDefault();
-      if (!active() || running) return;
+      if (!active() || blocked) return;
       // The password leaves the view with the request, as in Add host.
       const sudoPassword = values.password;
       setValues((now) => ({ ...now, password: "" }));
-      void startSignIn({ hostId: host.id, sshUser: values.sshUser.trim(), sudoPassword, command: values.command });
+      const sshUser = values.sshUser.trim();
+      sshLogins.set(host.id, sshUser);
+      void startSignIn({ hostId: host.id, harness: signing.harness, sshUser, sudoPassword, command: values.command });
     };
     return h(
       "form",
-      { "aria-label": "Start a sign-in", className: "grid gap-3", onSubmit: start },
-      h(Select, {
-        label: "Sign-in",
-        variant: "preference",
-        value: values.command,
-        disabled: running,
-        options: SIGNIN_COMMANDS.map(([value, label]) => ({ value, label })),
-        onValueChange: (command) => setValues((now) => ({ ...now, command })),
-      }),
+      { "aria-label": "Start a sign-in", className: "grid gap-4", onSubmit: start },
+      harness
+        ? h(
+            "div",
+            { role: "radiogroup", "aria-label": "How to sign in", "data-buzz-ui": "", className: "buzz-radio-group" },
+            harness.methods.map(([value, label, description]) =>
+              h(RadioCard, { key: value, name: ids.methods, label, description, checked: values.command === value, onSelect: () => setValues((now) => ({ ...now, command: value })) }),
+            ),
+          )
+        : null,
       h(
         Field,
-        { label: "SSH login", controlId: ids.user, description: "The Linux user that Tailscale SSH signs you in as. Empty: your user name here." },
-        h(Input, { id: ids.user, value: values.sshUser, maxLength: SSH_USER_MAX, autoComplete: "off", autoCapitalize: "none", spellCheck: false, disabled: running, onChange: typed("sshUser") }),
+        { label: "SSH login", controlId: ids.user, description: LABELS.sshLoginHelp },
+        h(Input, { id: ids.user, value: values.sshUser, maxLength: SSH_USER_MAX, autoComplete: "off", autoCapitalize: "none", spellCheck: false, onChange: typed("sshUser") }),
       ),
       h(
         Field,
-        { label: "sudo password", controlId: ids.password, description: "Only for a login that sudo asks a password of. It goes to sudo on the machine, and is not saved." },
-        h(Input, { id: ids.password, type: "password", value: values.password, maxLength: PASSWORD_MAX, autoComplete: "off", disabled: running, onChange: typed("password") }),
+        { label: "sudo password", controlId: ids.password, description: LABELS.sudoHelp },
+        h(Input, { id: ids.password, type: "password", value: values.password, maxLength: PASSWORD_MAX, autoComplete: "off", onChange: typed("password") }),
       ),
+      blocked ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, "A sign-in runs on another host. Finish it first.") : null,
       h(
         "div",
         { className: "flex items-center gap-2" },
-        h(Button, { type: "submit", variant: "prominent", loading: running && mine, disabled: running && !mine }, "Start"),
-        // A cancel that comes just after the end finds no sign-in; the end
-        // already shows, so there is nothing more to say.
-        running && mine ? h(Button, { onClick: () => void cancelSignIn().catch(() => undefined) }, "Cancel") : null,
-        running ? null : h(Button, { onClick: onClose }, "Close"),
+        h(Button, { type: "submit", variant: "prominent", disabled: blocked }, "Start"),
+        h(Button, { onClick: onClose }, "Close"),
       ),
     );
   }
 
-  /** Settings > Tailscale hosts > Sign in, the answer: one typed line to the
-   * running sign-in's terminal. */
-  function SignInAnswer({ active, onError }) {
+  /** One typed line to the running sign-in's terminal. */
+  function SignInAnswer({ active, onError, onCancel }) {
     const [line, setLine] = React.useState("");
     const id = React.useId();
     const send = (event) => {
@@ -2409,7 +2608,12 @@ export async function apply(ctx) {
         { label: "Answer", controlId: id, description: "A key, a pasted code, or a menu number. It is hidden as you type, goes only to the terminal, and is not saved." },
         h(Input, { id, type: "password", value: line, maxLength: SIGNIN_INPUT_MAX, autoComplete: "off", autoCapitalize: "none", spellCheck: false, onChange: (event) => setLine(event.target.value) }),
       ),
-      h("div", null, h(Button, { type: "submit" }, "Send")),
+      h(
+        "div",
+        { className: "flex items-center gap-2" },
+        h(Button, { type: "submit", variant: "prominent" }, "Send"),
+        h(Button, { onClick: onCancel }, "Cancel"),
+      ),
     );
   }
 
@@ -2420,158 +2624,349 @@ export async function apply(ctx) {
     return h("p", { role: "status", className: "m-0 text-body-sm" }, run.code === 0 ? "The sign-in ended." : `The sign-in ended with exit ${run.code}.`);
   }
 
-  /** Settings > Tailscale hosts > Sign in: buzz-login on the host, as the
-   * harness user. The machine's terminal shows here, and each line typed
-   * here goes to it, so the owner signs each harness in without a shell on
-   * the machine. */
-  function SignInPanel({ host, sshUser, active, onClose }) {
-    const run = useStore(() => signinRun);
+  /** A running or ended sign-in: what to do now, then the machine's terminal,
+   * so the owner signs in without a shell on the machine. */
+  function SignInTerminal({ run, active, onClose }) {
     const [error, setError] = React.useState("");
-    // A Sign in button may sit far from this panel (the setup's result is at
-    // the end of the page), so the panel comes into view when it opens.
-    const panel = React.useRef(null);
-    React.useEffect(() => {
-      panel.current?.scrollIntoView?.({ block: "nearest" });
-    }, []);
     const running = run.state === "running";
-    const mine = run.hostId === host.id && run.state !== "idle";
-    const link = mine && run.link ? h("p", { className: "m-0 text-body-sm" }, "Open this link to approve the connection: ", h("a", { href: run.link, target: "_blank", rel: "noopener noreferrer" }, run.link)) : null;
-    const output = mine && run.output ? h("pre", { role: "log", "aria-label": "Terminal on the host", className: "m-0 max-h-80 overflow-auto whitespace-pre-wrap break-all text-body-sm select-text" }, run.output) : null;
+    // A cancel that comes just after the end finds no sign-in; the end
+    // already shows, so there is nothing more to say.
+    const cancel = () => void cancelSignIn().catch(() => undefined);
+    const again = () => {
+      resetSignIn();
+      setError("");
+    };
     return h(
       "div",
-      { ref: panel, "aria-label": `Sign in on ${host.label}`, role: "group", className: "grid gap-3" },
-      h("h4", { className: "text-label-sm" }, `Sign in on ${host.label}`),
-      h(SignInStart, { host, sshUser, active, running, mine, onClose }),
-      link,
-      output,
-      running && mine ? h(SignInAnswer, { active, onError: setError }) : null,
-      mine ? signInEnd(run) : null,
+      { className: "grid gap-3" },
+      running ? h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.signInSteps) : signInEnd(run),
+      run.link ? h(ApproveLink, { link: run.link }) : null,
+      run.output ? h("pre", { role: "log", "aria-label": "Terminal on the host", className: "m-0 max-h-80 overflow-auto whitespace-pre-wrap break-all text-body-sm select-text", style: TERMINAL_STYLE }, run.output) : null,
+      running ? h(SignInAnswer, { active, onError: setError, onCancel: cancel }) : null,
       error ? h("p", { role: "alert", className: "buzz-field-error" }, error) : null,
-    );
-  }
-
-  /** Settings > Tailscale hosts > Sign in to the harnesses: a section of its
-   * own, with a heading, the steps in words and a Sign in button for each
-   * host, so the owner finds the sign-in without looking for it in a host's
-   * row. The one sign-in panel opens here. */
-  function SignInSection({ list, signing, active, onSignIn, onClose }) {
-    const host = signing ? list.find((entry) => entry.id === signing.id) : undefined;
-    return h(
-      "section",
-      { "aria-label": LABELS.signInTitle, className: "grid gap-3" },
-      h("h3", { className: "text-label-sm" }, LABELS.signInTitle),
-      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.signInIntro),
-      host
-        ? h(SignInPanel, { key: host.id, host, sshUser: signing.sshUser, active, onClose })
+      running
+        ? null
         : h(
             "div",
             { className: "flex items-center gap-2" },
-            list.map((entry) => h(Button, { key: entry.id, size: "sm", variant: "prominent", "aria-label": `Sign in on ${entry.label}`, onClick: () => onSignIn(entry.id) }, `Sign in on ${entry.label}`)),
+            h(Button, { variant: "prominent", onClick: onClose }, "Done"),
+            h(Button, { onClick: again }, "Try again"),
           ),
     );
   }
 
-  /** One host's row: its address and whether it answers. */
+  /** One sign-in on one host: `buzz-login` on the machine, as the harness
+   * user. It replaces the host's harness list while it is open, so that the
+   * owner has one thing to look at. */
+  function SignInPanel({ host, signing, active, onClose }) {
+    const run = useStore(() => signinRun);
+    const harness = SIGNIN_HARNESSES.find((entry) => entry.id === signing.harness);
+    const mine = run.hostId === host.id && run.state !== "idle";
+    const close = () => {
+      if (run.state !== "running") resetSignIn();
+      onClose();
+    };
+    return h(
+      "section",
+      { "aria-label": `Sign in on ${host.label}`, className: "grid gap-4", style: CARD_STYLE },
+      h(ContentHeader, { level: 3, inline: true, title: harness ? `Sign in to ${harness.title} on ${host.label}` : `Show what is signed in on ${host.label}`, subtitle: mine ? undefined : LABELS.signInIntro }),
+      mine ? h(SignInTerminal, { run, active, onClose: close }) : h(SignInStart, { host, signing, active, blocked: run.state === "running", onClose: close }),
+    );
+  }
+
+  /** What one harness can do on this host, in words. */
+  function harnessLine(host, harness) {
+    const status = statusOf(host.id);
+    if (status.state === "checking") return "Checking…";
+    if (status.state === "down") return "The host does not answer. You can still try to sign in.";
+    const entry = harnessOn(host.id, harness.id);
+    if (!entry) return "Not offered on this host.";
+    if (entry.ready) return ["Ready", entry.version, entry.account].filter(Boolean).join(" · ");
+    return entry.message || "Not ready.";
+  }
+
+  /** How one host stands in the list: enough to see which one needs work. */
+  function hostLine(host) {
+    const status = statusOf(host.id);
+    if (status.state === "checking") return "Checking…";
+    if (status.state === "down") return "Not reachable";
+    const ready = status.harnesses.filter((entry) => entry.ready).length;
+    return `Reachable · ${ready} of ${status.harnesses.length} ready`;
+  }
+
+  /** The tone of a host's dot: reachable with every harness ready, reachable
+   * with work left, or not reachable. */
+  function hostTone(host) {
+    const status = statusOf(host.id);
+    if (status.state === "checking") return "off";
+    if (status.state === "down") return "bad";
+    return status.harnesses.some((entry) => entry.ready) ? "good" : "wait";
+  }
+
+  /** One harness's row: its state and its Sign in. A harness that is not
+   * ready gets the prominent button, so the work left is what stands out. */
+  function HarnessRow({ host, harness, blocked, onSignIn }) {
+    const entry = harnessOn(host.id, harness.id);
+    const offered = statusOf(host.id).state !== "ok" || Boolean(entry);
+    return h(PreferenceRow, {
+      title: h("span", { className: "flex min-w-0 items-center gap-2" }, harnessIcon(harness.id), harness.title),
+      subtitle: harnessLine(host, harness),
+      trailing: offered
+        ? h(Button, { size: "sm", variant: entry?.ready ? "subtle" : "prominent", disabled: blocked, "aria-label": `Sign in to ${harness.title} on ${host.label}`, onClick: () => onSignIn(harness.id) }, entry?.ready ? "Sign in again" : "Sign in")
+        : null,
+    });
+  }
+
+  /** The host's harnesses, with what each needs. */
+  function HarnessSection({ host, signinHost, onSignIn, onShowSignIn }) {
+    const blocked = Boolean(signinHost);
+    return h(
+      "section",
+      { "aria-label": LABELS.signInTitle, className: "grid gap-3" },
+      h(ContentHeader, {
+        level: 3,
+        inline: true,
+        title: LABELS.signInTitle,
+        subtitle: LABELS.harnessesIntro,
+        actions: h(Button, { size: "sm", disabled: blocked, onClick: () => onSignIn(null) }, "Show what is signed in"),
+      }),
+      blocked
+        ? h(
+            "div",
+            { role: "status", className: "flex items-center gap-2 text-body-sm text-secondary" },
+            `A sign-in runs on ${signinHost.label}.`,
+            h(Button, { size: "sm", onClick: () => onShowSignIn(signinHost.id) }, "Show it"),
+          )
+        : null,
+      h(
+        SettingsGroup,
+        null,
+        SIGNIN_HARNESSES.map((harness) => h(HarnessRow, { key: harness.id, host, harness, blocked, onSignIn })),
+      ),
+    );
+  }
+
+  /** The right side of the page for one host: what it is, and what it needs. */
+  function HostDetail({ host, ready, busy, active, signing, signinHost, onSignIn, onShowSignIn, onCloseSignIn, onSaved, onRemove }) {
+    const [editing, setEditing] = React.useState(false);
+    const status = statusOf(host.id);
+    return h(
+      "div",
+      { className: "grid gap-5" },
+      h(ContentHeader, {
+        title: host.label,
+        subtitle: hostSubtitle(host, status),
+        actions: ready
+          ? h(
+              "div",
+              { className: "flex items-center gap-2" },
+              h(Button, { size: "sm", disabled: busy, "aria-label": `Edit ${host.label}`, onClick: () => setEditing(true) }, "Edit"),
+              h(Button, { size: "sm", disabled: busy, "aria-label": `Remove ${host.label}`, onClick: () => onRemove(host) }, "Remove"),
+            )
+          : null,
+      }),
+      editing
+        ? h(
+            "div",
+            { style: CARD_STYLE },
+            h(HostForm, {
+              host,
+              disabled: busy,
+              onDone: (saved) => {
+                setEditing(false);
+                onSaved(saved);
+              },
+              onCancel: () => setEditing(false),
+            }),
+          )
+        : null,
+      signing
+        ? h(SignInPanel, { key: `${host.id}:${signing.harness}`, host, signing, active, onClose: onCloseSignIn })
+        : h(HarnessSection, { host, signinHost, onSignIn, onShowSignIn }),
+    );
+  }
+
+  /** One host's address and whether it answers. */
   function hostSubtitle(host, status) {
     const reach = status.state === "checking" ? "Checking…" : status.state === "down" ? status.error : "Reachable";
     return `${host.origin} · ${reach}`;
   }
 
-  /** Settings > Plugins > Tailscale hosts: hosts.json, which New agent
-   * offers at once. */
-  function HostsSettings({ active }) {
+  /** The left side of the page: every host, and the two page-wide actions. */
+  function HostList({ list, selected, adding, ready, running, onSelect, onAdd }) {
+    const [checking, setChecking] = React.useState(false);
+    const check = () => {
+      setChecking(true);
+      refresh().finally(() => setChecking(false));
+    };
+    return h(
+      "nav",
+      { "aria-label": "Hosts", className: "grid gap-3", style: LIST_STYLE },
+      h(ContentHeader, { level: 2, title: "Hosts" }),
+      list.length
+        ? h(
+            "div",
+            { className: "grid gap-1" },
+            list.map((host) =>
+              h(
+                "button",
+                {
+                  key: host.id,
+                  type: "button",
+                  "data-buzz-ui": "",
+                  "data-host": host.id,
+                  "data-variant": "row",
+                  "data-multiline": "",
+                  "data-selected": host.id === selected?.id || undefined,
+                  "aria-current": host.id === selected?.id ? "page" : undefined,
+                  className: "navigation-item",
+                  onClick: () => onSelect(host.id),
+                },
+                h(StateDot, { tone: hostTone(host) }),
+                h(
+                  "span",
+                  { className: "navigation-item-label" },
+                  h("span", { className: "block" }, host.label),
+                  h("span", { className: "block text-body-sm text-secondary" }, hostLine(host)),
+                ),
+              ),
+            ),
+          )
+        : h("p", { className: "m-0 text-body-sm text-secondary" }, "No hosts yet."),
+      h(
+        "div",
+        { className: "flex items-center gap-2" },
+        ready ? h(Button, { variant: adding ? "subtle" : "prominent", onClick: onAdd }, running ? "Setup running…" : "Add a host") : null,
+        h(Button, { loading: checking, onClick: check }, "Check again"),
+      ),
+      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.hostsFileNote),
+    );
+  }
+
+  /** The whole hosts view: the Hosts page, or the Settings card on a Desktop
+   * with no pages. Hosts on the left, and on the right one thing at a time,
+   * so that the setup and a sign-in each have the room and the attention
+   * they need. New agent offers what hosts.json lists at once. */
+  function HostsView({ active }) {
     const file = useStore(() => hostsFile);
     const list = useStore(() => HOSTS);
     useStore(() => hosts);
-    const [editing, setEditing] = React.useState(null);
-    // The host whose sign-in panel is open, and the SSH login it starts
-    // with. A sign-in that still runs shows again when the page opens again.
-    const [signing, setSigning] = React.useState(() => (signinRun.state === "running" ? { id: signinRun.hostId, sshUser: "" } : null));
-    const openSignIn = (id, sshUser = "") => setSigning({ id, sshUser });
+    const run = useStore(() => signinRun);
+    const setup = useStore(() => setupRun);
+    // A sign-in or a setup that still runs shows again when the page opens.
+    const [view, setView] = React.useState(() => (setupRun.state === "running" ? ADD_VIEW : signinRun.state === "running" ? signinRun.hostId : ""));
+    const [signing, setSigning] = React.useState(() => (signinRun.state === "running" ? { id: signinRun.hostId, harness: signinRun.harness } : null));
     const [notice, setNotice] = React.useState("");
-    const [checking, setChecking] = React.useState(false);
     // The file may have changed by hand since the last read.
     React.useEffect(() => {
       void readHostsFile();
     }, []);
+    const ready = file.state === "ready";
+    const selected = view === ADD_VIEW ? undefined : list.find((host) => host.id === view) ?? list[0];
+    const signinHost = run.state === "running" && run.hostId !== selected?.id ? list.find((host) => host.id === run.hostId) : undefined;
+    const select = (id) => {
+      setView(id);
+      setNotice("");
+    };
     // A save changes the hosts, so each is asked again for its status.
-    const guard = (action) => {
+    const remove = (host) => {
       if (!active()) return;
-      action()
-        .then(() => refresh())
+      removeHost(host.id)
+        .then(() => {
+          setNotice(`Removed ${host.label}.`);
+          return refresh();
+        })
         .catch((cause) => setNotice(errorText(cause)));
     };
-    const ready = file.state === "ready";
+    return h(
+      "section",
+      { "aria-label": `${SETTINGS_TITLE} settings`, className: "grid gap-4" },
+      file.state === "error" ? h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, file.error) : null,
+      h(
+        "div",
+        { style: COLUMNS_STYLE },
+        h(HostList, { list, selected, adding: !selected, ready, running: setup.state === "running", onSelect: select, onAdd: () => select(ADD_VIEW) }),
+        h(
+          "div",
+          { className: "grid gap-4", style: DETAIL_STYLE },
+          notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, notice) : null,
+          selected
+            ? h(HostDetail, {
+                key: selected.id,
+                host: selected,
+                ready,
+                busy: file.busy,
+                active,
+                signing: signing?.id === selected.id ? signing : null,
+                signinHost,
+                onSignIn: (harness) => {
+                  resetSignIn();
+                  setSigning({ id: selected.id, harness });
+                },
+                onShowSignIn: (id) => {
+                  setSigning({ id, harness: run.harness });
+                  select(id);
+                },
+                onCloseSignIn: () => setSigning(null),
+                onSaved: (saved) => {
+                  setNotice(`Saved ${saved.label}.`);
+                  void refresh();
+                },
+                onRemove: remove,
+              })
+            : ready
+              ? h(AddHostView, { active, disabled: file.busy, onOpenHost: select })
+              : null,
+        ),
+      ),
+    );
+  }
+
+  /** The Hosts page: Desktop's full-page surface and panel header, as the
+   * Usage page draws them. The page owns its own scrolling. */
+  function HostsPage() {
+    return h(
+      "div",
+      { className: "h-full min-h-0" },
+      h(
+        "section",
+        { "aria-label": SETTINGS_TITLE, "data-buzz-surface": "", "data-shape": "panel", className: "h-full min-h-0" },
+        h(
+          "div",
+          { className: "flex h-full min-h-0 flex-col" },
+          h(
+            "header",
+            { "data-buzz-ui": "", className: "panel-header", "data-variant": "default" },
+            h("div", { className: "panel-header-title" }, h("div", { className: "panel-header-label" }, h("span", { className: "panel-header-label-icon", "aria-hidden": "true" }, h(icons.host, { size: PAGE_ICON_SIZE })), h("h2", null, SETTINGS_TITLE))),
+          ),
+          h("div", { style: PAGE_SCROLL_STYLE }, h("div", { style: PAGE_BODY_STYLE }, h(HostsView, { active: () => !disposed }))),
+        ),
+      ),
+    );
+  }
+
+  /** Settings > Plugins > Tailscale hosts when Desktop has pages: how the
+   * hosts stand, and the way to the page that manages them. */
+  function HostsSummary() {
+    const list = useStore(() => HOSTS);
+    useStore(() => hosts);
     return h(
       "section",
       { "aria-label": `${SETTINGS_TITLE} settings`, className: "grid gap-4" },
       h("h2", null, SETTINGS_TITLE),
-      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.settingsIntro),
-      file.state === "error" ? h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, file.error) : null,
-      h(
-        SettingsGroup,
-        null,
-        list.map((host) =>
-          editing === host.id
-            ? h(HostForm, {
-                key: host.id,
-                host,
-                disabled: file.busy,
-                onDone: (saved) => {
-                  setEditing(null);
-                  setNotice(`Saved ${saved.label}.`);
-                  void refresh();
-                },
-                onCancel: () => setEditing(null),
-              })
-            : h(PreferenceRow, {
-                key: host.id,
-                title: host.label,
-                subtitle: hostSubtitle(host, statusOf(host.id)),
-                trailing: ready
-                  ? h(
-                      "div",
-                      { className: "flex items-center gap-2" },
-                      h(Button, { size: "sm", disabled: file.busy, "aria-label": `Edit ${host.label}`, onClick: () => setEditing(host.id) }, "Edit"),
-                      h(
-                        Button,
-                        {
-                          size: "sm",
-                          disabled: file.busy,
-                          "aria-label": `Remove ${host.label}`,
-                          onClick: () =>
-                            guard(async () => {
-                              await removeHost(host.id);
-                              setNotice(`Removed ${host.label}.`);
-                            }),
-                        },
-                        "Remove",
-                      ),
-                    )
-                  : null,
-              }),
-        ),
-      ),
-      notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, notice) : null,
-      ready && list.length ? h(SignInSection, { list, signing, active, onSignIn: openSignIn, onClose: () => setSigning(null) }) : null,
-      ready ? h("h3", { className: "text-label-sm" }, "Add a host") : null,
-      ready ? h(AddHostForm, { active, disabled: file.busy, onSignIn: openSignIn }) : null,
-      h(
-        "div",
-        null,
-        h(
-          Button,
-          {
-            loading: checking,
-            onClick: () => {
-              setChecking(true);
-              refresh().finally(() => setChecking(false));
-            },
-          },
-          "Check again",
-        ),
-      ),
+      h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.summaryIntro),
+      list.length ? h(SettingsGroup, null, list.map((host) => h(PreferenceRow, { key: host.id, title: host.label, subtitle: hostLine(host) }))) : null,
+      h("div", null, h(Button, { variant: "prominent", onClick: () => void openHostsPage?.() }, `Open ${SETTINGS_TITLE}`)),
     );
+  }
+
+  // Opens the Hosts page; set only when Desktop gives pages and navigation.
+  let openHostsPage;
+
+  /** The Settings card: a summary beside the page, or the whole view on a
+   * Desktop with no pages, so that the hosts stay reachable there. */
+  function HostsSettings({ active }) {
+    return openHostsPage ? h(HostsSummary) : h(HostsView, { active });
   }
 
   // The first read, before the type: its picker title names the hosts. A
@@ -2649,10 +3044,15 @@ export async function apply(ctx) {
     },
   });
 
-  // The Settings page is optional: inside a scope, so the agent type still
-  // works on a Desktop without settings cards, and the card goes with it.
+  // The page and the card are optional: inside scopes, so the agent type still
+  // works on a Desktop without them. The page's scope comes first: the card
+  // shows a summary when the page exists, and the whole view when it does not.
   if (typeof ctx.inject === "function") {
     ctx.inject(["communityReader"], (scope) => void (communityReader = scope.communityReader));
+    ctx.inject(["pages", "navigation"], (scope) => {
+      scope.pages.register({ id: HOSTS_PAGE_ID, title: SETTINGS_TITLE, component: HostsPage, primary: true, icon: HOSTS_PAGE_ICON, layout: "workspace" });
+      openHostsPage = () => scope.navigation.open({ version: 1, kind: "plugin", pluginId: PLUGIN_ID, pageId: HOSTS_PAGE_ID });
+    });
     ctx.inject(["settingsCards"], (scope) => {
       scope.settingsCards.register({ id: SETTINGS_CARD_ID, title: SETTINGS_TITLE, group: SETTINGS_GROUP, icon: icons.host, component: HostsSettings });
     });

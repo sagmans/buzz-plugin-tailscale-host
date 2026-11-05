@@ -603,13 +603,13 @@ function sweepWork(dir) {
 const sweptText = ([removed, kept], noun) =>
   [removed && `${removed} old ${noun}${removed === 1 ? "" : "s"} removed`, kept && `${kept} old ${noun}${kept === 1 ? "" : "s"} not removed`].filter(Boolean);
 
-/** The steps that stay with the user. The sign-ins are on the Settings page
+/** The steps that stay with the user. The sign-ins are on the Hosts page
  * (Sign in, host-signin.mjs), so none needs a shell on the machine; the
  * harness user is the one setup.sh reported, so an aligned host with its own
  * names shows its own. */
 function manualSteps(peer, label, agentUser) {
   return [
-    { id: "sign-in", text: `Sign each harness in: select Sign in here, or under "Sign in to the harnesses" on this page. It runs buzz-login on ${label} as ${agentUser}.` },
+    { id: "sign-in", text: `Sign each harness in: select Sign in to the harnesses below. It runs buzz-login on ${label} as ${agentUser}.` },
     { id: "policy", text: `In the tailnet policy, let only your own login reach port ${RUNNER_PORT} on ${peer.tags.join(", ")}.` },
   ];
 }

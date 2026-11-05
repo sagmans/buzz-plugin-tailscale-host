@@ -346,7 +346,7 @@ async function setupScenarios({ check, temp }) {
   check("setup: the copy and setup.sh run on the runner-only Node", rootRun?.port === "10000" && rootRun.node === RUNNER_NODE && done.calls[2]?.argv.at(-1).startsWith(`${RUNNER_NODE} -e `), JSON.stringify(rootRun && { port: rootRun.port, node: rootRun.node }));
   check(
     "setup: the manual steps send the sign-ins to the page's Sign in and name the tag's port rule, with no harness install and no shell command",
-    !done.result?.manual?.some((step) => step.id === "harnesses" || step.command) && done.result?.manual?.some((step) => step.id === "sign-in" && /select Sign in here, or under "Sign in to the harnesses" on this page\. It runs buzz-login on .* as buzz-agent\./.test(step.text)) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)),
+    !done.result?.manual?.some((step) => step.id === "harnesses" || step.command) && done.result?.manual?.some((step) => step.id === "sign-in" && /select Sign in to the harnesses below\. It runs buzz-login on .* as buzz-agent\./.test(step.text)) && done.result.manual.some((step) => /port 10000 on tag:smoke/.test(step.text)),
     JSON.stringify(done.result?.manual),
   );
   check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));

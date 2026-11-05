@@ -643,9 +643,10 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await request("DELETE", `/v1/agents/${owned.pubkey}`);
     localStorage.removeItem(ownedKey);
 
-    // ---- The plugin's Settings page: hosts.json through the hosts helper --
+    // ---- The hosts view: hosts.json through the hosts helper ---------------
     // A fresh load of the one-host build, with Desktop's optional
-    // settingsCards service injected as Desktop does it (ctx.inject). Its
+    // settingsCards service injected as Desktop does it (ctx.inject), and no
+    // pages: the card then holds the whole view, so every host stays reachable. Its
     // saves change this smoke's hosts.json, as they change the user's; the
     // build must stay as it is, because no change needs Update any more.
     const cards = [];
@@ -656,7 +657,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       inject(names, run) {
         // communityReader stays out here, as on a Desktop without it: Add
         // host's owner and relay fields then start empty.
-        if (JSON.stringify(names) === JSON.stringify(["communityReader"])) return;
+        if (["communityReader", "pages"].includes(names[0])) return;
         if (JSON.stringify(names) !== JSON.stringify(["settingsCards"])) throw new Error(`unexpected inject ${names}`);
         run({ settingsCards: { register: (card) => cards.push(card) } });
       },
@@ -675,12 +676,17 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     );
     let page = mount();
     await page.render(React.createElement(card.component, { active: () => true }));
-    const rowFor = (label) => [...page.node.querySelectorAll(".buzz-preference-row")].find((row) => row.querySelector(".buzz-preference-row-label")?.textContent === label);
+    const hostNames = () => [...page.node.querySelectorAll("button[data-host] .navigation-item-label > span:first-child")].map((item) => item.textContent);
+    const rowFor = (label) => [...page.node.querySelectorAll("button[data-host]")].find((row) => row.querySelector(".navigation-item-label > span:first-child")?.textContent === label);
+    // The selected host's address and whether it answers.
+    const hostDetail = () => page.node.querySelector(".buzz-content-header-subtitle")?.textContent ?? "";
     const buttonFor = (label, name) => page.node.querySelector(`button[aria-label="${name} ${label}"]`);
     const addForm = () => page.node.querySelector('form[aria-label="Add a host"]');
     const submit = (form) => act(async () => form.requestSubmit());
-    const settled = () => until(() => addForm() && !page.node.querySelector("button[disabled]") && !page.node.querySelector("[data-loading]"), "helper call");
+    const settled = () => until(() => !page.node.querySelector("button[disabled]") && !page.node.querySelector("[data-loading]"), "helper call");
+    const addButton = () => [...page.node.querySelectorAll("button")].find((item) => item.textContent === "Add a host");
     const addHost = async (label, origin) => {
+      if (!addForm()) await press(addButton());
       await typeText(fieldControl(addForm(), "Name"), label);
       await typeText(fieldControl(addForm(), "Address"), origin);
       await submit(addForm());
@@ -692,9 +698,9 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await until(() => buttonFor(SMOKE_HOST.label, "Edit"), "hosts.json read");
     await until(() => rowFor(SMOKE_HOST.label)?.textContent.includes("Reachable"), "host status");
     check(
-      "plugin: Settings shows hosts.json, with Edit and Remove on every host, and the host's status",
-      JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label]) && buttonFor(SMOKE_HOST.label, "Remove") && rowFor(SMOKE_HOST.label).textContent.includes(SMOKE_HOST.origin),
-      rowFor(SMOKE_HOST.label)?.textContent,
+      "plugin: the view lists hosts.json, and the selected host has Edit, Remove and its status",
+      JSON.stringify(hostNames()) === JSON.stringify([SMOKE_HOST.label]) && buttonFor(SMOKE_HOST.label, "Remove") && hostDetail().includes(SMOKE_HOST.origin),
+      hostDetail(),
     );
     check("plugin: the page names no Build or Update step", !/\bUpdate\b|\bBuild\b/.test(page.node.textContent), page.node.textContent);
     await press(buttonFor(SMOKE_HOST.label, "Remove"));
@@ -727,7 +733,8 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     await checkAgain();
     await until(() => rowFor(LAB_HOST.label), "listed host read");
     await until(() => rowFor(LAB_HOST.label)?.textContent.includes("Reachable"), "new host status");
-    check("plugin: the new host answers at once on the page", rowFor(LAB_HOST.label).textContent.includes(`${LAB_HOST.origin} · Reachable`), rowFor(LAB_HOST.label)?.textContent);
+    await press(rowFor(LAB_HOST.label));
+    check("plugin: the new host answers at once on the page", hostDetail().includes(`${LAB_HOST.origin} · Reachable`), hostDetail());
     // A field Select names its trigger with aria-labelledby, as Desktop's.
     const labelledBy = (node, label) =>
       [...node.querySelectorAll("[role=combobox][aria-labelledby]")].find((item) => document.getElementById(item.getAttribute("aria-labelledby"))?.textContent === label);
@@ -774,19 +781,21 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const handHost = { id: "lab-hand", label: "lab/hand", origin: `https://lab-hand.example.invalid:${RUNNER_PORT}` };
     writeFileSync(hostsPath, JSON.stringify({ hosts: [SMOKE_HOST, renamedHost, handHost] }));
     await checkAgain();
-    await until(() => rowFor(handHost.label)?.textContent.includes("Could not reach"), "hand edit read");
+    await until(() => rowFor(handHost.label)?.textContent.includes("Not reachable"), "hand edit read");
+    await press(rowFor(handHost.label));
     check(
       "plugin: a hand edit is in use after Check again: its host is asked, and here it does not answer",
-      JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label, renamedHost.label, handHost.label]) && rowFor(handHost.label).textContent.includes("Could not reach lab/hand"),
-      rowFor(handHost.label)?.textContent,
+      JSON.stringify(hostNames()) === JSON.stringify([SMOKE_HOST.label, renamedHost.label, handHost.label]) && hostDetail().includes("Could not reach lab/hand"),
+      hostDetail(),
     );
     check(
       "plugin: an address with the runner port shows without it",
-      rowFor(handHost.label).textContent.includes("https://lab-hand.example.invalid · ") && !rowFor(handHost.label).textContent.includes(`:${RUNNER_PORT}`),
-      rowFor(handHost.label)?.textContent,
+      hostDetail().includes("https://lab-hand.example.invalid · ") && !hostDetail().includes(`:${RUNNER_PORT}`),
+      hostDetail(),
     );
     // Add with a listed machine aligns it (setup.mjs), so Edit is where a
     // second entry for one machine can be typed.
+    await press(rowFor(renamedHost.label));
     await press(buttonFor(renamedHost.label, "Edit"));
     const moveForm = page.node.querySelector(`form[aria-label="Edit ${renamedHost.label}"]`);
     await typeText(fieldControl(moveForm, "Address"), "https://lab-hand.example.invalid");
@@ -811,6 +820,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       statusText(),
     );
     localStorage.removeItem(placedKey);
+    await press(rowFor(handHost.label));
     await press(buttonFor(handHost.label, "Remove"));
     await settled();
     check(
@@ -828,7 +838,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const brokenAlert = await until(() => page.node.querySelector("[role=alert]"), "broken file alert");
     check(
       "plugin: a broken hosts.json shows the helper's reason; no Edit, Remove or Add; the last good hosts stay",
-      brokenAlert.textContent.includes("not valid JSON") && !buttonFor(SMOKE_HOST.label, "Edit") && !addForm() && JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label, renamedHost.label]),
+      brokenAlert.textContent.includes("not valid JSON") && !buttonFor(SMOKE_HOST.label, "Edit") && !addForm() && !addButton() && JSON.stringify(hostNames()) === JSON.stringify([SMOKE_HOST.label, renamedHost.label]),
       brokenAlert.textContent,
     );
     writeFileSync(hostsPath, JSON.stringify({ hosts: [SMOKE_HOST] }));
@@ -843,7 +853,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const spawnsBefore = helpers.spawns;
     await checkAgain();
     await until(() => buttonFor(SMOKE_HOST.label, "Edit") && !page.node.querySelector("[role=alert]"), "helper back");
-    check("plugin: the next call starts the helper again, and the page recovers", helpers.spawns > spawnsBefore && JSON.stringify(rowTitles(page.node)) === JSON.stringify([SMOKE_HOST.label]), String(helpers.spawns));
+    check("plugin: the next call starts the helper again, and the page recovers", helpers.spawns > spawnsBefore && JSON.stringify(hostNames()) === JSON.stringify([SMOKE_HOST.label]), String(helpers.spawns));
     collect(page.node);
     await page.unmount();
 
@@ -879,6 +889,11 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
             answer({ id: ask.id, ok: true });
             return answer({ id: signinAsk.id, ok: true, code: 0, output: `sudo password: \nPaste the key: \nSaved a key of ${ask.text.length} characters.` });
           }
+          // A setup that stops: the page must lead back to its form.
+          if (ask.setup.label === "Bad Box") {
+            answer({ id: ask.id, progress: { step: "machine", state: "failed", detail: "No such machine." } });
+            return answer({ id: ask.id, ok: false, error: "No such machine." });
+          }
           const steps = SETUP_STEPS;
           answer({ id: ask.id, progress: { step: "connect", state: "waiting", link: "https://login.tailscale.com/a/page-check" } });
           answer({ id: ask.id, progress: { step: "copy", state: "waiting", link: "javascript:alert(1)" } });
@@ -895,19 +910,40 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     };
     const VIEWER = "ab".repeat(32);
     const setupCards = [];
+    const setupPages = [];
+    const opened = [];
     const setupCtx = {
       ...ctx,
       agents: { register: () => {} },
       host: { spawn: fakeHelper },
       inject(names, run) {
         if (names[0] === "communityReader") run({ communityReader: { snapshot: () => ({ viewer: VIEWER, selected: "https://relay.example.ts.net" }), subscribe: () => () => {} } });
+        else if (names[0] === "pages") run({ pages: { register: (item) => setupPages.push(item) }, navigation: { open: (target) => opened.push(target) } });
         else run({ settingsCards: { register: (card) => setupCards.push(card) } });
       },
     };
     const setupModule = await import(`${pathToFileURL(PLUGIN).href}?smoke=${Date.now()}-setup`);
     await setupModule.apply(setupCtx);
+    check(
+      "plugin: registers the Tailscale hosts page in the left panel, as Usage does",
+      setupPages.length === 1 && setupPages[0].id === "hosts" && setupPages[0].title === "Tailscale hosts" && setupPages[0].primary === true && setupPages[0].layout === "workspace" && setupPages[0].icon.startsWith("data:image/"),
+      JSON.stringify(setupPages.map((item) => [item.id, item.title, item.primary, item.layout])),
+    );
+    const summaryCard = mount();
+    await summaryCard.render(React.createElement(setupCards[0].component, { active: () => true }));
+    const openPage = await until(() => [...summaryCard.node.querySelectorAll("button")].find((item) => item.textContent === "Open Tailscale hosts"), "the card's way to the page");
+    await press(openPage);
+    check(
+      "plugin: beside the page, the Settings card is a summary that opens the page, with no form",
+      JSON.stringify(opened) === JSON.stringify([{ version: 1, kind: "plugin", pluginId: "sagmans.tailscale-host", pageId: "hosts" }]) && !summaryCard.node.querySelector("form"),
+      JSON.stringify(opened),
+    );
+    collect(summaryCard.node);
+    await summaryCard.unmount();
     const setupPage = mount();
-    await setupPage.render(React.createElement(setupCards[0].component, { active: () => true }));
+    await setupPage.render(React.createElement(setupPages[0].component));
+    const setupButton = (words) => [...setupPage.node.querySelectorAll("button")].find((item) => item.textContent === words);
+    await act(async () => (await until(() => setupButton("Add a host"), "Add a host")).click());
     const setupForm = () => setupPage.node.querySelector('form[aria-label="Add a host"]');
     await until(setupForm, "add form");
     check("plugin: the page has no separate setup step: Add host is the setup", !/Install runner|Set up a machine|Find machines/.test(setupPage.node.textContent), setupPage.node.textContent.slice(0, 300));
@@ -915,23 +951,35 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       "plugin: Add host's owner key and relay start as Desktop's identity and community",
       fieldControl(setupForm(), "Owner key")?.value === VIEWER && fieldControl(setupForm(), "Relay")?.value === "wss://relay.example.ts.net",
     );
-    await typeText(fieldControl(setupForm(), "Name"), "Lab Box");
+    // A failed setup says why and goes back to its form, with no password.
+    await typeText(fieldControl(setupForm(), "Name"), "Bad Box");
     await typeText(fieldControl(setupForm(), "Address"), `https://${LAB_DNS}/`);
     await typeText(fieldControl(setupForm(), "SSH login"), "owner");
+    await typeText(fieldControl(setupForm(), "sudo password"), "bad pass");
+    await act(async () => setupForm().requestSubmit());
+    await until(() => setupPage.node.querySelector('li[data-step="machine"][data-state="failed"]') && setupButton("Back to the form"), "failed setup");
+    check("plugin: a failed setup marks its step and says why, in place of the form", !setupForm() && setupPage.node.querySelector("[role=alert]")?.textContent === "No such machine." && !setupPage.node.innerHTML.includes("bad pass"));
+    await press(setupButton("Back to the form"));
+    check(
+      "plugin: back at the form, the values stay and the password is gone",
+      fieldControl(setupForm(), "Name")?.value === "Bad Box" && fieldControl(setupForm(), "SSH login")?.value === "owner" && fieldControl(setupForm(), "sudo password")?.value === "",
+    );
+    await typeText(fieldControl(setupForm(), "Name"), "Lab Box");
     await typeText(fieldControl(setupForm(), "sudo password"), "page pass");
     await act(async () => setupForm().requestSubmit());
     await until(() => setupPage.node.querySelector('li[data-step="connect"][data-state="waiting"]'), "waiting step");
+    check("plugin: the form makes way for the steps, and shows the count", !setupForm() && /Step \d+ of 10/.test(setupPage.node.textContent), setupPage.node.textContent.slice(0, 200));
     const links = [...setupPage.node.querySelectorAll("li[data-step] a")].map((item) => item.getAttribute("href"));
     check("plugin: a waiting step shows its Tailscale check link, and no other URL", JSON.stringify(links) === JSON.stringify(["https://login.tailscale.com/a/page-check"]), JSON.stringify(links));
     releaseSetup();
-    await until(() => setupPage.node.textContent.includes("Still to do:"), "setup result");
-    const sent = setupLines.find((ask) => ask.op === "setup");
+    await until(() => setupPage.node.querySelector('[aria-label="Still to do"]'), "setup result");
+    const sent = setupLines.findLast((ask) => ask.op === "setup");
     check(
       "plugin: Add host sends the address, name, login, password, owner, relay and reserved ids as one setup",
       sent?.setup.address === `https://${LAB_DNS}` && sent.setup.label === "Lab Box" && sent.setup.sshUser === "owner" && sent.setup.sudoPassword === "page pass" && sent.setup.ownerPubkey === VIEWER && sent.setup.relay === "wss://relay.example.ts.net" && Array.isArray(sent.setup.reservedIds),
       JSON.stringify({ ...sent?.setup, sudoPassword: sent?.setup.sudoPassword ? "<set>" : "" }),
     );
-    check("plugin: the password field is empty once the setup starts", fieldControl(setupForm(), "sudo password")?.value === "" && !setupPage.node.innerHTML.includes("page pass"));
+    check("plugin: no password field stays once the setup starts", !setupPage.node.querySelector('input[type="password"]') && !setupPage.node.innerHTML.includes("page pass"));
     const stepStates = [...setupPage.node.querySelectorAll("li[data-step]")].map((item) => `${item.dataset.step}:${item.dataset.state}`);
     check("plugin: the page shows every setup step, in order, as done", JSON.stringify(stepStates) === JSON.stringify(SETUP_STEPS.map((step) => `${step}:done`)), JSON.stringify(stepStates));
     check(
@@ -942,35 +990,50 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     // ---- Sign in: the page side of a harness sign-in -------------------------
     // The helper's sign-in itself is signin.mjs; here the stand-in streams a
     // terminal that waits at a prompt, and ends when the page answers it.
-    const section = () => setupPage.node.querySelector('section[aria-label="Sign in to the harnesses"]');
+    const section = () => setupPage.node.querySelector('section[aria-label="Harnesses"]');
     const resultSignIn = () => setupPage.node.querySelector(`[aria-label="Still to do"] button[aria-label="Sign in on ${ADDED_HOST.label}"]`);
-    await until(resultSignIn, "Sign in button in the setup's result");
-    const sectionButtons = [...(section()?.querySelectorAll("button") ?? [])].map((item) => item.textContent);
+    await act(async () => (await until(resultSignIn, "Sign in button in the setup's result")).click());
+    await until(section, "the host's harnesses");
+    const sectionButtons = [...section().querySelectorAll(".buzz-preference-row button")].map((item) => item.getAttribute("aria-label"));
     check(
-      "plugin: the page has a sign-in section with its heading, its steps and a Sign in button for each host",
-      section()?.querySelector("h3")?.textContent === "Sign in to the harnesses" && /Select Sign in for a host/.test(section().textContent) && JSON.stringify(sectionButtons) === JSON.stringify([`Sign in on ${SMOKE_HOST.label}`, `Sign in on ${ADDED_HOST.label}`]),
+      "plugin: the setup's result opens the new host, with a Sign in for each harness",
+      JSON.stringify(sectionButtons) === JSON.stringify(["Claude", "Codex", "Goose", "Pi"].map((title) => `Sign in to ${title} on ${ADDED_HOST.label}`)) && section().querySelector("h3")?.textContent === "Harnesses",
       JSON.stringify(sectionButtons),
     );
-    await act(async () => resultSignIn().click());
+    await act(async () => setupPage.node.querySelector(`button[aria-label="Sign in to Claude on ${ADDED_HOST.label}"]`).click());
     const startForm = () => setupPage.node.querySelector('form[aria-label="Start a sign-in"]');
     await until(startForm, "sign-in form");
+    const methods = () => [...startForm().querySelectorAll('input[type="radio"]')];
+    const methodNames = [...startForm().querySelectorAll(".buzz-choice-label")].map((item) => item.textContent);
     check(
-      "plugin: Sign in in the setup's result opens the sign-in for that host, with the setup's SSH login",
-      section()?.querySelector(`[aria-label="Sign in on ${ADDED_HOST.label}"][role="group"]`) && fieldControl(startForm(), "SSH login")?.value === "owner" && fieldControl(startForm(), "sudo password")?.value === "",
+      "plugin: Sign in asks only that harness's ways, starts on its usual one, and keeps the setup's SSH login",
+      JSON.stringify(methodNames) === JSON.stringify(["claude.ai account", "Anthropic Console"]) && methods()[0].checked && fieldControl(startForm(), "SSH login")?.value === "owner" && fieldControl(startForm(), "sudo password")?.value === "",
+      JSON.stringify(methodNames),
     );
+    await act(async () => methods()[1].click());
     await typeText(fieldControl(startForm(), "sudo password"), "sign pass");
     await act(async () => startForm().requestSubmit());
     const answerForm = () => setupPage.node.querySelector('form[aria-label="Answer the terminal"]');
     await until(() => answerForm() && setupPage.node.querySelector('pre[role="log"]')?.textContent.includes("Paste the key"), "sign-in terminal");
     const signinSent = setupLines.find((ask) => ask.op === "signin");
     check(
-      "plugin: Start sends the host id, login, password and the chosen command as one sign-in",
-      signinSent?.signin.host === ADDED_HOST.id && signinSent.signin.sshUser === "owner" && signinSent.signin.sudoPassword === "sign pass" && signinSent.signin.command === "status",
+      "plugin: Start sends the host id, login, password and the chosen way as one sign-in",
+      signinSent?.signin.host === ADDED_HOST.id && signinSent.signin.sshUser === "owner" && signinSent.signin.sudoPassword === "sign pass" && signinSent.signin.command === "claude-console",
       JSON.stringify({ ...signinSent?.signin, sudoPassword: signinSent?.signin.sudoPassword ? "<set>" : "" }),
     );
     const signinLinks = [...setupPage.node.querySelectorAll('[aria-label^="Sign in on"] a')].map((item) => item.getAttribute("href"));
     check("plugin: a sign-in shows its Tailscale check link, and no other URL", JSON.stringify(signinLinks) === JSON.stringify(["https://login.tailscale.com/a/signin-check"]), JSON.stringify(signinLinks));
-    check("plugin: the sign-in password field is empty once the sign-in starts", fieldControl(startForm(), "sudo password")?.value === "" && !setupPage.node.innerHTML.includes("sign pass"));
+    check("plugin: the sudo password leaves with the sign-in", !startForm() && !setupPage.node.innerHTML.includes("sign pass"));
+    // Another host shows where the one running sign-in is.
+    await press([...setupPage.node.querySelectorAll("button[data-host]")].find((item) => item.textContent.includes(SMOKE_HOST.label)));
+    const elsewhere = await until(() => section(), "the other host's harnesses");
+    check(
+      "plugin: while a sign-in runs, another host cannot start one and points to it",
+      elsewhere.textContent.includes(`A sign-in runs on ${ADDED_HOST.label}.`) && [...elsewhere.querySelectorAll(".buzz-preference-row button")].every((item) => item.disabled),
+      elsewhere.textContent.slice(0, 200),
+    );
+    await press(setupButton("Show it"));
+    await until(answerForm, "the running sign-in again");
     await typeText(fieldControl(answerForm(), "Answer"), "sk-page-key");
     check("plugin: the answer field hides what is typed", fieldControl(answerForm(), "Answer")?.type === "password");
     await act(async () => answerForm().requestSubmit());
@@ -980,6 +1043,8 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       "plugin: Send gives the typed line to the sign-in, and the page keeps no copy",
       typedLine?.text === "sk-page-key" && !setupPage.node.innerHTML.includes("sk-page-key") && setupPage.node.querySelector('pre[role="log"]')?.textContent.endsWith("Saved a key of 11 characters."),
     );
+    await press(setupButton("Try again"));
+    check("plugin: Try again goes back to the sign-in form", Boolean(startForm()) && !setupPage.node.querySelector('pre[role="log"]'));
     collect(setupPage.node);
     await setupPage.unmount();
 
