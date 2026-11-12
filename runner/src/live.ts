@@ -70,6 +70,41 @@ type Waiting = { resolve(): void; reject(error: Error): void; timer: ReturnType<
 /** The relay treats a re-sent event as success. */
 const DUPLICATE = "duplicate";
 const now = () => Math.floor(Date.now() / 1000);
+/** Subscriptions whose loss ends the session: the wake subscriptions are the
+ * listener's purpose, and the notices are its only way to hear a join. */
+const RESTART_SUBSCRIPTIONS: ReadonlySet<string> = new Set([SUB_MENTIONS, SUB_DMS, SUB_REPLIES, SUB_NOTICES]);
+
+/** One socket's state, shared by its handlers and dropped with it. */
+type Session = {
+  ws: WebSocket;
+  send(message: unknown): void;
+  /** Ends the socket; the first reason is the one the session rejects with. */
+  fail(error: Error): void;
+  onAuthenticated(): void;
+  authId: string | undefined;
+  authenticated: boolean;
+  probeTimer: ReturnType<typeof setTimeout> | undefined;
+  probeDeadline: ReturnType<typeof setTimeout> | undefined;
+  failure: Error | undefined;
+  outbox: LiveListener["outbox"];
+  /** The connect deadline, then the authentication one. */
+  deadline: ReturnType<typeof setTimeout> | undefined;
+  probeId: string;
+  probeSerial: number;
+};
+
+/** A relay frame as a JSON array, or undefined for one this listener
+ * ignores: not text, over the frame limit, not JSON or not an array. */
+function parseFrame(raw: unknown): unknown[] | undefined {
+  if (typeof raw !== "string" || raw.length > WS_FRAME_LIMIT) return undefined;
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  return Array.isArray(data) ? data : undefined;
+}
 
 export class LiveListener {
   status: LiveStatus = "connecting";
@@ -183,138 +218,175 @@ export class LiveListener {
 
   /** One socket from connect to close. Resolves or rejects when it closes. */
   private session(onAuthenticated: () => void) {
-    const { community, agent, log } = this.options;
+    const { community, log } = this.options;
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(community);
       this.socket = ws;
-      let authId: string | undefined;
-      let authenticated = false;
-      let probeTimer: ReturnType<typeof setTimeout> | undefined;
-      let probeDeadline: ReturnType<typeof setTimeout> | undefined;
-      let failure: Error | undefined;
-      let outbox: LiveListener["outbox"];
-      const send = (message: unknown) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
-      };
-      const fail = (error: Error) => {
-        failure ??= error;
-        ws.close();
+      const session: Session = {
+        ws,
+        onAuthenticated,
+        authId: undefined,
+        authenticated: false,
+        probeTimer: undefined,
+        probeDeadline: undefined,
+        failure: undefined,
+        outbox: undefined,
+        deadline: undefined,
+        probeId: "",
+        probeSerial: 0,
+        send: (message: unknown) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+        },
+        fail: (error: Error) => {
+          session.failure ??= error;
+          ws.close();
+        },
       };
       // Connect, then authenticate, each within its own deadline.
-      let deadline = setTimeout(() => fail(new RelayError("relay connect timed out")), WS_CONNECT_TIMEOUT_MS);
+      session.deadline = setTimeout(() => session.fail(new RelayError("relay connect timed out")), WS_CONNECT_TIMEOUT_MS);
       const stop = () => ws.close();
       this.abort.signal.addEventListener("abort", stop, { once: true });
 
-      // Same probe as the Desktop live client (buzz-app `relay/live.ts`): an
-      // empty `limit: 0` REQ needs no database read, and a fresh id per probe
-      // keeps a late answer to an old probe from counting for a new one.
-      let probeId = "";
-      let probeSerial = 0;
-      const probe = () => {
-        probeTimer = setTimeout(() => {
-          if (probeId) send(["CLOSE", probeId]);
-          probeId = `${SUB_PROBE}-${++probeSerial}`;
-          send(["REQ", probeId, { kinds: [KIND_PROBE], "#p": [agent], limit: 0 }]);
-          probeDeadline = setTimeout(() => fail(new RelayError("relay probe unanswered")), WS_PROBE_TIMEOUT_MS);
-          // The relay can silently prune multi-channel scopes, so the
-          // Desktop client renews them every quiet minute; do the same.
-          this.renewMentions(send);
-        }, WS_PROBE_INTERVAL_MS);
-      };
-
       ws.addEventListener("open", () => {
-        clearTimeout(deadline);
-        deadline = setTimeout(() => fail(new RelayError("relay authentication timed out")), WS_AUTH_TIMEOUT_MS);
+        clearTimeout(session.deadline);
+        session.deadline = setTimeout(() => session.fail(new RelayError("relay authentication timed out")), WS_AUTH_TIMEOUT_MS);
         log.debug("relay connected");
       });
-      ws.addEventListener("error", () => fail(new RelayError("relay socket error")));
+      ws.addEventListener("error", () => session.fail(new RelayError("relay socket error")));
       ws.addEventListener("close", (event) => {
-        clearTimeout(deadline);
-        clearTimeout(probeTimer);
-        clearTimeout(probeDeadline);
-        clearTimeout(this.loadDeadline);
-        clearTimeout(this.settleTimer);
-        if (this.failSession === fail) this.failSession = undefined;
-        this.abort.signal.removeEventListener("abort", stop);
-        if (this.socket === ws) this.socket = undefined;
-        if (outbox) {
-          if (this.outbox === outbox) this.outbox = undefined;
-          for (const waiting of outbox.waiting.values()) {
-            clearTimeout(waiting.timer);
-            waiting.reject(new RelayError("relay socket closed"));
-          }
-          outbox.waiting.clear();
-        }
+        this.endSession(session, stop);
         if (this.abort.signal.aborted) return resolve();
-        reject(failure ?? new RelayError(`relay closed the socket (${event.code})`));
+        reject(session.failure ?? new RelayError(`relay closed the socket (${event.code})`));
       });
-      ws.addEventListener("message", (message) => {
-        // #lizard forgives: one branch per relay message type (NIP-01, NIP-42)
-        if (typeof message.data !== "string" || message.data.length > WS_FRAME_LIMIT) return;
-        let data: unknown;
-        try {
-          data = JSON.parse(message.data);
-        } catch {
-          return;
-        }
-        if (!Array.isArray(data)) return;
-        const [type, first, second] = data as [unknown, unknown, unknown];
-        if (type === "AUTH" && typeof first === "string" && !authId) {
-          const auth = this.options.sign({
-            kind: KIND_AUTH,
-            content: "",
-            tags: [["relay", community], ["challenge", first], [...this.options.authTag]],
-          });
-          authId = auth.id;
-          send(["AUTH", auth]);
-          return;
-        }
-        if (type === "OK" && first === authId && !authenticated) {
-          if (second !== true) return fail(new RelayError("relay rejected authentication"));
-          clearTimeout(deadline);
-          authenticated = true;
-          this.status = "connected";
-          onAuthenticated();
-          outbox = { send, waiting: new Map() };
-          this.outbox = outbox;
-          this.failSession = fail;
-          log.info("relay authenticated");
-          this.subscribe(send);
-          probe();
-          return;
-        }
-        if (!authenticated) return;
-        if (type === "OK" && typeof first === "string" && outbox?.waiting.has(first)) {
-          const waiting = outbox.waiting.get(first)!;
-          outbox.waiting.delete(first);
-          clearTimeout(waiting.timer);
-          const reason = String(data[3] ?? "");
-          if (second === true || reason.startsWith(DUPLICATE)) waiting.resolve();
-          else waiting.reject(new RelayError(`relay refused the event: ${reason.slice(0, 200)}`));
-          return;
-        }
-        if (probeId && first === probeId && (type === "EOSE" || type === "CLOSED")) {
-          clearTimeout(probeDeadline);
-          if (type === "EOSE") send(["CLOSE", probeId]);
-          probeId = "";
-          probe();
-          return;
-        }
-        if (type === "EVENT" && typeof first === "string") return this.receive(first, second, send);
-        if (type === "EOSE" && first === SUB_MEMBERSHIP) return this.rostersLoaded(send);
-        // Our own CLOSE of an answered probe comes back as CLOSED: not news.
-        if (type === "CLOSED" && typeof first === "string" && first.startsWith(`${SUB_PROBE}-`)) return;
-        if (type === "CLOSED" && typeof first === "string") {
-          log.warn("relay closed a subscription", { subscription: first, reason: String(second ?? "").slice(0, 200) });
-          // The wake subscriptions are the listener's purpose: start over.
-          // The notices are the only way it hears a join, so they count too.
-          if (first === SUB_MENTIONS || first === SUB_DMS || first === SUB_REPLIES || first === SUB_NOTICES) fail(new RelayError(`subscription ${first} closed`));
-          return;
-        }
-        if (type === "NOTICE") log.info("relay notice", { notice: String(first ?? "").slice(0, 200) });
-      });
-      // #lizard forgives: the socket handlers share one connection's state
+      ws.addEventListener("message", (message) => this.frame(session, message.data));
     });
+  }
+
+  /** Same probe as the Desktop live client (buzz-app `relay/live.ts`): an
+   * empty `limit: 0` REQ needs no database read, and a fresh id per probe
+   * keeps a late answer to an old probe from counting for a new one. */
+  private probe(session: Session) {
+    const { agent } = this.options;
+    session.probeTimer = setTimeout(() => {
+      if (session.probeId) session.send(["CLOSE", session.probeId]);
+      session.probeId = `${SUB_PROBE}-${++session.probeSerial}`;
+      session.send(["REQ", session.probeId, { kinds: [KIND_PROBE], "#p": [agent], limit: 0 }]);
+      session.probeDeadline = setTimeout(() => session.fail(new RelayError("relay probe unanswered")), WS_PROBE_TIMEOUT_MS);
+      // The relay can silently prune multi-channel scopes, so the
+      // Desktop client renews them every quiet minute; do the same.
+      this.renewMentions(session.send);
+    }, WS_PROBE_INTERVAL_MS);
+  }
+
+  /** Drops everything the closed socket owned: its timers, its place as the
+   * listener's socket and sender, and the publishes still awaiting `OK`,
+   * which fail now instead of at their own deadlines. */
+  private endSession(session: Session, stop: () => void) {
+    clearTimeout(session.deadline);
+    clearTimeout(session.probeTimer);
+    clearTimeout(session.probeDeadline);
+    clearTimeout(this.loadDeadline);
+    clearTimeout(this.settleTimer);
+    if (this.failSession === session.fail) this.failSession = undefined;
+    this.abort.signal.removeEventListener("abort", stop);
+    if (this.socket === session.ws) this.socket = undefined;
+    const { outbox } = session;
+    if (!outbox) return;
+    if (this.outbox === outbox) this.outbox = undefined;
+    for (const waiting of outbox.waiting.values()) {
+      clearTimeout(waiting.timer);
+      waiting.reject(new RelayError("relay socket closed"));
+    }
+    outbox.waiting.clear();
+  }
+
+  /** One relay frame, in NIP-01 and NIP-42 order: authentication first, and
+   * nothing else is read until it succeeds. A frame that is not a JSON
+   * array within the size limit is ignored. */
+  private frame(session: Session, raw: unknown) {
+    const data = parseFrame(raw);
+    if (!data) return;
+    const [type, first, second] = data as [unknown, unknown, unknown];
+    if (this.authFrame(session, type, first, second)) return;
+    if (!session.authenticated) return;
+    if (this.publishAnswer(session, type, first, second, data[3])) return;
+    if (this.probeAnswer(session, type, first)) return;
+    if (type === "EVENT" && typeof first === "string") return this.receive(first, second, session.send);
+    if (type === "EOSE" && first === SUB_MEMBERSHIP) return this.rostersLoaded(session.send);
+    this.relayClosedOrNotice(session, type, first, second);
+  }
+
+  /** The NIP-42 handshake: answers the relay's challenge once, then on its
+   * `OK` opens the session (outbox, subscriptions, probe). True when the
+   * frame belonged to the handshake. */
+  private authFrame(session: Session, type: unknown, first: unknown, second: unknown): boolean {
+    const { community, log } = this.options;
+    if (type === "AUTH" && typeof first === "string" && !session.authId) {
+      const auth = this.options.sign({
+        kind: KIND_AUTH,
+        content: "",
+        tags: [["relay", community], ["challenge", first], [...this.options.authTag]],
+      });
+      session.authId = auth.id;
+      session.send(["AUTH", auth]);
+      return true;
+    }
+    if (type !== "OK" || first !== session.authId || session.authenticated) return false;
+    if (second !== true) {
+      session.fail(new RelayError("relay rejected authentication"));
+      return true;
+    }
+    clearTimeout(session.deadline);
+    session.authenticated = true;
+    this.status = "connected";
+    session.onAuthenticated();
+    session.outbox = { send: session.send, waiting: new Map() };
+    this.outbox = session.outbox;
+    this.failSession = session.fail;
+    log.info("relay authenticated");
+    this.subscribe(session.send);
+    this.probe(session);
+    return true;
+  }
+
+  /** The relay's `OK` for an event this listener published; a duplicate
+   * counts as accepted. True when the frame answered one. */
+  private publishAnswer(session: Session, type: unknown, first: unknown, second: unknown, message: unknown): boolean {
+    const { outbox } = session;
+    if (type !== "OK" || typeof first !== "string" || !outbox?.waiting.has(first)) return false;
+    const waiting = outbox.waiting.get(first)!;
+    outbox.waiting.delete(first);
+    clearTimeout(waiting.timer);
+    const reason = String(message ?? "");
+    if (second === true || reason.startsWith(DUPLICATE)) waiting.resolve();
+    else waiting.reject(new RelayError(`relay refused the event: ${reason.slice(0, 200)}`));
+    return true;
+  }
+
+  /** The answer to the probe in flight: the socket is alive, so the next
+   * probe is scheduled. True when the frame answered it. */
+  private probeAnswer(session: Session, type: unknown, first: unknown): boolean {
+    if (!session.probeId || first !== session.probeId || (type !== "EOSE" && type !== "CLOSED")) return false;
+    clearTimeout(session.probeDeadline);
+    if (type === "EOSE") session.send(["CLOSE", session.probeId]);
+    session.probeId = "";
+    this.probe(session);
+    return true;
+  }
+
+  /** A subscription the relay closed, or a relay notice; both are logged. */
+  private relayClosedOrNotice(session: Session, type: unknown, first: unknown, second: unknown) {
+    const { log } = this.options;
+    // Our own CLOSE of an answered probe comes back as CLOSED: not news.
+    if (type === "CLOSED" && typeof first === "string" && first.startsWith(`${SUB_PROBE}-`)) return;
+    if (type === "CLOSED" && typeof first === "string") {
+      log.warn("relay closed a subscription", { subscription: first, reason: String(second ?? "").slice(0, 200) });
+      // The wake subscriptions are the listener's purpose: start over.
+      // The notices are the only way it hears a join, so they count too.
+      if (RESTART_SUBSCRIPTIONS.has(first)) session.fail(new RelayError(`subscription ${first} closed`));
+      return;
+    }
+    if (type === "NOTICE") log.info("relay notice", { notice: String(first ?? "").slice(0, 200) });
   }
 
   /** Mentions from the cursor; the membership list in full (it is replaceable,

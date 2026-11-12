@@ -42,14 +42,26 @@ const statusWith = (entry) => ({ Self: { UserID: 7 }, User: { 7: { LoginName: "o
 
 /** @param {{check: (name: string, ok: unknown, detail?: string) => void, temp: string}} deps */
 export async function signinSmoke({ check, temp }) {
+  const harness = signinHarness(temp);
+  await successScenarios(check, harness);
+  await passwordScenarios(check, harness);
+  await exclusiveScenarios(check, harness);
+  await refusalScenarios(check, harness);
+}
+
+/** The helper wired to the fake ssh and a hosts file with one host, and the
+ * calls the scenarios make through it. One request id sequence serves all
+ * of them, as one page session would. */
+function signinHarness(temp) {
   const hostsPath = join(temp, "signin-hosts.json");
   writeFileSync(hostsPath, `${JSON.stringify({ hosts: [{ id: HOST_ID, label: "Sign-in Box", origin: `https://${DNS}` }] }, null, 2)}\n`);
   const log = join(temp, "fake-ssh-tty.log");
   const paths = { hostsPath, signInDeps: { status: async () => statusWith(peer()), ssh: FAKE_SSH } };
   let nextId = 1;
-  const request = (signin) => ({ id: nextId++, op: "signin", signin: { host: HOST_ID, sshUser: "owner", sudoPassword: PASSWORD, command: "claude-console", ...signin } });
+  const newId = () => nextId++;
+  const request = (signin) => ({ id: newId(), op: "signin", signin: { host: HOST_ID, sshUser: "owner", sudoPassword: PASSWORD, command: "claude-console", ...signin } });
   const control = (op, fields = {}) =>
-    handle({ id: nextId++, op, ...fields }, paths).then(
+    handle({ id: newId(), op, ...fields }, paths).then(
       (reply) => reply,
       (error) => ({ error: error.message }),
     );
@@ -80,6 +92,12 @@ export async function signinSmoke({ check, temp }) {
     return { ...outcome, events, calls, shown, during: duringResult };
   }
 
+  return { attempt, control, request, paths, log, newId };
+}
+
+/** A sign-in that succeeds: what ssh is asked, what reaches the terminal,
+ * and what the page sees of it. */
+async function successScenarios(check, { attempt }) {
   const ok = await attempt({}, { env: { FAKE_SSH_CHECK: "1", FAKE_SSH_ECHO: "1" } });
   const call = ok.calls[0];
   const seen = JSON.stringify([ok.events, ok.reply]);
@@ -102,7 +120,10 @@ export async function signinSmoke({ check, temp }) {
   const long = await attempt({}, { env: { FAKE_SSH_ECHO: "1" }, answer: LONG_KEY });
   const longSeen = JSON.stringify([long.events, long.reply]);
   check("signin: a typed line longer than a screen line is masked whole", long.reply?.code === 0 && long.reply.output.includes(`You typed: ${MASK}\n`) && !longSeen.includes("long-typed-line"), long.error ?? JSON.stringify(long.reply?.output.slice(-300)));
+}
 
+/** Sudo's password rules and a machine that was never set up. */
+async function passwordScenarios(check, { attempt }) {
   const wrong = await attempt({ sudoPassword: "not-it" }, { answer: undefined });
   check("signin: a refused sudo password ends the run and is not sent again", /sudo refused the password/.test(wrong.error ?? "") && wrong.calls[0]?.stdin === "not-it\r", `${wrong.error} ${JSON.stringify(wrong.calls[0]?.stdin)}`);
   const none = await attempt({ sudoPassword: "" }, { answer: undefined });
@@ -111,14 +132,18 @@ export async function signinSmoke({ check, temp }) {
   check("signin: a login that sudo asks no password of signs in", nopass.reply?.code === 0 && nopass.calls[0]?.stdin === `${KEY}\r`, nopass.error);
   const noTool = await attempt({}, { env: { FAKE_SSH_NO_TOOL: "1" }, answer: undefined });
   check("signin: a machine without buzz-login sends the owner to Add host", /run Add host for it first/.test(noTool.error ?? ""), noTool.error);
+}
 
+/** One sign-in at a time: a second one, a setup and a bad input while one
+ * runs, and Cancel. */
+async function exclusiveScenarios(check, { attempt, control, request, paths, newId }) {
   const busy = await attempt({}, {
     during: async () => ({
       second: await handle(request({}), paths).then(
         () => "ran",
         (error) => error.message,
       ),
-      setup: await handle({ id: nextId++, op: "setup", setup: {} }, paths).then(
+      setup: await handle({ id: newId(), op: "setup", setup: {} }, paths).then(
         () => "ran",
         (error) => error.message,
       ),
@@ -129,8 +154,10 @@ export async function signinSmoke({ check, temp }) {
   check("signin: a typed line with a line break is refused", /one line/.test(busy.during?.badInput?.error ?? ""), JSON.stringify(busy.during?.badInput));
   const cancelled = await attempt({}, { answer: undefined, during: () => control("signin-cancel") });
   check("signin: Cancel ends the running sign-in", cancelled.during?.cancelled === true && /cancelled/.test(cancelled.error ?? ""), `${JSON.stringify(cancelled.during)} ${cancelled.error}`);
+}
 
-  // Refused before anything reaches the machine.
+/** Requests refused before anything reaches the machine. */
+async function refusalScenarios(check, { control, request, paths, log }) {
   writeFileSync(log, "");
   const refused = await Promise.all(
     [{ command: "claude --api-key" }, { command: "status; id" }, { host: "nowhere" }, { sshUser: "Root User" }, { extra: 1 }].map((signin) =>

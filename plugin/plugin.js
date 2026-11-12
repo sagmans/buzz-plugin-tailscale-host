@@ -112,6 +112,13 @@ const SCOPES = Object.freeze([
   ["channel", "One session per channel"],
 ]);
 const DEFAULT_SCOPE = "thread";
+// The Sessions select's options, built once; a named mapper because lizard
+// 1.24.3 misreads a destructured arrow parameter inside an object literal.
+const scopeOption = (entry) => {
+  const [value, label] = entry;
+  return { value, label };
+};
+const SCOPE_OPTIONS = Object.freeze(SCOPES.map(scopeOption));
 // Desktop's words for these rows (claude-code tabs.tsx, ModelPicker.tsx,
 // Field.tsx, AgentSaveButton.tsx), so hosted agents read as Desktop's own.
 const CUSTOM_MODEL = "\u0000custom-model";
@@ -484,6 +491,29 @@ function parseModels(reply) {
  * trademark of Anthropic; see NOTICE. */
 const CLAUDE_PNG = "data:image/png;base64,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";
 
+/** What ModelSelect offers for one models reply: the host's default first,
+ * then the other models, an unknown saved id, and Custom outside compact
+ * rows. Kept apart from the render so the picker reads as layout only. */
+function modelChoices(list, value, compact) {
+  const loading = list.state === "loading";
+  const known = list.state === "ok" ? list.models : [];
+  const defaultModel = list.state === "ok" ? list.current : "";
+  const defaultChoice = known.find((model) => model.id === defaultModel);
+  const fallback = {
+    id: "",
+    label: defaultChoice ? defaultChoice.label : defaultModel || LABELS.modelUnavailable,
+    description: LABELS.defaultDescription,
+  };
+  const listed = known.filter((model) => model.id !== defaultModel || model.id === value);
+  if (value && !listed.some((model) => model.id === value))
+    listed.push({ id: value, label: value, description: LABELS.customListed });
+  const shown = [fallback, ...listed];
+  const selected = shown.find((model) => model.id === (value || defaultModel)) || fallback;
+  const inherited = value === "";
+  const choices = compact ? shown : [...shown, { id: CUSTOM_MODEL, label: LABELS.custom, description: LABELS.customDescription }];
+  return { loading, known, selected, inherited, choices };
+}
+
 function makeIcons(h) {
   const svg = (viewBox, extra, children) =>
     function HarnessIcon({ size = "1em", ...props }) {
@@ -743,18 +773,58 @@ class HelperClient {
   }
 }
 
-// Async: the type's picker title names the hosts, so the first read of
-// hosts.json comes before the type is registered.
-export async function apply(ctx) {
-  const React = ctx.react;
-  const h = React.createElement;
-  const icons = makeIcons(h);
-  const glyphs = makeGlyphs(h);
-  let disposed = false;
-  migrateStore();
+const SETUP_IDLE = Object.freeze({ state: "idle", label: "", steps: Object.freeze({}), result: undefined, error: undefined });
+const SIGNIN_IDLE = Object.freeze({ state: "idle", hostId: "", harness: null, output: "", link: undefined, error: undefined, code: undefined });
+// The state of one step, in the words and with the mark the page shows.
+const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for you", failed: "Failed" });
 
-  const helper = new HelperClient(ctx.host);
+/**
+ * Everything apply's views share and change while the plugin runs. One object,
+ * so each factory reads and writes the same state, and a missing key shows
+ * here rather than as a stray global.
+ * @typedef {object} PluginStore
+ * @property {boolean} disposed Set when Desktop disposes the plugin; late answers are dropped.
+ * @property {Readonly<Record<string, object>>} hosts Each host's harness list; a host has no entry until its first answer, which reads as checking.
+ * @property {Readonly<Record<string, object>>} models The model lists asked for so far, by host and harness.
+ * @property {Set<string>} modelsInFlight Keys with a fetch in flight: a stale list stays "ok" while it refreshes, so its state alone cannot stop a second picker from asking again.
+ * @property {Set<() => void>} listeners The views subscribed through useSyncExternalStore.
+ * @property {Promise<void> | undefined} refreshing The status round that runs, if any.
+ * @property {Promise<void> | undefined} refreshAgain The one extra round queued by a call that came while a round ran.
+ * @property {object | undefined} snapshot A stable provider snapshot, as useSyncExternalStore requires.
+ * @property {Readonly<{state: string, error?: string, busy: boolean}>} hostsFile hosts.json as last read or saved; `busy`: one save at a time, so two saves never race on the file.
+ * @property {object | undefined} communityReader Desktop's community reader, if any (injected at the end of apply): it names the owner and the relay a new host's config gets.
+ * @property {Readonly<object>} setupRun The one host setup that may run, and its progress.
+ * @property {object | null} setupForm The add form's values while a setup runs or after it failed, so that the owner corrects one field and not all. Never the password.
+ * @property {Map<string, string>} sshLogins The SSH login last used on each host, so that the next sign-in there asks only for the password. In memory only; a login name is not a secret.
+ * @property {Readonly<object>} signinRun The one harness sign-in that may run, and its terminal.
+ * @property {(() => void) | undefined} openHostsPage Opens the Hosts page, once Desktop's pages scope gave one.
+ */
 
+/** A fresh store for one apply: each load of the plugin starts empty.
+ * @returns {PluginStore} */
+function createStore() {
+  return {
+    disposed: false,
+    hosts: Object.freeze({}),
+    models: Object.freeze({}),
+    modelsInFlight: new Set(),
+    listeners: new Set(),
+    refreshing: undefined,
+    refreshAgain: undefined,
+    snapshot: undefined,
+    hostsFile: Object.freeze({ state: "loading", error: undefined, busy: false }),
+    communityReader: undefined,
+    setupRun: SETUP_IDLE,
+    setupForm: null,
+    sshLogins: new Map(),
+    signinRun: SIGNIN_IDLE,
+    openHostsPage: undefined,
+  };
+}
+
+/** Every host call goes through one runner path, so timeouts and errors read the same everywhere. */
+function makeRunnerCall(ui, store, parts) {
+  const { helper } = parts;
   /** One JSON call to a host's runner, through the helper; throws
    * RunnerError on any failure. */
   async function call(host, method, path, body, timeoutMs = REQUEST_TIMEOUT_MS) {
@@ -802,10 +872,16 @@ export async function apply(ctx) {
   function remember(pubkey, hostId) {
     localStorage.setItem(STORE_PREFIX + pubkey, hostId);
   }
+
   function forget(pubkey) {
     localStorage.removeItem(STORE_PREFIX + pubkey);
   }
+  return { call, remember, forget };
+}
 
+/** Which host holds an agent: asked of the hosts, never taken from a host's own claim. */
+function makeAgentRouting(ui, store, parts) {
+  const { call, remember } = parts;
   /** Whether `host`'s runner keeps the agent `pubkey`. Only a record that
    * names that same pubkey counts: a host that answered for any key would
    * otherwise claim every agent. A 404 is no; other failures are raised. */
@@ -825,7 +901,7 @@ export async function apply(ctx) {
     if (!HEX64.test(pubkey)) throw new RunnerError("Invalid agent pubkey.", { op: "locate" });
     // Without a host list no host can be asked, and "no host knows it" would
     // let a delete drop an agent that still runs.
-    if (!HOSTS.length) throw new RunnerError(hostsFile.error || LABELS.noHosts, { op: "locate" });
+    if (!HOSTS.length) throw new RunnerError(store.hostsFile.error || LABELS.noHosts, { op: "locate" });
     const saved = localStorage.getItem(STORE_PREFIX + pubkey);
     if (saved && HOSTS.some((entry) => entry.id === saved)) return hostById(saved);
     for (const host of HOSTS) {
@@ -867,45 +943,45 @@ export async function apply(ctx) {
       if (held) throw taken(other);
     }
   }
+  return { holds, locate, requireNewKey };
+}
 
-  // ---- Host status and model stores ---------------------------------------
-  // Each host's harness list and the model lists asked for so far. Views read
-  // them with useSyncExternalStore; snapshots are replaced, never mutated, so
-  // React sees each change.
+// ---- Host status and model stores ---------------------------------------
+// Each host's harness list and the model lists asked for so far. Views read
+// them with useSyncExternalStore; snapshots are replaced, never mutated, so
+// React sees each change.
 
-  const listeners = new Set();
-  // A host has no entry until its first answer, which reads as checking.
-  let hosts = Object.freeze({});
-  const statusOf = (id) => hosts[id] || CHECKING;
-  let models = Object.freeze({});
-  // Keys with a fetch in flight: a stale list stays "ok" while it refreshes,
-  // so its state alone cannot stop a second picker from asking again.
-  const modelsInFlight = new Set();
+/** Views subscribe to one status snapshot, so a refresh redraws them together; apply owns the poll. */
+function makeStatusStore(ui, store, parts) {
+  const { React } = ui;
+  const { call } = parts;
+  const statusOf = (id) => store.hosts[id] || CHECKING;
+
   const emit = () => {
-    for (const listener of [...listeners]) listener();
+    for (const listener of [...store.listeners]) listener();
   };
+
   const subscribe = (listener) => {
-    listeners.add(listener);
-    return () => listeners.delete(listener);
+    store.listeners.add(listener);
+    return () => store.listeners.delete(listener);
   };
+
   const useStore = (read) => React.useSyncExternalStore(subscribe, read);
 
-  let refreshing;
-  let refreshAgain;
   /** Reads hosts.json again, then asks every host in it for its harnesses,
    * one round at a time. The read picks up an edit by hand. A call while a
    * round runs gets one more round after it: the running round may have read
    * hosts.json before the change that the caller (Check again, a save, a
    * setup) wants seen. */
   function refresh() {
-    if (refreshing) {
-      refreshAgain ??= refreshing.catch(() => undefined).then(() => {
-        refreshAgain = undefined;
+    if (store.refreshing) {
+      store.refreshAgain ??= store.refreshing.catch(() => undefined).then(() => {
+        store.refreshAgain = undefined;
         return refresh();
       });
-      return refreshAgain;
+      return store.refreshAgain;
     }
-    refreshing = readHostsFile().then(() =>
+    store.refreshing = parts.readHostsFile().then(() =>
       Promise.all(
       HOSTS.map(async (host) => {
         try {
@@ -917,51 +993,60 @@ export async function apply(ctx) {
       }),
     ))
       .then((entries) => {
-        if (disposed) return;
+        if (store.disposed) return;
         // Only hosts still in the list keep a status.
-        hosts = Object.freeze(Object.fromEntries(HOSTS.map((host) => [host.id, hosts[host.id]]).filter(([, status]) => status).concat(entries)));
+        store.hosts = Object.freeze(Object.fromEntries(HOSTS.map((host) => [host.id, store.hosts[host.id]]).filter(([, status]) => status).concat(entries)));
         emit();
       })
       .finally(() => {
-        refreshing = undefined;
+        store.refreshing = undefined;
       });
-    return refreshing;
+    return store.refreshing;
   }
+  return { statusOf, emit, subscribe, useStore, refresh };
+}
 
+/** Model lists per host and harness, fetched once and shared by every picker, and the provider snapshot. */
+function makeModelStore(ui, store, parts) {
+  const { React } = ui;
+  const { emit, call, useStore, statusOf } = parts;
   const modelKey = (hostId, harness) => `${hostId}/${harness}`;
+
   /** Whether a fetched list still stands: an empty one never does (the
    * owner may sign in on the host at any time), a full one for the TTL. */
   const modelsFresh = (entry) => entry.models.length > 0 && Date.now() - entry.at < MODELS_TTL_MS;
+
   /** The runner's model list for a harness on a host, fetched again when a
    * picker mounts after a sign-in may have changed it, or when retried. */
   function loadModels(hostId, harness, force = false) {
     const key = modelKey(hostId, harness);
-    const known = models[key];
-    if (modelsInFlight.has(key) || (known && known.state === "ok" && !force && modelsFresh(known))) return;
-    modelsInFlight.add(key);
+    const known = store.models[key];
+    if (store.modelsInFlight.has(key) || (known && known.state === "ok" && !force && modelsFresh(known))) return;
+    store.modelsInFlight.add(key);
     // A stale list stays shown while the new one loads, so a picker does not
     // flash to "loading" on every open.
     if (!known || known.state !== "ok") {
-      models = Object.freeze({ ...models, [key]: Object.freeze({ state: "loading" }) });
+      store.models = Object.freeze({ ...store.models, [key]: Object.freeze({ state: "loading" }) });
       emit();
     }
     call(hostById(hostId), "GET", `/harnesses/${harness}/models`, undefined, HARNESS_TIMEOUT_MS).then(
       (reply) => {
-        if (disposed) return;
-        models = Object.freeze({ ...models, [key]: Object.freeze({ state: "ok", at: Date.now(), ...parseModels(reply) }) });
+        if (store.disposed) return;
+        store.models = Object.freeze({ ...store.models, [key]: Object.freeze({ state: "ok", at: Date.now(), ...parseModels(reply) }) });
         emit();
       },
       (error) => {
-        if (disposed) return;
-        models = Object.freeze({ ...models, [key]: Object.freeze({ state: "error", error: errorText(error) }) });
+        if (store.disposed) return;
+        store.models = Object.freeze({ ...store.models, [key]: Object.freeze({ state: "error", error: errorText(error) }) });
         emit();
       },
-    ).finally(() => modelsInFlight.delete(key));
+    ).finally(() => store.modelsInFlight.delete(key));
   }
+
   /** `enabled` false skips the fetch: a harness that is not ready on the host
    * has no model list to show, and asking would only fail. */
   function useModels(hostId, harness, enabled = true) {
-    const entry = useStore(() => models[modelKey(hostId, harness)]);
+    const entry = useStore(() => store.models[modelKey(hostId, harness)]);
     React.useEffect(() => {
       if (enabled) loadModels(hostId, harness);
     }, [hostId, harness, enabled]);
@@ -970,16 +1055,15 @@ export async function apply(ctx) {
 
   /** One host's view of one harness. */
   function harnessOn(hostId, harness) {
-    const status = hosts[hostId];
+    const status = store.hosts[hostId];
     return status && status.state === "ok" ? status.harnesses.find((item) => item.id === harness) : undefined;
   }
+
   /** A harness's title as the host names it, for summaries and notices. */
   function harnessTitle(hostId, harness) {
     return harnessOn(hostId, harness)?.title || harness;
   }
 
-  // A stable snapshot object, as useSyncExternalStore requires.
-  let snapshot;
   /** The type is ready when some host answers with a ready harness. */
   function providerSnapshot() {
     const statuses = HOSTS.map((host) => statusOf(host.id));
@@ -989,21 +1073,23 @@ export async function apply(ctx) {
     else if (statuses.some((status) => status.state === "checking")) next = { readiness: "checking" };
     else if (statuses.every((status) => status.state === "down")) next = { readiness: "attention", attentionLabel: "Host unreachable" };
     else next = { readiness: "attention", attentionLabel: "No harness ready on host" };
-    if (snapshot && snapshot.readiness === next.readiness && snapshot.attentionLabel === next.attentionLabel) return snapshot;
-    snapshot = Object.freeze(next);
-    return snapshot;
+    if (store.snapshot && store.snapshot.readiness === next.readiness && store.snapshot.attentionLabel === next.attentionLabel) return store.snapshot;
+    store.snapshot = Object.freeze(next);
+    return store.snapshot;
   }
+  return { modelKey, modelsFresh, loadModels, useModels, harnessOn, harnessTitle, providerSnapshot };
+}
 
-  // ---- hosts.json, through the hosts helper ---------------------------------
-  // The Settings page shows and edits hosts.json, the one host list, through
-  // the helper. A read or save also replaces HOSTS, which New agent and every
-  // runner call use, so a change is in use at once.
+// ---- hosts.json, through the hosts helper ---------------------------------
+// The Settings page shows and edits hosts.json, the one host list, through
+// the helper. A read or save also replaces HOSTS, which New agent and every
+// runner call use, so a change is in use at once.
 
-  // The file as last read or saved. `busy`: one save at a time, so two saves
-  // never race on the file.
-  let hostsFile = Object.freeze({ state: "loading", error: undefined, busy: false });
+/** hosts.json through the hosts helper: the file state the Settings page shows and edits. */
+function makeHostsFile(ui, store, parts) {
+  const { emit, helper } = parts;
   const setHostsFile = (change) => {
-    hostsFile = Object.freeze({ ...hostsFile, ...change });
+    store.hostsFile = Object.freeze({ ...store.hostsFile, ...change });
     emit();
   };
 
@@ -1031,25 +1117,26 @@ export async function apply(ctx) {
    * to the form or button that asked, and the list stays as it was. */
   async function fileCall(request) {
     if (request.op === "save") {
-      if (hostsFile.busy) throw new HostConfigError("A save is still running. Try again in a moment.", { op: request.op });
+      if (store.hostsFile.busy) throw new HostConfigError("A save is still running. Try again in a moment.", { op: request.op });
       setHostsFile({ busy: true });
     }
     try {
       const reply = await helper.call(request, HELPER_FILE_TIMEOUT_MS);
       const list = parseFileHosts(reply.hosts);
-      if (disposed) return list;
+      if (store.disposed) return list;
       setHostList(list);
       setHostsFile({ state: "ready", error: undefined });
       return list;
     } catch (error) {
-      if (!disposed && request.op === "read") setHostsFile({ state: "error", error: errorText(error) });
+      if (!store.disposed && request.op === "read") setHostsFile({ state: "error", error: errorText(error) });
       throw error;
     } finally {
-      if (!disposed && request.op === "save") setHostsFile({ busy: false });
+      if (!store.disposed && request.op === "save") setHostsFile({ busy: false });
     }
   }
 
   const readHostsFile = () => fileCall({ op: "read" }).catch(() => undefined);
+
   const saveHostsFile = (list) => fileCall({ op: "save", hosts: list.map(({ id, label, origin }) => ({ id, label, origin })) });
 
   const sameHosts = (a, b) => JSON.stringify(a.map(({ id, label, origin }) => [id, label, origin])) === JSON.stringify(b.map(({ id, label, origin }) => [id, label, origin]));
@@ -1057,7 +1144,7 @@ export async function apply(ctx) {
   /** The file's list, for a change: only after a good read, so a save can
    * never write over hosts the page did not see. */
   function fileHosts() {
-    if (hostsFile.state !== "ready") throw new HostConfigError("hosts.json is not loaded. Select Check again.", { field: "file" });
+    if (store.hostsFile.state !== "ready") throw new HostConfigError("hosts.json is not loaded. Select Check again.", { field: "file" });
     return HOSTS;
   }
 
@@ -1070,28 +1157,23 @@ export async function apply(ctx) {
     }
     return ids;
   }
+
   /** How many agents this device has placed on a host. */
   const agentsOn = (hostId) => placedHostIds().filter((id) => id === hostId).length;
+  return { setHostsFile, parseFileHosts, setHostList, fileCall, readHostsFile, saveHostsFile, sameHosts, fileHosts, placedHostIds, agentsOn };
+}
 
-  // ---- Host setup -----------------------------------------------------------
-  // Settings > Tailscale hosts > Add a host: the one setup that may run, which
-  // installs or aligns buzz-runner on the machine and lists it. Kept here, not
-  // in the view, so a setup's progress is still shown when the owner opens the
-  // page again: the helper runs the setup on, whatever page is open.
+// ---- Host setup -----------------------------------------------------------
+// Settings > Tailscale hosts > Add a host: the one setup that may run, which
+// installs or aligns buzz-runner on the machine and lists it. Kept here, not
+// in the view, so a setup's progress is still shown when the owner opens the
+// page again: the helper runs the setup on, whatever page is open.
 
-  // Desktop's community reader, if any (injected at the end of apply): it
-  // names the owner and the relay a new host's config gets.
-  let communityReader;
-  const SETUP_IDLE = Object.freeze({ state: "idle", label: "", steps: Object.freeze({}), result: undefined, error: undefined });
-  let setupRun = SETUP_IDLE;
-  // The add form's values while a setup runs or after it failed, so that the
-  // owner corrects one field and not all. Never the password.
-  let setupForm = null;
-  // The SSH login last used on each host, so that the next sign-in there asks
-  // only for the password. In memory only; a login name is not a secret.
-  const sshLogins = new Map();
+/** Host setup that outlives the page: one run at a time, its progress kept in the store. */
+function makeSetup(ui, store, parts) {
+  const { emit, placedHostIds, helper, refresh } = parts;
   const setSetupRun = (change) => {
-    setupRun = Object.freeze({ ...setupRun, ...change });
+    store.setupRun = Object.freeze({ ...store.setupRun, ...change });
     emit();
   };
 
@@ -1129,7 +1211,7 @@ export async function apply(ctx) {
   function communityDefaults() {
     let snapshot;
     try {
-      snapshot = communityReader?.snapshot?.();
+      snapshot = store.communityReader?.snapshot?.();
     } catch {
       snapshot = undefined;
     }
@@ -1147,7 +1229,7 @@ export async function apply(ctx) {
   /** Runs one setup through the helper. The password goes into the request
    * and nowhere else: not into the store, a log or an error. */
   async function startSetup({ address, sshUser, sudoPassword, ownerPubkey, relay, label }) {
-    if (setupRun.state === "running") throw new HostConfigError("A setup is already running.", { op: "setup" });
+    if (store.setupRun.state === "running") throw new HostConfigError("A setup is already running.", { op: "setup" });
     setSetupRun({ ...SETUP_IDLE, state: "running", label });
     // Ids that agents on this device still name stay taken, so a new host
     // never takes over the agents of a host removed by hand.
@@ -1156,68 +1238,78 @@ export async function apply(ctx) {
     try {
       const reply = await helper.call({ op: "setup", setup }, SETUP_IDLE_MS, (event) => {
         const entry = parseProgress(event);
-        if (entry && !disposed) setSetupRun({ steps: Object.freeze({ ...setupRun.steps, [entry[0]]: entry[1] }) });
+        if (entry && !store.disposed) setSetupRun({ steps: Object.freeze({ ...store.setupRun.steps, [entry[0]]: entry[1] }) });
       });
-      if (disposed) return;
+      if (store.disposed) return;
       const result = parseSetupResult(reply);
       // The sign-in starts with the login that the setup used: the setup
       // gave that login the sign-in rule, so sudo asks it no password.
-      if (result.hostId) sshLogins.set(result.hostId, sshUser);
-      setupForm = null;
+      if (result.hostId) store.sshLogins.set(result.hostId, sshUser);
+      store.setupForm = null;
       setSetupRun({ state: "done", result });
       void refresh();
     } catch (error) {
-      if (!disposed) setSetupRun({ state: "failed", error: errorText(error) });
+      if (!store.disposed) setSetupRun({ state: "failed", error: errorText(error) });
     }
   }
 
   /** Back to the form, once a setup has ended. */
   function resetSetup() {
-    if (setupRun.state !== "running") setSetupRun(SETUP_IDLE);
+    if (store.setupRun.state !== "running") setSetupRun(SETUP_IDLE);
   }
+  return { setSetupRun, parseProgress, parseSetupResult, communityDefaults, startSetup, resetSetup };
+}
 
-  // ---- Harness sign-in -------------------------------------------------------
-  // The Hosts page > a host > Sign in: the one sign-in that may run, a
-  // terminal on the machine that runs buzz-login as the harness user
-  // (scripts/host-signin.mjs). Kept here, as the setup is, so a sign-in that
-  // waits for the owner's browser goes on when the page closes and opens.
-  const SIGNIN_IDLE = Object.freeze({ state: "idle", hostId: "", harness: null, output: "", link: undefined, error: undefined, code: undefined });
-  let signinRun = SIGNIN_IDLE;
+// ---- Harness sign-in -------------------------------------------------------
+// The Hosts page > a host > Sign in: the one sign-in that may run, a
+// terminal on the machine that runs buzz-login as the harness user
+// (scripts/host-signin.mjs). Kept here, as the setup is, so a sign-in that
+// waits for the owner's browser goes on when the page closes and opens.
+
+/** Harness sign-in that outlives the page: one terminal at a time, kept in the store. */
+function makeSignIn(ui, store, parts) {
+  const { emit, helper, refresh } = parts;
   const setSigninRun = (change) => {
-    signinRun = Object.freeze({ ...signinRun, ...change });
+    store.signinRun = Object.freeze({ ...store.signinRun, ...change });
     emit();
   };
 
   /** Runs one sign-in through the helper. The password goes into the
    * request and nowhere else: not into the store, a log or an error. */
   async function startSignIn({ hostId, harness, sshUser, sudoPassword, command }) {
-    if (signinRun.state === "running") throw new HostConfigError("A sign-in is already running.", { op: "signin" });
+    if (store.signinRun.state === "running") throw new HostConfigError("A sign-in is already running.", { op: "signin" });
     setSigninRun({ ...SIGNIN_IDLE, state: "running", hostId, harness });
     try {
       const reply = await helper.call({ op: "signin", signin: { host: hostId, sshUser, sudoPassword, command } }, SIGNIN_IDLE_MS, (event) => {
-        if (disposed || !event) return;
-        const link = typeof event.link === "string" && CHECK_LINK.test(event.link) ? event.link : signinRun.link;
-        setSigninRun({ output: text(event.output, SIGNIN_OUTPUT_MAX) ?? signinRun.output, link });
+        if (store.disposed || !event) return;
+        const link = typeof event.link === "string" && CHECK_LINK.test(event.link) ? event.link : store.signinRun.link;
+        setSigninRun({ output: text(event.output, SIGNIN_OUTPUT_MAX) ?? store.signinRun.output, link });
       });
-      if (disposed) return;
-      setSigninRun({ state: "done", code: Number.isInteger(reply.code) ? reply.code : undefined, output: text(reply.output, SIGNIN_OUTPUT_MAX) ?? signinRun.output });
+      if (store.disposed) return;
+      setSigninRun({ state: "done", code: Number.isInteger(reply.code) ? reply.code : undefined, output: text(reply.output, SIGNIN_OUTPUT_MAX) ?? store.signinRun.output });
       // A sign-in changes what each harness reports.
       void refresh();
     } catch (error) {
-      if (!disposed) setSigninRun({ state: "failed", error: errorText(error) });
+      if (!store.disposed) setSigninRun({ state: "failed", error: errorText(error) });
     }
   }
 
   /** One typed line, or the cancel, to the running sign-in. Neither is
    * kept: a line may be a key. */
   const sendSignInInput = (line) => helper.call({ op: "signin-input", text: line }, REQUEST_TIMEOUT_MS);
+
   const cancelSignIn = () => helper.call({ op: "signin-cancel" }, REQUEST_TIMEOUT_MS);
 
   /** Forgets a sign-in that has ended, so that the next one starts clean. */
   function resetSignIn() {
-    if (signinRun.state !== "running") setSigninRun(SIGNIN_IDLE);
+    if (store.signinRun.state !== "running") setSigninRun(SIGNIN_IDLE);
   }
+  return { setSigninRun, startSignIn, sendSignInInput, cancelSignIn, resetSignIn };
+}
 
+/** Checks and edits of hosts.json entries, refused while agents still run on a host. */
+function makeHostEdits(ui, store, parts) {
+  const { fileHosts, saveHostsFile, agentsOn } = parts;
   function fileHost(list, id) {
     const host = list.find((entry) => entry.id === id);
     if (!host) throw new HostConfigError("This host is no longer in hosts.json. Select Check again.", { field: "id", id });
@@ -1262,16 +1354,21 @@ export async function apply(ctx) {
     if (count) throw new HostConfigError(`${count} agent${count === 1 ? " runs" : "s run"} on ${host.label}. Delete them first.`, { field: "id", id });
     await saveHostsFile(list.filter((entry) => entry.id !== id));
   }
+  return { fileHost, checkNewHost, updateHost, removeHost };
+}
 
-  // ---- Desktop markup -------------------------------------------------------
-  // A plugin cannot import Desktop's design system, but Desktop's CSS is
-  // global in the WebView. These views render the elements, class names and
-  // data attributes of Desktop's own components (shared/design-system/ui:
-  // Button, Select, Menu, ChoiceRow, PreferenceRow, SettingsGroup, Field,
-  // Input, Textarea; features/agents: ModelPicker, CreateModelChoices,
-  // AgentInstructions, AgentSaveButton), so a hosted agent looks and acts as
-  // Desktop's own agents. Keep them in step with those files.
+// ---- Desktop markup -------------------------------------------------------
+// A plugin cannot import Desktop's design system, but Desktop's CSS is
+// global in the WebView. These views render the elements, class names and
+// data attributes of Desktop's own components (shared/design-system/ui:
+// Button, Select, Menu, ChoiceRow, PreferenceRow, SettingsGroup, Field,
+// Input, Textarea; features/agents: ModelPicker, CreateModelChoices,
+// AgentInstructions, AgentSaveButton), so a hosted agent looks and acts as
+// Desktop's own agents. Keep them in step with those files.
 
+/** Desktop's basic controls, rebuilt from its markup because a plugin cannot import them. */
+function makeControls(ui, store, parts) {
+  const { React, h } = ui;
   function Button({ variant = "subtle", size = "md", shape = "capsule", type = "button", loading = false, disabled, children, ...props }) {
     const off = Boolean(disabled || loading);
     return h(
@@ -1348,7 +1445,13 @@ export async function apply(ctx) {
   function Input(props) {
     return h("input", { ...props, "data-buzz-ui": "", "data-size": "md", className: "buzz-input" });
   }
+  return { Button, PreferenceRow, SettingsGroup, ChoiceRow, Field, Input };
+}
 
+/** The instructions field shared by New agent and Settings. */
+function makeInstructions(ui, store, parts) {
+  const { React, h } = ui;
+  const { Field } = parts;
   function AgentInstructions({ value, disabled, onChange, creation = false }) {
     const id = React.useId();
     return h(
@@ -1370,7 +1473,12 @@ export async function apply(ctx) {
       }),
     );
   }
+  return { AgentInstructions };
+}
 
+/** The floating layer under a trigger that every popup list uses. */
+function makeFloating(ui, store, parts) {
+  const { React, h } = ui;
   /** Desktop's anchored popup (Base UI Positioner): fixed beside its trigger,
    * flipped above when there is more room there, and in the top layer when
    * the WebView has the Popover API, so a dialog's clipping cannot cut it.
@@ -1461,7 +1569,12 @@ export async function apply(ctx) {
       ),
     );
   }
+  return { Floating };
+}
 
+/** Keyboard and focus behaviour shared by Select and the harness menu. */
+function makeListPopup(ui, store, parts) {
+  const { React } = ui;
   /** Open state, highlight and keys of one Desktop list popup (Select or
    * Menu), as Base UI handles them: arrows, Home and End move, Enter and
    * Space choose, Escape closes back to the trigger, Tab closes. */
@@ -1522,24 +1635,16 @@ export async function apply(ctx) {
     };
     return { trigger, popup, open, active, setActive, show, close, choose, onPopupKeyDown, onTriggerKeyDown };
   }
+  return { useListPopup };
+}
 
-  /** Desktop's Select. Options are `{value, label, description?, leading?,
-   * disabled?}`. `preference` is the settings row, `compact` the dialog
-   * pill, `field` the labelled form field. */
-  function Select({ label, value, options, onValueChange, variant = "compact", disabled = false, description, valueLabel, valueSuffix, valueTitle, leading, align = "start", placeholder }) {
-    const base = variant === "preference" ? "compact" : variant;
-    const id = React.useId();
-    const selectedIndex = options.findIndex((option) => option.value === value);
-    const selected = options[selectedIndex];
-    const list = useListPopup({
-      count: options.length,
-      isDisabled: (index) => Boolean(options[index].disabled),
-      selectedIndex,
-      disabled,
-      onChoose: (index) => {
-        if (options[index].value !== value) onValueChange(options[index].value);
-      },
-    });
+/** Select's trigger parts, kept apart so each render function stays small. */
+function makeSelectTrigger(ui, store, parts) {
+  const { h, glyphs } = ui;
+  const { Button } = parts;
+  /** The trigger's value and its leading mark; apart from Select so the
+   * picker's body stays within the complexity budget. */
+  function selectValue({ base, selected, leading, valueLabel, valueSuffix, valueTitle, placeholder }) {
     const empty = !selected && valueLabel === undefined;
     const valueText = h(
       "span",
@@ -1550,7 +1655,7 @@ export async function apply(ctx) {
       },
       valueLabel ?? (selected ? selected.label : placeholder ?? ""),
     );
-    const valueContent = h(
+    return h(
       "span",
       { className: "buzz-select-value-content" },
       leading ? h("span", { className: "buzz-select-leading", "aria-hidden": "true" }, leading) : null,
@@ -1563,6 +1668,11 @@ export async function apply(ctx) {
             base === "compact" && valueSuffix ? h("span", { className: "buzz-select-value-suffix" }, valueSuffix) : null,
           ),
     );
+  }
+
+  /** The trigger: a form-field button in a field, Desktop's Button
+   * elsewhere, with the same combobox wiring in both. */
+  function selectTrigger({ base, variant, label, id, list, disabled, valueContent }) {
     const triggerProps = {
       ref: list.trigger,
       id: `${id}-trigger`,
@@ -1575,27 +1685,81 @@ export async function apply(ctx) {
       onClick: () => (list.open ? list.close(false) : list.show()),
       onKeyDown: list.onTriggerKeyDown,
     };
-    const trigger =
-      base === "field"
+    return base === "field"
+      ? h(
+          "button",
+          { ...triggerProps, type: "button", "aria-labelledby": `${id}-label`, "data-buzz-ui": "", className: "buzz-input buzz-select-trigger" },
+          valueContent,
+          h("span", { "aria-hidden": "true" }, h(glyphs.caret, { size: FIELD_CHEVRON_SIZE, className: "buzz-dropdown-chevron", "aria-hidden": "true" })),
+        )
+      : h(
+          Button,
+          {
+            ...triggerProps,
+            "aria-label": label,
+            shape: variant === "preference" ? "control" : "capsule",
+            variant: base === "compact" ? "outline" : "ghost",
+            size: base === "compact" ? "sm" : "md",
+          },
+          valueContent,
+          h("span", { "aria-hidden": "true" }, h(glyphs.caret, { size: CHEVRON_SIZE, className: "buzz-dropdown-chevron", "aria-hidden": "true" })),
+        );
+  }
+  return { selectValue, selectTrigger };
+}
+
+/** Select's open list and its option rows. */
+function makeSelectList(ui, store, parts) {
+  const { h, glyphs } = ui;
+  const { Floating } = parts;
+  /** One option row as Desktop draws it: mark, label, description and
+   * the check. */
+  function selectOption({ option, index, id, value, base, list }) {
+    const chosen = option.value === value;
+    return h(
+      "div",
+      {
+        key: option.value,
+        id: `${id}-option-${index}`,
+        role: "option",
+        "aria-selected": chosen,
+        "aria-disabled": option.disabled || undefined,
+        "aria-label": option.label,
+        "aria-describedby": option.description ? `${id}-description-${index}` : undefined,
+        className: "buzz-select-option",
+        "data-selected": chosen ? "" : undefined,
+        "data-highlighted": index === list.active ? "" : undefined,
+        "data-disabled": option.disabled ? "" : undefined,
+        onMouseEnter: () => !option.disabled && list.setActive(index),
+        onClick: () => list.choose(index),
+      },
+      h(
+        "span",
+        { className: "buzz-select-option-main" },
+        option.leading ? h("span", { className: "buzz-select-leading", "aria-hidden": "true" }, option.leading) : null,
+        h(
+          "span",
+          { className: "buzz-select-option-content" },
+          h("div", null, option.label),
+          option.description
+            ? h("span", { id: `${id}-description-${index}`, className: "buzz-select-option-description text-body-sm text-subtle" }, option.description)
+            : null,
+        ),
+      ),
+      // Desktop keeps the check's space in compact lists so labels line up.
+      base === "compact" || chosen
         ? h(
-            "button",
-            { ...triggerProps, type: "button", "aria-labelledby": `${id}-label`, "data-buzz-ui": "", className: "buzz-input buzz-select-trigger" },
-            valueContent,
-            h("span", { "aria-hidden": "true" }, h(glyphs.caret, { size: FIELD_CHEVRON_SIZE, className: "buzz-dropdown-chevron", "aria-hidden": "true" })),
+            "span",
+            { className: "buzz-select-indicator", "data-selected": chosen ? "" : undefined, "aria-hidden": "true" },
+            h(glyphs.check, { size: CHECK_SIZE, "aria-hidden": "true" }),
           )
-        : h(
-            Button,
-            {
-              ...triggerProps,
-              "aria-label": label,
-              shape: variant === "preference" ? "control" : "capsule",
-              variant: base === "compact" ? "outline" : "ghost",
-              size: base === "compact" ? "sm" : "md",
-            },
-            valueContent,
-            h("span", { "aria-hidden": "true" }, h(glyphs.caret, { size: CHEVRON_SIZE, className: "buzz-dropdown-chevron", "aria-hidden": "true" })),
-          );
-    const popup = list.open
+        : null,
+    );
+  }
+
+  /** The open list in its floating layer, or null while closed. */
+  function selectPopup({ base, label, id, list, align, options, value }) {
+    return list.open
       ? h(
           Floating,
           {
@@ -1622,52 +1786,39 @@ export async function apply(ctx) {
             h(
               "div",
               { role: "group" },
-              options.map((option, index) => {
-                const chosen = option.value === value;
-                return h(
-                  "div",
-                  {
-                    key: option.value,
-                    id: `${id}-option-${index}`,
-                    role: "option",
-                    "aria-selected": chosen,
-                    "aria-disabled": option.disabled || undefined,
-                    "aria-label": option.label,
-                    "aria-describedby": option.description ? `${id}-description-${index}` : undefined,
-                    className: "buzz-select-option",
-                    "data-selected": chosen ? "" : undefined,
-                    "data-highlighted": index === list.active ? "" : undefined,
-                    "data-disabled": option.disabled ? "" : undefined,
-                    onMouseEnter: () => !option.disabled && list.setActive(index),
-                    onClick: () => list.choose(index),
-                  },
-                  h(
-                    "span",
-                    { className: "buzz-select-option-main" },
-                    option.leading ? h("span", { className: "buzz-select-leading", "aria-hidden": "true" }, option.leading) : null,
-                    h(
-                      "span",
-                      { className: "buzz-select-option-content" },
-                      h("div", null, option.label),
-                      option.description
-                        ? h("span", { id: `${id}-description-${index}`, className: "buzz-select-option-description text-body-sm text-subtle" }, option.description)
-                        : null,
-                    ),
-                  ),
-                  // Desktop keeps the check's space in compact lists so labels line up.
-                  base === "compact" || chosen
-                    ? h(
-                        "span",
-                        { className: "buzz-select-indicator", "data-selected": chosen ? "" : undefined, "aria-hidden": "true" },
-                        h(glyphs.check, { size: CHECK_SIZE, "aria-hidden": "true" }),
-                      )
-                    : null,
-                );
-              }),
+              options.map((option, index) => selectOption({ option, index, id, value, base, list })),
             ),
           ),
         )
       : null;
+  }
+  return { selectOption, selectPopup };
+}
+
+/** Desktop's Select, assembled from its trigger and list parts. */
+function makeSelect(ui, store, parts) {
+  const { React, h } = ui;
+  const { useListPopup, selectValue, selectTrigger, selectPopup, PreferenceRow, Field } = parts;
+  /** Desktop's Select. Options are `{value, label, description?, leading?,
+   * disabled?}`. `preference` is the settings row, `compact` the dialog
+   * pill, `field` the labelled form field. */
+  function Select({ label, value, options, onValueChange, variant = "compact", disabled = false, description, valueLabel, valueSuffix, valueTitle, leading, align = "start", placeholder }) {
+    const base = variant === "preference" ? "compact" : variant;
+    const id = React.useId();
+    const selectedIndex = options.findIndex((option) => option.value === value);
+    const selected = options[selectedIndex];
+    const list = useListPopup({
+      count: options.length,
+      isDisabled: (index) => Boolean(options[index].disabled),
+      selectedIndex,
+      disabled,
+      onChoose: (index) => {
+        if (options[index].value !== value) onValueChange(options[index].value);
+      },
+    });
+    const valueContent = selectValue({ base, selected, leading, valueLabel, valueSuffix, valueTitle, placeholder });
+    const trigger = selectTrigger({ base, variant, label, id, list, disabled, valueContent });
+    const popup = selectPopup({ base, label, id, list, align, options, value });
     const control = h(
       "div",
       { "data-buzz-ui": "", className: "buzz-select text-body", "data-variant": base, "data-appearance": "outlined" },
@@ -1680,9 +1831,15 @@ export async function apply(ctx) {
       return h(Field, { label: h("span", { id: `${id}-label` }, label), description, nativeLabel: false }, control);
     return control;
   }
+  return { Select };
+}
 
-  // ---- Hosted rows ----------------------------------------------------------
+// ---- Hosted rows ----------------------------------------------------------
 
+/** Harness marks and the compact harness picker of the New agent dialog. */
+function makeHarnessSelect(ui, store, parts) {
+  const { h, icons } = ui;
+  const { useStore, Select } = parts;
   /** A harness mark for the host's harness id, at Desktop's size. */
   const harnessIcon = (id) => (icons[id] ? h(icons[id], { size: HARNESS_ICON_SIZE, "aria-hidden": "true" }) : null);
 
@@ -1697,7 +1854,7 @@ export async function apply(ctx) {
    * is listed but cannot be picked, with the host's reason; an agent on a
    * harness the host no longer lists keeps showing it. */
   function harnessChoices(hostId, value) {
-    const status = hosts[hostId];
+    const status = store.hosts[hostId];
     const list = status.state === "ok" ? status.harnesses : [];
     const items = list.map((item) => ({
       id: item.id,
@@ -1713,26 +1870,35 @@ export async function apply(ctx) {
   /** The New agent dialog's harness pill: Desktop's compact Select with the
    * harness marks, as its Harness row shows agent types. */
   function HarnessSelect({ hostId, value, disabled, onChange }) {
-    const status = useStore(() => hosts[hostId]);
+    const status = useStore(() => store.hosts[hostId]);
     if (status.state === "checking")
       return h("span", { role: "status", className: "text-body-sm text-secondary" }, "Checking harnesses…");
     const items = harnessChoices(hostId, value);
+    // Kept out of the object literal below: lizard reads a bare `<` there as
+    // a generic type opener and loses the rest of the file's scan.
+    const nothingToPick = items.length < 2;
     return h(Select, {
       label: LABELS.harness,
       variant: "compact",
       align: "end",
       value,
       leading: harnessIcon(value),
-      disabled: disabled || items.length < 2,
+      disabled: disabled || nothingToPick,
       options: items.map((item) => ({ value: item.id, label: item.title, description: item.description, disabled: item.disabled, leading: harnessIcon(item.id) })),
       onValueChange: onChange,
     });
   }
+  return { harnessIcon, modelLogo, harnessChoices, HarnessSelect };
+}
 
+/** The harness menu of the Settings tab, as Desktop's own. */
+function makeHarnessMenu(ui, store, parts) {
+  const { React, h, glyphs } = ui;
+  const { useStore, harnessChoices, useListPopup, harnessIcon, Button, Floating, ChoiceRow, PreferenceRow } = parts;
   /** The profile Settings harness row: Desktop's harness menu (the
    * AgentSettingsHost TypeField pill), listing the host's harnesses. */
   function HarnessMenu({ hostId, value, disabled, onChange }) {
-    const status = useStore(() => hosts[hostId]);
+    const status = useStore(() => store.hosts[hostId]);
     const items = harnessChoices(hostId, value);
     const selectedIndex = items.findIndex((item) => item.id === value);
     const title = (items[selectedIndex] && items[selectedIndex].title) || value;
@@ -1822,7 +1988,13 @@ export async function apply(ctx) {
         : current;
     return h(PreferenceRow, { title: LABELS.harness, trailing: menu });
   }
+  return { HarnessMenu };
+}
 
+/** The model picker and its custom model field. */
+function makeModelSelect(ui, store, parts) {
+  const { React, h } = ui;
+  const { useModels, modelLogo, Select, Field, Input, Button } = parts;
   /** Desktop's ModelPicker (list form): the host's default first, marked
    * Default, then the host's models with vendor logos; Settings adds Custom
    * model. `value` "" follows the host's default. */
@@ -1830,22 +2002,7 @@ export async function apply(ctx) {
     const list = useModels(hostId, harness);
     const [custom, setCustom] = React.useState(null);
     const inputId = React.useId();
-    const loading = list.state === "loading";
-    const known = list.state === "ok" ? list.models : [];
-    const defaultModel = list.state === "ok" ? list.current : "";
-    const defaultChoice = known.find((model) => model.id === defaultModel);
-    const fallback = {
-      id: "",
-      label: defaultChoice ? defaultChoice.label : defaultModel || LABELS.modelUnavailable,
-      description: LABELS.defaultDescription,
-    };
-    const listed = known.filter((model) => model.id !== defaultModel || model.id === value);
-    if (value && !listed.some((model) => model.id === value))
-      listed.push({ id: value, label: value, description: LABELS.customListed });
-    const shown = [fallback, ...listed];
-    const selected = shown.find((model) => model.id === (value || defaultModel)) || fallback;
-    const inherited = value === "";
-    const choices = compact ? shown : [...shown, { id: CUSTOM_MODEL, label: LABELS.custom, description: LABELS.customDescription }];
+    const { loading, known, selected, inherited, choices } = modelChoices(list, value, compact);
     const logos = choices.map((model) => modelLogo(`${model.id} ${model.label}`));
     const anyLogo = logos.some(Boolean);
     const select = h(Select, {
@@ -1873,15 +2030,18 @@ export async function apply(ctx) {
     if (custom === null) return select;
     // Desktop asks for a custom id in a small dialog; a plugin has no dialog
     // of Desktop's, so the same field opens under the row instead.
+    return h(React.Fragment, null, select, ...customModelField({ custom, setCustom, inputId, onChange }));
+  }
+
+  /** The custom model id field and its buttons under ModelSelect's row; a
+   * plain call, not a component, so the rendered tree stays the picker's. */
+  function customModelField({ custom, setCustom, inputId, onChange }) {
     const use = () => {
       if (!custom.trim()) return;
       onChange(custom.trim().slice(0, MODEL_MAX));
       setCustom(null);
     };
-    return h(
-      React.Fragment,
-      null,
-      select,
+    return [
       h(
         Field,
         { label: LABELS.modelId, controlId: inputId },
@@ -1908,10 +2068,17 @@ export async function apply(ctx) {
         h(Button, { onClick: () => setCustom(null) }, LABELS.cancel),
         h(Button, { variant: "prominent", disabled: !custom.trim(), onClick: use }, LABELS.useModel),
       ),
-    );
+    ];
   }
+  return { ModelSelect, customModelField };
+}
 
+/** Thinking levels and the readiness words the agent views share. */
+function makeEffort(ui, store, parts) {
+  const { h, icons } = ui;
+  const { useModels, Select, modelKey, harnessOn } = parts;
   const dedupe = (efforts) => efforts.filter((level, index) => efforts.findIndex((item) => item.id === level.id) === index);
+
   /** The levels of the model a run uses; with no model match, any level some
    * listed model has. */
   function effortsFor(list, model) {
@@ -1947,7 +2114,7 @@ export async function apply(ctx) {
   /** Desktop's rule on a model change: a level the new model does not list
    * goes back to Automatic; without the host's list, the level is kept. */
   function keptEffort(hostId, harness, model, effort) {
-    const list = models[modelKey(hostId, harness)];
+    const list = store.models[modelKey(hostId, harness)];
     if (!effort || !list || list.state !== "ok") return effort;
     return effortsFor(list, model).some((level) => level.id === effort) ? effort : "";
   }
@@ -1966,7 +2133,7 @@ export async function apply(ctx) {
 
   /** Why the chosen harness cannot be used now, or "" when it can. */
   function harnessProblem(hostId, harness) {
-    const status = hosts[hostId];
+    const status = store.hosts[hostId];
     if (status.state === "down") return status.error;
     if (status.state !== "ok") return "";
     const entry = harnessOn(hostId, harness);
@@ -1981,7 +2148,7 @@ export async function apply(ctx) {
 
   /** A harness's readiness on one host, in the owner's words. */
   function readinessLine(host, harness) {
-    const status = hosts[host.id];
+    const status = store.hosts[host.id];
     if (status.state === "checking") return "Checking…";
     if (status.state === "down") return status.error;
     const entry = harnessOn(host.id, harness.id);
@@ -1989,9 +2156,15 @@ export async function apply(ctx) {
     if (entry.ready) return ["Ready", entry.version, entry.account].filter(Boolean).join(" · ");
     return entry.message || "Not ready.";
   }
+  return { dedupe, effortsFor, EffortSelect, keptEffort, pick, harnessProblem, runsOn, readinessLine };
+}
 
-  // ---- The hosted agent type ------------------------------------------------
+// ---- The hosted agent type ------------------------------------------------
 
+/** The New agent dialog's pills and its host form. */
+function makeCreate(ui, store, parts) {
+  const { React, h } = ui;
+  const { useStore, pick, harnessProblem, harnessOn, useModels, HarnessSelect, ModelSelect, Button, loadModels, Select, AgentInstructions } = parts;
   /** New agent dialog, Model row: the harness pill and the model pill, laid
    * out as Desktop's CreateModelChoices. Desktop's own Harness row above
    * shows the type ("Tailscale host (hosted)"), which is where it runs.
@@ -1999,7 +2172,7 @@ export async function apply(ctx) {
    * error is longer than Desktop's own messages in this row. */
   function CreateModel(props) {
     const config = cleanConfig(props.config);
-    useStore(() => hosts);
+    useStore(() => store.hosts);
     const set = (patch) => props.onChange(pick(config, patch));
     const problem = harnessProblem(config.host, config.harness);
     const ready = Boolean(harnessOn(config.host, config.harness)?.ready);
@@ -2042,7 +2215,7 @@ export async function apply(ctx) {
    * Sessions keep Desktop's default and change in Settings, as Desktop's do. */
   function Create(props) {
     const list = useStore(() => HOSTS);
-    const file = useStore(() => hostsFile);
+    const file = useStore(() => store.hostsFile);
     const config = cleanConfig(props.config);
     const set = (patch) => props.onChange(pick(config, patch));
     if (!list.length) return h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, file.error || LABELS.noHosts);
@@ -2062,25 +2235,24 @@ export async function apply(ctx) {
       h(AgentInstructions, { creation: true, value: config.instructions, disabled: props.disabled, onChange: (instructions) => set({ instructions }) }),
     );
   }
+  return { CreateModel, Create };
+}
 
-  /** Settings tab, split as Desktop's. Identity: where it runs, harness,
-   * model, thinking and instructions. Runtime: workspace and sessions. It
-   * saves to the runner, which restarts the agent on a new harness. */
-  function Settings(props) {
-    const { agent, settingsSection, settingsContent } = props;
-    const form = React.useId();
-    const workspaceId = React.useId();
-    const [state, setState] = React.useState({ status: "loading" });
-    const [draft, setDraft] = React.useState(null);
-    const [saved, setSaved] = React.useState(null);
-    useStore(() => hosts);
+/** The Settings load hook, identity group and save button sit apart so the form stays within the size limit. */
+function makeSettingsParts(ui, store, parts) {
+  const { React, h } = ui;
+  const { locate, call, SettingsGroup, PreferenceRow, runsOn, HarnessMenu, ModelSelect, EffortSelect, Button } = parts;
+  /** Loads the agent's config from the host that holds it; a hook of its
+   * own so Settings stays within the complexity budget. The `live` flag
+   * drops an answer that comes after the tab closed. */
+  function useSettingsLoad(pubkey, { setState, setDraft, setSaved }) {
     React.useEffect(() => {
       let live = true;
       (async () => {
         try {
-          const host = await locate(agent.pubkey);
+          const host = await locate(pubkey);
           if (!host) throw new RunnerError("No host knows this agent.", { op: "settings" });
-          const record = await call(host, "GET", `/agents/${agent.pubkey}`);
+          const record = await call(host, "GET", `/agents/${pubkey}`);
           if (!live) return;
           const loaded = cleanConfig({ ...(record && record.config), host: host.id });
           setState({ status: "ready", host, workspace: text(record && record.workspace, TEXT_MAX) || "" });
@@ -2093,7 +2265,51 @@ export async function apply(ctx) {
       return () => {
         live = false;
       };
-    }, [agent.pubkey]);
+    }, [pubkey]);
+  }
+
+  /** The identity group: where it runs, harness, and, once the harness is
+   * ready, model and thinking. */
+  function settingsIdentity({ state, draft, ready, set }) {
+    return h(
+      SettingsGroup,
+      null,
+      h(PreferenceRow, { title: LABELS.runsOn, trailing: runsOn(state.host) }),
+      h(HarnessMenu, { hostId: state.host.id, value: draft.harness, disabled: Boolean(state.saving), onChange: (harness) => set({ harness }) }),
+      ready
+        ? h(ModelSelect, { key: draft.harness, hostId: state.host.id, harness: draft.harness, value: draft.model || "", onChange: (model) => set({ model }) })
+        : null,
+      ready
+        ? h(EffortSelect, { hostId: state.host.id, harness: draft.harness, model: draft.model, value: draft.effort || "", onChange: (effort) => set({ effort }) })
+        : null,
+    );
+  }
+
+  /** Save, shown only while there is something to save or a save runs; a
+   * helper so Settings stays within the complexity budget. */
+  function saveButton({ form, dirty, saving }) {
+    if (!dirty && !saving) return null;
+    return h("div", null, h(Button, { type: "submit", form, variant: "prominent", loading: Boolean(saving), disabled: !dirty }, saving ? LABELS.saving : LABELS.save));
+  }
+  return { useSettingsLoad, settingsIdentity, saveButton };
+}
+
+/** The Settings tab of a hosted agent. */
+function makeSettings(ui, store, parts) {
+  const { React, h } = ui;
+  const { useStore, useSettingsLoad, call, harnessTitle, harnessProblem, harnessOn, pick, settingsIdentity, AgentInstructions, Field, Input, Select, saveButton } = parts;
+  /** Settings tab, split as Desktop's. Identity: where it runs, harness,
+   * model, thinking and instructions. Runtime: workspace and sessions. It
+   * saves to the runner, which restarts the agent on a new harness. */
+  function Settings(props) {
+    const { agent, settingsSection, settingsContent } = props;
+    const form = React.useId();
+    const workspaceId = React.useId();
+    const [state, setState] = React.useState({ status: "loading" });
+    const [draft, setDraft] = React.useState(null);
+    const [saved, setSaved] = React.useState(null);
+    useStore(() => store.hosts);
+    useSettingsLoad(agent.pubkey, { setState, setDraft, setSaved });
 
     if (state.status === "loading") return h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, "Loading from host…");
     if (state.status === "error") return h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, state.message);
@@ -2105,7 +2321,9 @@ export async function apply(ctx) {
       try {
         await call(state.host, "PUT", `/agents/${agent.pubkey}/config`, runtimeConfig(draft));
         setSaved(draft);
-        setState({ ...state, saving: false, notice: moved ? `Saved. The agent restarted on ${harnessTitle(state.host.id, draft.harness)}.` : "Saved. New sessions use it." });
+        // Out of the object literal: lizard 1.24.3 misreads a ternary call there.
+        const notice = moved ? `Saved. The agent restarted on ${harnessTitle(state.host.id, draft.harness)}.` : "Saved. New sessions use it.";
+        setState({ ...state, saving: false, notice });
       } catch (error) {
         setState({ ...state, saving: false, error: errorText(error) });
       }
@@ -2115,6 +2333,8 @@ export async function apply(ctx) {
     const problem = harnessProblem(state.host.id, draft.harness);
     const ready = Boolean(harnessOn(state.host.id, draft.harness)?.ready);
     const set = (patch) => setDraft(pick(draft, patch));
+    // Hoisted: lizard 1.24.3 misreads this ternary call inside the form's arguments.
+    const identityGroup = identity ? settingsIdentity({ state, draft, ready, set }) : null;
     return h(
       "form",
       {
@@ -2126,20 +2346,7 @@ export async function apply(ctx) {
         },
       },
       state.error ? h("p", { role: "alert", tabIndex: -1, className: "buzz-field-error" }, state.error) : null,
-      identity
-        ? h(
-            SettingsGroup,
-            null,
-            h(PreferenceRow, { title: LABELS.runsOn, trailing: runsOn(state.host) }),
-            h(HarnessMenu, { hostId: state.host.id, value: draft.harness, disabled: Boolean(state.saving), onChange: (harness) => set({ harness }) }),
-            ready
-              ? h(ModelSelect, { key: draft.harness, hostId: state.host.id, harness: draft.harness, value: draft.model || "", onChange: (model) => set({ model }) })
-              : null,
-            ready
-              ? h(EffortSelect, { hostId: state.host.id, harness: draft.harness, model: draft.model, value: draft.effort || "", onChange: (effort) => set({ effort }) })
-              : null,
-          )
-        : null,
+      identityGroup,
       identity && problem ? h("p", { role: "alert", className: "m-0 mt-1 text-body-sm text-danger" }, problem) : null,
       identity ? h(AgentInstructions, { value: draft.instructions, disabled: false, onChange: (instructions) => set({ instructions }) }) : null,
       runtime
@@ -2154,28 +2361,32 @@ export async function apply(ctx) {
             label: LABELS.sessions,
             variant: "preference",
             value: draft.scope,
-            options: SCOPES.map(([value, label]) => ({ value, label })),
+            options: SCOPE_OPTIONS,
             onValueChange: (scope) => set({ scope }),
           })
         : null,
       // Desktop shows Save only while there is something to save.
-      dirty || state.saving
-        ? h("div", null, h(Button, { type: "submit", form, variant: "prominent", loading: Boolean(state.saving), disabled: !dirty }, state.saving ? LABELS.saving : LABELS.save))
-        : null,
+      saveButton({ form, dirty, saving: state.saving }),
       state.notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, state.notice) : null,
       runtime ? settingsContent || null : null,
     );
   }
+  return { Settings };
+}
 
+/** The provider dialog and the panel notice for unreachable hosts. */
+function makeProviderViews(ui, store, parts) {
+  const { React, h } = ui;
+  const { useStore, statusOf, SettingsGroup, PreferenceRow, harnessIcon, readinessLine, Button, refresh } = parts;
   /** The provider dialog: each host and every harness on it, and a recheck. */
   function DialogBody({ onClose }) {
-    useStore(() => hosts);
+    useStore(() => store.hosts);
     const list = useStore(() => HOSTS);
     const [checking, setChecking] = React.useState(false);
     return h(
       "div",
       { className: "grid gap-4" },
-      list.length ? null : h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, hostsFile.error || LABELS.noHosts),
+      list.length ? null : h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, store.hostsFile.error || LABELS.noHosts),
       list.map((host) => {
         const status = statusOf(host.id);
         return h(
@@ -2226,7 +2437,7 @@ export async function apply(ctx) {
   /** Pinned across the agent's tabs while no host answers: settings and
    * profile changes need the runner, so the host's access notice fits. */
   function PanelFooter() {
-    useStore(() => hosts);
+    useStore(() => store.hosts);
     const list = useStore(() => HOSTS);
     const down = list.filter((host) => statusOf(host.id).state === "down");
     if (!down.length || down.length < list.length) return null;
@@ -2236,9 +2447,15 @@ export async function apply(ctx) {
       `Can't reach ${down.map((host) => host.label).join(", ")}. Settings and profile changes wait until it answers.`,
     );
   }
+  return { DialogBody, PanelFooter };
+}
 
-  // ---- The Hosts page and the Settings card ---------------------------------
+// ---- The Hosts page and the Settings card ---------------------------------
 
+/** The host edit form and the page's shared headers and marks. */
+function makeHostForm(ui, store, parts) {
+  const { React, h } = ui;
+  const { updateHost, Field, Input, Button } = parts;
   /** Edit form for one listed host: a plain save of hosts.json, with no
    * setup. Errors stay beside the form until the owner types again. */
   function HostForm({ host, disabled, onDone, onCancel }) {
@@ -2299,9 +2516,6 @@ export async function apply(ctx) {
     );
   }
 
-  // The state of one step, in the words and with the mark the page shows.
-  const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for you", failed: "Failed" });
-
   /** Desktop's content header (shared/design-system/ui/Header.tsx): one
    * heading shape for every part of the page, so the parts read as sections. */
   function ContentHeader({ title, subtitle, actions, level = 2, inline = false }) {
@@ -2323,7 +2537,13 @@ export async function apply(ctx) {
   function StateDot({ tone }) {
     return h("span", { "aria-hidden": "true", "data-tone": tone, style: { ...DOT_STYLE, background: TONE_COLORS[tone] } });
   }
+  return { HostForm, ContentHeader, StateDot };
+}
 
+/** The setup's step list and its result. */
+function makeSetupSteps(ui, store, parts) {
+  const { h, glyphs } = ui;
+  const { StateDot, useStore, Button } = parts;
   /** The mark of one setup step: pending, running, waiting, done or failed. */
   function StepMark({ state }) {
     if (state === "done") return h(glyphs.check, { size: STEP_MARK_SIZE, "aria-hidden": "true", style: { color: TONE_COLORS.good } });
@@ -2409,7 +2629,13 @@ export async function apply(ctx) {
       ),
     );
   }
+  return { StepMark, ApproveLink, SetupSteps, SetupResult };
+}
 
+/** A running or finished setup as the Hosts page shows it. */
+function makeSetupProgress(ui, store, parts) {
+  const { h } = ui;
+  const { ContentHeader, SetupSteps, Button, resetSetup, SetupResult } = parts;
   /** The setup's heading: what it does now, or how it ended. */
   function setupTitle(run) {
     const name = run.label || "the host";
@@ -2444,12 +2670,18 @@ export async function apply(ctx) {
       run.state === "done" && run.result ? h(SetupResult, { result: run.result, onOpenHost, onAddAnother: resetSetup }) : null,
     );
   }
+  return { setupTitle, setupProgressLine, SetupProgress };
+}
 
+/** Add a host: the setup form, or the setup it started. */
+function makeAddHost(ui, store, parts) {
+  const { React, h } = ui;
+  const { communityDefaults, checkNewHost, startSetup, Field, Input, ContentHeader, Button, useStore, SetupProgress } = parts;
   /** Add a host, the form. The fields that most owners never change start
    * closed, and open when one of them is empty: a setup cannot run then. */
   function AddHostForm({ active, disabled }) {
     const defaults = React.useMemo(communityDefaults, []);
-    const [values, setValues] = React.useState({ label: "", origin: "", sshUser: "", ...defaults, ...setupForm, password: "" });
+    const [values, setValues] = React.useState({ label: "", origin: "", sshUser: "", ...defaults, ...store.setupForm, password: "" });
     const [error, setError] = React.useState("");
     const ids = { label: React.useId(), origin: React.useId(), user: React.useId(), password: React.useId(), owner: React.useId(), relay: React.useId() };
     const typed = (key) => (event) => {
@@ -2459,7 +2691,7 @@ export async function apply(ctx) {
     };
     const submit = (event) => {
       event.preventDefault();
-      if (!active() || setupRun.state === "running") return;
+      if (!active() || store.setupRun.state === "running") return;
       let setup;
       try {
         setup = checkNewHost(values);
@@ -2472,7 +2704,7 @@ export async function apply(ctx) {
       setValues((now) => ({ ...now, password: "" }));
       setError("");
       // A failed setup comes back to these values, with no password.
-      setupForm = Object.freeze({ label: values.label, origin: values.origin, sshUser: values.sshUser, ownerPubkey: values.ownerPubkey, relay: values.relay });
+      store.setupForm = Object.freeze({ label: values.label, origin: values.origin, sshUser: values.sshUser, ownerPubkey: values.ownerPubkey, relay: values.relay });
       void startSetup({ ...setup, sudoPassword });
     };
     const field = (id, key, name, description, input = {}) =>
@@ -2517,10 +2749,16 @@ export async function apply(ctx) {
 
   /** Add a host: the form, or the setup once there is one. */
   function AddHostView({ active, disabled, onOpenHost }) {
-    const run = useStore(() => setupRun);
+    const run = useStore(() => store.setupRun);
     return run.state === "idle" ? h(AddHostForm, { active, disabled }) : h(SetupProgress, { run, onOpenHost });
   }
+  return { AddHostForm, AddHostView };
+}
 
+/** The sign-in form that starts a harness sign-in. */
+function makeSignInStart(ui, store, parts) {
+  const { React, h } = ui;
+  const { startSignIn, Field, Input, Button } = parts;
   /** One choice of a group, drawn as Desktop's Radio card. A native input
    * keeps the keyboard and the form's own behavior; the plugin cannot use
    * Desktop's Base UI component. */
@@ -2546,7 +2784,7 @@ export async function apply(ctx) {
   /** The sign-in form: how to sign in, and how to reach root on the host. */
   function SignInStart({ host, signing, active, blocked, onClose }) {
     const harness = SIGNIN_HARNESSES.find((entry) => entry.id === signing.harness);
-    const [values, setValues] = React.useState({ sshUser: sshLogins.get(host.id) ?? "", password: "", command: harness ? harness.methods[0][0] : SIGNIN_STATUS });
+    const [values, setValues] = React.useState({ sshUser: store.sshLogins.get(host.id) ?? "", password: "", command: harness ? harness.methods[0][0] : SIGNIN_STATUS });
     const ids = { user: React.useId(), password: React.useId(), methods: React.useId() };
     const typed = (key) => (event) => {
       const { value } = event.target;
@@ -2559,7 +2797,7 @@ export async function apply(ctx) {
       const sudoPassword = values.password;
       setValues((now) => ({ ...now, password: "" }));
       const sshUser = values.sshUser.trim();
-      sshLogins.set(host.id, sshUser);
+      store.sshLogins.set(host.id, sshUser);
       void startSignIn({ hostId: host.id, harness: signing.harness, sshUser, sudoPassword, command: values.command });
     };
     return h(
@@ -2593,7 +2831,13 @@ export async function apply(ctx) {
       ),
     );
   }
+  return { RadioCard, SignInStart };
+}
 
+/** A running sign-in: its terminal and the answer field. */
+function makeSignInTerminal(ui, store, parts) {
+  const { React, h } = ui;
+  const { sendSignInInput, Field, Input, Button, cancelSignIn, resetSignIn, ApproveLink, useStore, ContentHeader, SignInStart } = parts;
   /** One typed line to the running sign-in's terminal. */
   function SignInAnswer({ active, onError, onCancel }) {
     const [line, setLine] = React.useState("");
@@ -2665,7 +2909,7 @@ export async function apply(ctx) {
    * user. It replaces the host's harness list while it is open, so that the
    * owner has one thing to look at. */
   function SignInPanel({ host, signing, active, onClose }) {
-    const run = useStore(() => signinRun);
+    const run = useStore(() => store.signinRun);
     const harness = SIGNIN_HARNESSES.find((entry) => entry.id === signing.harness);
     const mine = run.hostId === host.id && run.state !== "idle";
     const close = () => {
@@ -2679,7 +2923,13 @@ export async function apply(ctx) {
       mine ? h(SignInTerminal, { run, active, onClose: close }) : h(SignInStart, { host, signing, active, blocked: run.state === "running", onClose: close }),
     );
   }
+  return { SignInAnswer, signInEnd, SignInTerminal, SignInPanel };
+}
 
+/** A host's harness rows and their status lines. */
+function makeHarnessRows(ui, store, parts) {
+  const { h } = ui;
+  const { statusOf, harnessOn, Button, PreferenceRow, harnessIcon, ContentHeader, SettingsGroup } = parts;
   /** What one harness can do on this host, in words. */
   function harnessLine(host, harness) {
     const status = statusOf(host.id);
@@ -2714,12 +2964,15 @@ export async function apply(ctx) {
   function HarnessRow({ host, harness, blocked, onSignIn }) {
     const entry = harnessOn(host.id, harness.id);
     const offered = statusOf(host.id).state !== "ok" || Boolean(entry);
+    // Built before the props object: lizard misreads a line-leading `?` with
+    // a call inside an object literal and loses the rest of the file's scan.
+    const trailing = offered
+      ? h(Button, { size: "sm", variant: entry?.ready ? "subtle" : "prominent", disabled: blocked, "aria-label": `Sign in to ${harness.title} on ${host.label}`, onClick: () => onSignIn(harness.id) }, entry?.ready ? "Sign in again" : "Sign in")
+      : null;
     return h(PreferenceRow, {
       title: h("span", { className: "flex min-w-0 items-center gap-2" }, harnessIcon(harness.id), harness.title),
       subtitle: harnessLine(host, harness),
-      trailing: offered
-        ? h(Button, { size: "sm", variant: entry?.ready ? "subtle" : "prominent", disabled: blocked, "aria-label": `Sign in to ${harness.title} on ${host.label}`, onClick: () => onSignIn(harness.id) }, entry?.ready ? "Sign in again" : "Sign in")
-        : null,
+      trailing,
     });
   }
 
@@ -2751,25 +3004,33 @@ export async function apply(ctx) {
       ),
     );
   }
+  return { harnessLine, hostLine, hostTone, HarnessRow, HarnessSection };
+}
 
+/** One host's page: its status, edit form, harnesses and sign-in. */
+function makeHostDetail(ui, store, parts) {
+  const { React, h } = ui;
+  const { statusOf, Button, ContentHeader, HostForm, SignInPanel, HarnessSection } = parts;
   /** The right side of the page for one host: what it is, and what it needs. */
   function HostDetail({ host, ready, busy, active, signing, signinHost, onSignIn, onShowSignIn, onCloseSignIn, onSaved, onRemove }) {
     const [editing, setEditing] = React.useState(false);
     const status = statusOf(host.id);
+    // Built before the header props: see HarnessRow's trailing for why.
+    const actions = ready
+      ? h(
+          "div",
+          { className: "flex items-center gap-2" },
+          h(Button, { size: "sm", disabled: busy, "aria-label": `Edit ${host.label}`, onClick: () => setEditing(true) }, "Edit"),
+          h(Button, { size: "sm", disabled: busy, "aria-label": `Remove ${host.label}`, onClick: () => onRemove(host) }, "Remove"),
+        )
+      : null;
     return h(
       "div",
       { className: "grid gap-5" },
       h(ContentHeader, {
         title: host.label,
         subtitle: hostSubtitle(host, status),
-        actions: ready
-          ? h(
-              "div",
-              { className: "flex items-center gap-2" },
-              h(Button, { size: "sm", disabled: busy, "aria-label": `Edit ${host.label}`, onClick: () => setEditing(true) }, "Edit"),
-              h(Button, { size: "sm", disabled: busy, "aria-label": `Remove ${host.label}`, onClick: () => onRemove(host) }, "Remove"),
-            )
-          : null,
+        actions,
       }),
       editing
         ? h(
@@ -2797,7 +3058,13 @@ export async function apply(ctx) {
     const reach = status.state === "checking" ? "Checking…" : status.state === "down" ? status.error : "Reachable";
     return `${host.origin} · ${reach}`;
   }
+  return { HostDetail, hostSubtitle };
+}
 
+/** The host list beside the detail. */
+function makeHostList(ui, store, parts) {
+  const { React, h } = ui;
+  const { refresh, ContentHeader, StateDot, hostTone, hostLine, Button } = parts;
   /** The left side of the page: every host, and the two page-wide actions. */
   function HostList({ list, selected, adding, ready, running, onSelect, onAdd }) {
     const [checking, setChecking] = React.useState(false);
@@ -2848,20 +3115,26 @@ export async function apply(ctx) {
       h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.hostsFileNote),
     );
   }
+  return { HostList };
+}
 
+/** The whole Hosts view: list, detail and add flow. */
+function makeHostsView(ui, store, parts) {
+  const { React, h } = ui;
+  const { useStore, readHostsFile, resetSetup, removeHost, refresh, HostList, HostDetail, resetSignIn, AddHostView } = parts;
   /** The whole hosts view: the Hosts page, or the Settings card on a Desktop
    * with no pages. Hosts on the left, and on the right one thing at a time,
    * so that the setup and a sign-in each have the room and the attention
    * they need. New agent offers what hosts.json lists at once. */
   function HostsView({ active }) {
-    const file = useStore(() => hostsFile);
+    const file = useStore(() => store.hostsFile);
     const list = useStore(() => HOSTS);
-    useStore(() => hosts);
-    const run = useStore(() => signinRun);
-    const setup = useStore(() => setupRun);
+    useStore(() => store.hosts);
+    const run = useStore(() => store.signinRun);
+    const setup = useStore(() => store.setupRun);
     // A sign-in or a setup that still runs shows again when the page opens.
-    const [view, setView] = React.useState(() => (setupRun.state === "running" ? ADD_VIEW : signinRun.state === "running" ? signinRun.hostId : ""));
-    const [signing, setSigning] = React.useState(() => (signinRun.state === "running" ? { id: signinRun.hostId, harness: signinRun.harness } : null));
+    const [view, setView] = React.useState(() => (store.setupRun.state === "running" ? ADD_VIEW : store.signinRun.state === "running" ? store.signinRun.hostId : ""));
+    const [signing, setSigning] = React.useState(() => (store.signinRun.state === "running" ? { id: store.signinRun.hostId, harness: store.signinRun.harness } : null));
     const [notice, setNotice] = React.useState("");
     // The file may have changed by hand since the last read.
     React.useEffect(() => {
@@ -2874,7 +3147,7 @@ export async function apply(ctx) {
     React.useEffect(() => {
       if (view !== ADD_VIEW) return undefined;
       return () => {
-        if (setupRun.state === "done") resetSetup();
+        if (store.setupRun.state === "done") resetSetup();
       };
     }, [view]);
     const ready = file.state === "ready";
@@ -2943,7 +3216,13 @@ export async function apply(ctx) {
       ),
     );
   }
+  return { HostsView };
+}
 
+/** The Hosts page and the Settings card that leads to it. */
+function makeHostsPage(ui, store, parts) {
+  const { h, icons } = ui;
+  const { HostsView, useStore, SettingsGroup, PreferenceRow, hostLine, Button } = parts;
   /** The Hosts page: Desktop's full-page surface and panel header, as the
    * Usage page draws them. The page owns its own scrolling. */
   function HostsPage() {
@@ -2961,7 +3240,7 @@ export async function apply(ctx) {
             { "data-buzz-ui": "", className: "panel-header", "data-variant": "default" },
             h("div", { className: "panel-header-title" }, h("div", { className: "panel-header-label" }, h("span", { className: "panel-header-label-icon", "aria-hidden": "true" }, h(icons.host, { size: PAGE_ICON_SIZE })), h("h2", null, SETTINGS_TITLE))),
           ),
-          h("div", { style: PAGE_SCROLL_STYLE }, h("div", { style: PAGE_BODY_STYLE }, h(HostsView, { active: () => !disposed }))),
+          h("div", { style: PAGE_SCROLL_STYLE }, h("div", { style: PAGE_BODY_STYLE }, h(HostsView, { active: () => !store.disposed }))),
         ),
       ),
     );
@@ -2971,32 +3250,31 @@ export async function apply(ctx) {
    * hosts stand, and the way to the page that manages them. */
   function HostsSummary() {
     const list = useStore(() => HOSTS);
-    useStore(() => hosts);
+    useStore(() => store.hosts);
     return h(
       "section",
       { "aria-label": `${SETTINGS_TITLE} settings`, className: "grid gap-4" },
       h("h2", null, SETTINGS_TITLE),
       h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.summaryIntro),
       list.length ? h(SettingsGroup, null, list.map((host) => h(PreferenceRow, { key: host.id, title: host.label, subtitle: hostLine(host) }))) : null,
-      h("div", null, h(Button, { variant: "prominent", onClick: () => void openHostsPage?.() }, `Open ${SETTINGS_TITLE}`)),
+      h("div", null, h(Button, { variant: "prominent", onClick: () => void store.openHostsPage?.() }, `Open ${SETTINGS_TITLE}`)),
     );
   }
-
-  // Opens the Hosts page; set only when Desktop gives pages and navigation.
-  let openHostsPage;
 
   /** The Settings card: a summary beside the page, or the whole view on a
    * Desktop with no pages, so that the hosts stay reachable there. */
   function HostsSettings({ active }) {
-    return openHostsPage ? h(HostsSummary) : h(HostsView, { active });
+    return store.openHostsPage ? h(HostsSummary) : h(HostsView, { active });
   }
+  return { HostsPage, HostsSummary, HostsSettings };
+}
 
-  // The first read, before the type: its picker title names the hosts. A
-  // failed read leaves the list empty; the type still registers, so agents
-  // made before stay listed, and every view says what is wrong.
-  await readHostsFile();
-  if (disposed) return;
-  ctx.agents.register({
+/** The hosted agent type as Desktop registers it: its views, provider and
+ * remote calls, all routed to the host that holds each agent. */
+function hostedAgentType(ui, parts) {
+  const { icons } = ui;
+  const { harnessTitle, Create, CreateModel, PanelFooter, providerSnapshot, subscribe, refresh, DialogBody, Settings, call, requireNewKey, remember, locate, forget } = parts;
+  return {
     id: TYPE_ID,
     title: pickerTitle(HOSTS),
     description: "Runs on your own Tailscale host, on any harness the host offers. The key stays on the host.",
@@ -3064,31 +3342,94 @@ export async function apply(ctx) {
         forget(pubkey);
       },
     },
-  });
+  };
+}
+
+// The factories in the order apply runs them: each reads earlier parts at
+// build time, and a later part (such as readHostsFile) only inside a handler.
+const PART_FACTORIES = Object.freeze([
+  makeRunnerCall,
+  makeAgentRouting,
+  makeStatusStore,
+  makeModelStore,
+  makeHostsFile,
+  makeSetup,
+  makeSignIn,
+  makeHostEdits,
+  makeControls,
+  makeInstructions,
+  makeFloating,
+  makeListPopup,
+  makeSelectTrigger,
+  makeSelectList,
+  makeSelect,
+  makeHarnessSelect,
+  makeHarnessMenu,
+  makeModelSelect,
+  makeEffort,
+  makeCreate,
+  makeSettingsParts,
+  makeSettings,
+  makeProviderViews,
+  makeHostForm,
+  makeSetupSteps,
+  makeSetupProgress,
+  makeAddHost,
+  makeSignInStart,
+  makeSignInTerminal,
+  makeHarnessRows,
+  makeHostDetail,
+  makeHostList,
+  makeHostsView,
+  makeHostsPage,
+]);
+
+// Async: the type's picker title names the hosts, so the first read of
+// hosts.json comes before the type is registered.
+export async function apply(ctx) {
+  const React = ctx.react;
+  const h = React.createElement;
+  const ui = Object.freeze({ React, h, icons: makeIcons(h), glyphs: makeGlyphs(h) });
+  const store = createStore();
+  migrateStore();
+
+  // Each factory reads the parts made before it; a part used before its
+  // factory runs is read from `parts` when called.
+  const parts = { helper: new HelperClient(ctx.host) };
+  for (const make of PART_FACTORIES) Object.assign(parts, make(ui, store, parts));
+
+  // The first read, before the type: its picker title names the hosts. A
+  // failed read leaves the list empty; the type still registers, so agents
+  // made before stay listed, and every view says what is wrong.
+  await parts.readHostsFile();
+
+  if (store.disposed) return;
+
+  ctx.agents.register(hostedAgentType(ui, parts));
 
   // The page and the card are optional: inside scopes, so the agent type still
   // works on a Desktop without them. The page's scope comes first: the card
   // shows a summary when the page exists, and the whole view when it does not.
   if (typeof ctx.inject === "function") {
-    ctx.inject(["communityReader"], (scope) => void (communityReader = scope.communityReader));
+    ctx.inject(["communityReader"], (scope) => void (store.communityReader = scope.communityReader));
     ctx.inject(["pages", "navigation"], (scope) => {
-      scope.pages.register({ id: HOSTS_PAGE_ID, title: SETTINGS_TITLE, component: HostsPage, primary: true, icon: HOSTS_PAGE_ICON, layout: "workspace" });
-      openHostsPage = () => scope.navigation.open({ version: 1, kind: "plugin", pluginId: PLUGIN_ID, pageId: HOSTS_PAGE_ID });
+      scope.pages.register({ id: HOSTS_PAGE_ID, title: SETTINGS_TITLE, component: parts.HostsPage, primary: true, icon: HOSTS_PAGE_ICON, layout: "workspace" });
+      store.openHostsPage = () => scope.navigation.open({ version: 1, kind: "plugin", pluginId: PLUGIN_ID, pageId: HOSTS_PAGE_ID });
     });
     ctx.inject(["settingsCards"], (scope) => {
-      scope.settingsCards.register({ id: SETTINGS_CARD_ID, title: SETTINGS_TITLE, group: SETTINGS_GROUP, icon: icons.host, component: HostsSettings });
+      scope.settingsCards.register({ id: SETTINGS_CARD_ID, title: SETTINGS_TITLE, group: SETTINGS_GROUP, icon: ui.icons.host, component: parts.HostsSettings });
     });
   }
 
   if (typeof ctx.effect === "function")
     ctx.effect(() => {
-      void refresh();
-      const timer = setInterval(() => void refresh(), STATUS_POLL_MS);
+      void parts.refresh();
+      const timer = setInterval(() => void parts.refresh(), STATUS_POLL_MS);
       return () => {
-        disposed = true;
+        store.disposed = true;
         clearInterval(timer);
-        helper.stop("The plugin stopped.");
+        parts.helper.stop("The plugin stopped.");
       };
     });
-  else void refresh();
+  else void parts.refresh();
 }

@@ -171,6 +171,29 @@ export async function setupSmoke(deps) {
 
 /** @param {{check: (name: string, ok: unknown, detail?: string) => void, temp: string}} deps */
 async function setupScenarios({ check, temp }) {
+  const fixture = setupFixture(temp);
+  /** @type {Scenarios} */
+  const s = { ...fixture, check, temp, attempt: (request, options) => setupAttempt(fixture, request, options) };
+  await inputRefusals(s);
+  const { userNode } = await hostRefusals(s);
+  await rootRefusals(s);
+  await failureLeftovers(s, userNode);
+  const done = await setupDone(s);
+  doneCallChecks(s, done);
+  doneResultChecks(s, done);
+  await sweepScenarios(s);
+  await variantScenarios(s);
+  await helperScenarios(s);
+
+  installValuesSmoke({ check, temp });
+  loginRuleSmoke({ check, temp });
+}
+
+/** @typedef {ReturnType<typeof setupFixture> & {check: (name: string, ok: unknown, detail?: string) => void, temp: string, attempt: (request: object, options?: object) => ReturnType<typeof setupAttempt>}} Scenarios */
+
+/** The committed runner tree, the linked Pi clone and a one-host hosts.json
+ * that every scenario shares, as a real checkout and a real page hold them. */
+function setupFixture(temp) {
   const root = join(temp, "setup-root");
   for (const file of TREE) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -194,36 +217,45 @@ async function setupScenarios({ check, temp }) {
     health.push(url);
     return { status: 200, json: async () => ({ ok: true, version: "0.0.0-smoke", agents: 0 }) };
   };
+  return { root, hostsPath, log, before, health, fakeFetch };
+}
 
-  /** One setup; returns its progress, its result or error, and the ssh calls. */
-  async function attempt(request, { entry = peer(), facts = FACTS, env = {} } = {}) {
-    writeFileSync(log, "");
-    Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_SSH_TAILSCALE_UNSAFE: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_AGENT_USER: "", FAKE_SSH_NODE_EXIT: "0", FAKE_SSH_HARNESS_EXIT: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
-    const events = [];
-    let result;
-    let error;
-    try {
-      result = await setupHost(
-        { address: ADDRESS, sshUser: "owner", sudoPassword: PASSWORD, ownerPubkey: OWNER, relay: RELAY, ...request },
-        { hostsPath, onProgress: (event) => events.push(event), deps: { status: async () => statusWith(entry), ssh: FAKE_SSH, fetch: fakeFetch, root } },
-      );
-    } catch (caught) {
-      error = caught;
-    }
-    const lines = readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    return {
-      events,
-      result,
-      error,
-      calls: lines.filter((line) => line.argv),
-      configs: lines.filter((line) => line.config).map((line) => line.config),
-      pis: lines.filter((line) => line.pi).map((line) => line.pi),
-      rootRuns: lines.filter((line) => line.rootRun).map((line) => line.rootRun),
-      nodeRuns: lines.filter((line) => line.nodeRun).map((line) => line.nodeRun),
-    };
+/** One setup; returns its progress, its result or error, and the ssh calls. */
+async function setupAttempt({ log, hostsPath, fakeFetch, root }, request, { entry = peer(), facts = FACTS, env = {} } = {}) {
+  writeFileSync(log, "");
+  Object.assign(process.env, { FAKE_SSH_LOG: log, FAKE_SSH_HOST_KEY: HOST_KEY, FAKE_SSH_PASSWORD: PASSWORD, FAKE_SSH_CHECK: "0", FAKE_SSH_NODE_UNSAFE: "0", FAKE_SSH_TAMPER: "0", FAKE_SSH_GROW: "0", FAKE_SSH_TAILSCALE_UNSAFE: "0", FAKE_BUNDLE_BYTES: "0", FAKE_SSH_AGENT_USER: "", FAKE_SSH_NODE_EXIT: "0", FAKE_SSH_HARNESS_EXIT: "0", FAKE_SSH_FACTS: JSON.stringify(facts), ...env });
+  const events = [];
+  let result;
+  let error;
+  try {
+    result = await setupHost(
+      { address: ADDRESS, sshUser: "owner", sudoPassword: PASSWORD, ownerPubkey: OWNER, relay: RELAY, ...request },
+      { hostsPath, onProgress: (event) => events.push(event), deps: { status: async () => statusWith(entry), ssh: FAKE_SSH, fetch: fakeFetch, root } },
+    );
+  } catch (caught) {
+    error = caught;
   }
-  const failedAt = (outcome, step) => outcome.error?.step === step && outcome.events.at(-1)?.state === "failed" && outcome.events.at(-1)?.step === step;
+  const lines = readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  return {
+    events,
+    result,
+    error,
+    calls: lines.filter((line) => line.argv),
+    configs: lines.filter((line) => line.config).map((line) => line.config),
+    pis: lines.filter((line) => line.pi).map((line) => line.pi),
+    rootRuns: lines.filter((line) => line.rootRun).map((line) => line.rootRun),
+    nodeRuns: lines.filter((line) => line.nodeRun).map((line) => line.nodeRun),
+  };
+}
 
+/** Whether a setup stopped at this step, both in its error and on the page. */
+function failedAt(outcome, step) {
+  return outcome.error?.step === step && outcome.events.at(-1)?.state === "failed" && outcome.events.at(-1)?.step === step;
+}
+
+/** Refusals of the machine or the request, and of uncommitted runner code:
+ * all before any ssh call. @param {Scenarios} s */
+async function inputRefusals({ check, attempt, root }) {
   const untagged = await attempt({}, { entry: peer({ Tags: [] }) });
   check("setup: an untagged machine is refused before any ssh call", failedAt(untagged, "machine") && untagged.calls.length === 0 && /no ACL tag.*Edit ACL tags/.test(untagged.error.message), untagged.error?.message);
   const mac = await attempt({}, { entry: peer({ OS: "macOS" }) });
@@ -246,7 +278,11 @@ async function setupScenarios({ check, temp }) {
     [edited, added].every((outcome) => failedAt(outcome, "bundle") && outcome.calls.length === 0 && /not committed/.test(outcome.error.message)),
     [edited, added].map((outcome) => outcome.error?.message).join(" | "),
   );
+}
 
+/** Refusals on the machine before the copy: its key, Node, tailscale and
+ * sudo. Returns the outcome that the root refusals reuse. @param {Scenarios} s */
+async function hostRefusals({ check, attempt }) {
   const pinned = await attempt({}, { env: { FAKE_SSH_HOST_KEY: OTHER_KEY } });
   check("setup: ssh refuses a machine whose key Tailscale does not report", failedAt(pinned, "connect") && /Host key verification failed/.test(pinned.error.message), pinned.error?.message);
   const noNode = await attempt({}, { env: { FAKE_SSH_NODE_EXIT: "69" } });
@@ -272,7 +308,11 @@ async function setupScenarios({ check, temp }) {
   );
   const noPassword = await attempt({ sudoPassword: "" });
   check("setup: sudo that asks for a password, with none given, stops before the copy", failedAt(noPassword, "connect") && noPassword.calls.length === 1 && /enter it/.test(noPassword.error.message), noPassword.error?.message);
+  return { userNode };
+}
 
+/** Refusals as root, after the copy. @param {Scenarios} s */
+async function rootRefusals({ check, attempt }) {
   const wrong = await attempt({ sudoPassword: "not it" });
   check("setup: a refused sudo password fails the Node step, the first root run, before any copy", failedAt(wrong, "node") && wrong.error.message === "sudo refused the password" && wrong.calls.length === 2, wrong.error?.message);
   const tampered = await attempt({}, { env: { FAKE_SSH_TAMPER: "1" } });
@@ -293,6 +333,21 @@ async function setupScenarios({ check, temp }) {
     failedAt(badHarness, "harnesses") && /Codex 0\.164\.0 does not match its pinned SHA-256/.test(badHarness.error.message) && /runner\/README\.md, "Harnesses"/.test(badHarness.error.message) && !badHarness.events.some((event) => event.step === "install") && badHarness.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."),
     badHarness.error?.message,
   );
+  harnessPinCheck(check);
+}
+
+/** The copy budget, and what every failed setup above left behind. @param {Scenarios} s */
+async function failureLeftovers({ check, attempt, hostsPath, before }, userNode) {
+  const big = await attempt({}, { env: { FAKE_BUNDLE_BYTES: String(STAGE_BYTES_MAX + 1) } });
+  check("setup: runner files bigger than root's byte budget stop the copy step before any copy", failedAt(big, "copy") && big.calls.length === 2 && big.error?.message.includes(`copies at most ${STAGE_BYTES_MAX}`), big.error?.message);
+  check("setup: a failed setup removes its stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && userNode.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."), leftoverStages().join(","));
+  const hostsAfterFailure = JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
+  check("setup: a failed setup leaves hosts.json as it was", hostsAfterFailure.length === 1);
+}
+
+/** The install script, the wrapper and buzz-login must agree on where the
+ * harnesses live, or the runner starts a binary that is not there. */
+function harnessPinCheck(check) {
   const pins = Object.entries(HARNESS_PIN_SOURCES).map(([file, print]) => {
     const lines = readFileSync(join(REPO, file), "utf8").split("\n").filter((line) => HARNESS_PIN_LINE_RE.test(line));
     return spawnSync("/bin/bash", ["-c", `${lines.join("\n")}\n${print}`], { encoding: "utf8" }).stdout.trim().split("\n");
@@ -303,16 +358,19 @@ async function setupScenarios({ check, temp }) {
     pins[0].length === 4 && JSON.stringify(pins[0]) === JSON.stringify(pins[1]) && pins[0].every((path, index) => index === 0 || wrapperPins[0].includes(`=${path}\n`)) && wrapperPins[1].includes(`const CLAUDE_DIR = "${pins[0][0]}";`),
     JSON.stringify(pins),
   );
-  const big = await attempt({}, { env: { FAKE_BUNDLE_BYTES: String(STAGE_BYTES_MAX + 1) } });
-  check("setup: runner files bigger than root's byte budget stop the copy step before any copy", failedAt(big, "copy") && big.calls.length === 2 && big.error?.message.includes(`copies at most ${STAGE_BYTES_MAX}`), big.error?.message);
-  check("setup: a failed setup removes its stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && userNode.calls.at(-1)?.argv.at(-1).startsWith("rm -rf -- /tmp/buzz-runner-setup."), leftoverStages().join(","));
-  const hostsAfterFailure = JSON.parse(readFileSync(hostsPath, "utf8")).hosts;
-  check("setup: a failed setup leaves hosts.json as it was", hostsAfterFailure.length === 1);
+}
 
+/** The one full setup that the next checks read. @param {Scenarios} s */
+async function setupDone({ check, attempt }) {
   const done = await attempt({ label: "smoke/box" }, { env: { FAKE_SSH_CHECK: "1" } });
   const stepsDone = done.events.filter((event) => event.state === "done").map((event) => event.step);
   check("setup: every step runs in order and ends done", !done.error && JSON.stringify(stepsDone) === JSON.stringify(SETUP_STEPS), done.error?.message ?? stepsDone.join(","));
   check("setup: a Tailscale SSH check shows its link as a waiting step", done.events.some((event) => event.step === "connect" && event.state === "waiting" && event.link === "https://login.tailscale.com/a/smoke-check"));
+  return done;
+}
+
+/** What ran on the machine, and how, in the full setup. @param {Scenarios} s */
+function doneCallChecks({ check, root }, done) {
   const argvText = JSON.stringify(done.calls.map((call) => call.argv));
   check("setup: ssh goes to the peer's Tailscale address, pinned to its reported keys", done.calls.length === 5 && done.calls.every((call) => call.argv.includes("StrictHostKeyChecking=yes") && call.argv.includes(`HostKeyAlias=${DNS}`) && call.argv.includes("100.64.0.7") && call.argv.includes("GlobalKnownHostsFile=/dev/null") && call.argv.slice(0, 2).join(" ") === "-F /dev/null"), argvText.slice(0, 300));
   const install = rootCall(done);
@@ -331,6 +389,11 @@ async function setupScenarios({ check, temp }) {
     rootRun?.script === readFileSync(join(root, SETUP_SCRIPT), "utf8") && !install.argv.at(-1).includes(`${rootRun.stage}/`) && JSON.stringify(rootRun.files) === JSON.stringify(STAGE_TREE),
     JSON.stringify(rootRun?.files),
   );
+}
+
+/** What the full setup left: config, hosts.json, health and manual steps. @param {Scenarios} s */
+function doneResultChecks({ check, hostsPath, health, before }, done) {
+  const rootRun = done.rootRuns[0];
   check("setup: the root command pins the manifest of every stage file", /^[0-9a-f]{64}$/.test(rootRun?.pinned ?? "") && done.configs.length === 1, rootRun?.pinned);
   check("setup: the stage goes after the install, as the SSH user", done.calls.at(-1)?.argv.at(-1) === `rm -rf -- ${rootRun?.stage}` && !done.calls.at(-1).argv.join(" ").includes("sudo"));
   const config = done.configs[0];
@@ -350,13 +413,30 @@ async function setupScenarios({ check, temp }) {
     JSON.stringify(done.result?.manual),
   );
   check("setup: a finished setup leaves no stage folder", leftoverStages().filter((name) => !before.has(name)).length === 0 && existsSync(tmpdir()));
+}
 
+/** Leftovers of a killed helper, swept by the next setup. @param {Scenarios} s */
+async function sweepScenarios({ check, attempt, temp, hostsPath }) {
+  const now = Date.now() / 1000;
+  const staleAt = now - STALE_AGE_S;
+  const stages = killedStages(temp, now, staleAt);
+  const work = killedWorkFolders(stages.target, now, staleAt);
+  const again = await attempt({ address: SERVE_ORIGIN });
+  stageSweepCheck(check, again, stages);
+  for (const kept of [stages.young, stages.skewed]) rmSync(kept, { recursive: true, force: true });
+  workSweepCheck(check, again, work, stages.target);
+  rmSync(stages.link, { force: true });
+  for (const kept of [work.youngWork, work.skewedWork]) rmSync(kept, { recursive: true, force: true });
+  rmSync(work.workLink, { force: true });
+  check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
+}
+
+/** Stages as a killed helper leaves them, at each age that the sweep judges. */
+function killedStages(temp, now, staleAt) {
   // A killed helper's stage: the next copy removes it, also when its time is
   // far in the future (a clock that stepped back), but keeps a young stage and
   // one a small step in the future (a live setup of another device) and never
   // follows a stage-named link to what it points at.
-  const now = Date.now() / 1000;
-  const staleAt = now - STALE_AGE_S;
   const stale = mkdtempSync(`${STAGE_DIR}/${STAGE_PREFIX}`);
   writeFileSync(join(stale, "MANIFEST"), "old\n");
   utimesSync(stale, staleAt, staleAt);
@@ -372,6 +452,11 @@ async function setupScenarios({ check, temp }) {
   const link = `${STAGE_DIR}/${STAGE_PREFIX}smokeLink${process.pid}`;
   symlinkSync(target, link);
   lutimesSync(link, staleAt, staleAt);
+  return { stale, future, skewed, young, target, link };
+}
+
+/** Work folders as a killed helper leaves them, with a link to the stages' target. */
+function killedWorkFolders(target, now, staleAt) {
   // The same for a killed helper's work folder on this device, past and
   // future: a link with a work folder's exact name (mkdtemp's six
   // characters) must stay too.
@@ -386,24 +471,31 @@ async function setupScenarios({ check, temp }) {
   const workLink = join(tmpdir(), `${WORK_PREFIX}${`LinkXX${process.pid}`.slice(-6)}`);
   symlinkSync(target, workLink);
   lutimesSync(workLink, staleAt, staleAt);
-  const again = await attempt({ address: SERVE_ORIGIN });
+  return { staleWork, futureWork, skewedWork, youngWork, workLink };
+}
+
+/** The copy step's sweep of old stages, read from the second setup. */
+function stageSweepCheck(check, again, { stale, future, skewed, young, target }) {
   const copyDone = again.events.find((event) => event.step === "copy" && event.state === "done");
   check(
     "setup: the next copy removes a killed helper's old and far-future stages, keeps a young and a near-future one and follows no link",
     !existsSync(stale) && !existsSync(future) && existsSync(skewed) && existsSync(young) && existsSync(join(target, "keep")) && /, 2 old stages removed$/.test(copyDone?.detail ?? ""),
     copyDone?.detail,
   );
-  for (const kept of [young, skewed]) rmSync(kept, { recursive: true, force: true });
+}
+
+/** The machine step's sweep of old work folders, read from the second setup. */
+function workSweepCheck(check, again, { staleWork, futureWork, skewedWork, youngWork, workLink }, target) {
   const machineDone = again.events.find((event) => event.step === "machine" && event.state === "done");
   check(
     "setup: the next setup removes a killed helper's old and far-future work folders, keeps a young and a near-future one and follows no link",
     !existsSync(staleWork) && !existsSync(futureWork) && existsSync(skewedWork) && existsSync(youngWork) && existsSync(workLink) && existsSync(join(target, "keep")) && /, 2 old work folders removed$/.test(machineDone?.detail ?? ""),
     machineDone?.detail,
   );
-  rmSync(link, { force: true });
-  for (const kept of [youngWork, skewedWork]) rmSync(kept, { recursive: true, force: true });
-  rmSync(workLink, { force: true });
-  check("setup: a second setup of the same machine, with the port this time, aligns it and keeps its hosts.json entry", !again.error && again.result?.added === false && JSON.parse(readFileSync(hostsPath, "utf8")).hosts.length === 2, again.error?.message);
+}
+
+/** Setups that differ by harness user, sudo, login or a reserved id. @param {Scenarios} s */
+async function variantScenarios({ check, attempt, hostsPath }) {
   const custom = await attempt({ address: SERVE_ORIGIN }, { env: { FAKE_SSH_AGENT_USER: "agents" } });
   check("setup: the sign-in step names the harness user that setup.sh reports", !custom.error && custom.result?.manual?.some((step) => step.id === "sign-in" && step.text.endsWith(" as agents.")), JSON.stringify(custom.result?.manual ?? custom.error?.message));
   const passwordless = await attempt({ sudoPassword: "" }, { facts: { ...FACTS, sudon: "1" } });
@@ -418,7 +510,11 @@ async function setupScenarios({ check, temp }) {
   const reserved = await attempt({ address: `https://${OTHER}.example.ts.net`, reservedIds: [OTHER] }, { entry: peer({ DNSName: `${OTHER}.example.ts.net.` }) });
   const otherHost = JSON.parse(readFileSync(hostsPath, "utf8")).hosts.find((host) => host.origin === `https://${OTHER}.example.ts.net`);
   check("setup: a reserved host id is not given to the new host", !reserved.error && otherHost?.id === `${OTHER}-2`, reserved.error?.message ?? JSON.stringify(otherHost));
+}
 
+/** The page reaches setup only through the hosts helper, so its locking and
+ * streaming are judged there. @param {Scenarios} s */
+async function helperScenarios({ check, root, hostsPath, fakeFetch }) {
   // The same setup through the hosts helper, as the page sends it.
   const setupDeps = { status: async () => statusWith(peer()), ssh: FAKE_SSH, fetch: fakeFetch, root };
   const helperPaths = { hostsPath, setupDeps };
@@ -445,9 +541,6 @@ async function setupScenarios({ check, temp }) {
     (error) => error.message,
   );
   check("setup: the helper refuses a setup with an unknown key", extra === "unknown setup keys: host", extra);
-
-  installValuesSmoke({ check, temp });
-  loginRuleSmoke({ check, temp });
 }
 
 /** A deployment that install.sh made with its own names (the environment of

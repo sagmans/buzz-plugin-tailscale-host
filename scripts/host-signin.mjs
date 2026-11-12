@@ -102,16 +102,28 @@ export class HostSignInError extends Error {
   }
 }
 
-/** The sign-in request as the page may send it, and nothing else. */
-export function parseSignInRequest(raw) {
+/** Refuses anything but a plain object with only the known keys, so no
+ * field is read from a request the page could not have sent. */
+function requireSignInShape(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HostSignInError("sign-in must be an object");
   const extra = Object.keys(raw).filter((key) => !SIGNIN_KEYS.includes(key));
   if (extra.length) throw new HostSignInError(`unknown sign-in keys: ${extra.join(", ")}`);
-  const { host, sshUser = "", sudoPassword = "", command } = raw;
-  if (typeof host !== "string" || !host) throw new HostSignInError("the sign-in must name a host id");
+}
+
+/** The login and password rules, apart from the request parse: both reach
+ * the remote shell, so each keeps its own plain refusal. */
+function requireSignInCredentials(sshUser, sudoPassword) {
   if (typeof sshUser !== "string" || (sshUser && !SSH_USER_RE.test(sshUser))) throw new HostSignInError("the SSH login must be a Linux user name");
   if (typeof sudoPassword !== "string" || sudoPassword.length > PASSWORD_MAX || /[\n\r\u0000]/.test(sudoPassword))
     throw new HostSignInError(`the sudo password must be one line of at most ${PASSWORD_MAX} characters`);
+}
+
+/** The sign-in request as the page may send it, and nothing else. */
+export function parseSignInRequest(raw) {
+  requireSignInShape(raw);
+  const { host, sshUser = "", sudoPassword = "", command } = raw;
+  if (typeof host !== "string" || !host) throw new HostSignInError("the sign-in must name a host id");
+  requireSignInCredentials(sshUser, sudoPassword);
   if (typeof command !== "string" || !Object.hasOwn(SIGNIN_COMMANDS, command))
     throw new HostSignInError(`the command must be one of ${Object.keys(SIGNIN_COMMANDS).join(", ")}`);
   return { host, sshUser, sudoPassword, command };

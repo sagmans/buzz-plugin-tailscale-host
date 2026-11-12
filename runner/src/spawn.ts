@@ -9,7 +9,7 @@
 // sequence therefore starts with stdin EOF (which ends a stream-json
 // session), treats signals as best effort, and gives up after a bound so the
 // caller (and its turn slot) is never held by a child that will not die.
-import { spawn as spawnChild } from "node:child_process";
+import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { HostProcess, HostProcessOptions } from "@buzz/features/host/service";
 import type { Spawn } from "@buzz/bundled/claude-code/claude";
@@ -174,7 +174,6 @@ async function startChild(
     windowsHide: true,
   });
   let spawned = false;
-  const gone = () => child.exitCode !== null || child.signalCode !== null;
   // `childExit` is the real exit. `exited`, which ClaudeProcess waits on to
   // settle its turn, also resolves when a stop gives up, so a child that
   // cannot be stopped never holds its turn or slot.
@@ -191,17 +190,56 @@ async function startChild(
     });
   });
   void childExit.then(release);
-  await new Promise<void>((resolve, reject) => {
-    child.once("spawn", () => {
-      spawned = true;
-      resolve();
-    });
-    child.once("error", (cause) => reject(new ProcessError(`Cannot start the ${label} wrapper`, { cause })));
+  await waitForSpawn(child, label, () => {
+    spawned = true;
   });
   const pid = child.pid;
   log.debug(`${label} started`, { pid, args: options.args?.filter((arg) => arg.startsWith("--")) });
   const tap = makeTap?.(pid);
+  const kill = stopper({ child, label, pid, log, childExit, release });
+  capStdout({ child, label, pid, log, options, tap, kill });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (data: string) => options.onStderr?.(data));
+  // A broken pipe after exit is reported through `exited`, not as a crash.
+  child.stdin.on("error", () => undefined);
+  const { write, end } = stdinWriter(child, label, tap);
+  if (pid !== undefined) spec.children.add(pid, kill, childExit);
+  return Object.freeze({ write, end, kill, exited });
+}
 
+type Child = ChildProcessWithoutNullStreams;
+type Tap = ReturnType<typeof lineTap>;
+type ChildRun = Readonly<{
+  child: Child;
+  label: string;
+  pid: number | undefined;
+  log: Logger;
+}>;
+
+/** Resolves once the child has started; a failed start rejects with the
+ * wrapper named, so the caller sees which harness could not run. */
+function waitForSpawn(child: Child, label: string, onSpawn: () => void) {
+  return new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => {
+      onSpawn();
+      resolve();
+    });
+    child.once("error", (cause) => reject(new ProcessError(`Cannot start the ${label} wrapper`, { cause })));
+  });
+}
+
+/** The child's stop sequence, run at most once however often it is asked
+ * for: stdin EOF, then SIGTERM, then SIGKILL, each with a grace period,
+ * then giving up so that its turn is freed (see the file header). */
+function stopper({
+  child,
+  label,
+  pid,
+  log,
+  childExit,
+  release,
+}: ChildRun & { childExit: Promise<number | null>; release: (code: number | null) => void }) {
+  const gone = () => child.exitCode !== null || child.signalCode !== null;
   /** True when the child exited within `ms`. */
   const waitExit = (ms: number) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -230,7 +268,7 @@ async function startChild(
   };
 
   let killing: Promise<void> | undefined;
-  const kill = () =>
+  return () =>
     (killing ??= (async () => {
       if (gone()) return;
       const started = Date.now();
@@ -244,11 +282,21 @@ async function startChild(
       log.error(`${label} did not exit; giving up on it and freeing its turn`, { pid, elapsedMs: Date.now() - started });
       release(null);
     })());
+}
 
-  // One stream-json line may not grow past the cap: ClaudeProcess buffers a
-  // partial line in memory, so a runaway line would grow the runner.
-  // Destroying the pipe also makes the child's next write fail (EPIPE),
-  // which stops it even where signals are refused.
+/** Passes stdout on as text, but stops the child when one line passes the
+ * cap: ClaudeProcess buffers a partial line in memory, so a runaway line
+ * would grow the runner. Destroying the pipe also makes the child's next
+ * write fail (EPIPE), which stops it even where signals are refused. */
+function capStdout({
+  child,
+  label,
+  pid,
+  log,
+  options,
+  tap,
+  kill,
+}: ChildRun & { options: HostProcessOptions; tap: Tap; kill: () => Promise<void> }) {
   const decoder = new StringDecoder("utf8");
   let lineBytes = 0;
   let overflowed = false;
@@ -268,25 +316,25 @@ async function startChild(
     options.onStdout?.(text);
     tap?.stdout(text);
   });
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (data: string) => options.onStderr?.(data));
-  // A broken pipe after exit is reported through `exited`, not as a crash.
-  child.stdin.on("error", () => undefined);
+}
 
+/** `HostProcess.write` and `end` over the child's stdin; each write is shown
+ * to the telemetry tap and fails as a ProcessError naming the harness. */
+function stdinWriter(child: Child, label: string, tap: Tap) {
+  const stdin = child.stdin;
   const write = (data: string) =>
     new Promise<void>((resolve, reject) => {
-      if (!child.stdin.writable) return reject(new ProcessError(`${label} stdin is closed`));
+      if (!stdin.writable) return reject(new ProcessError(`${label} stdin is closed`));
       tap?.stdin(data);
-      child.stdin.write(data, "utf8", (error) =>
+      stdin.write(data, "utf8", (error) =>
         error ? reject(new ProcessError(`${label} stdin write failed`, { cause: error })) : resolve(),
       );
     });
   const end = async (data?: string) => {
     if (data) await write(data);
-    child.stdin.end();
+    stdin.end();
   };
-  if (pid !== undefined) spec.children.add(pid, kill, childExit);
-  return Object.freeze({ write, end, kill, exited });
+  return { write, end };
 }
 
 /** The telemetry tap of one claude process, which needs the session its

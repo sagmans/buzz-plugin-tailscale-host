@@ -142,6 +142,26 @@ const object = (value: unknown): Json | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Json) : undefined;
 const str = (value: unknown) => (typeof value === "string" ? value : undefined);
 
+/** What one assistant message's blocks share: its turn, its id and the tool
+ * use it runs under (a subagent's), if any. */
+type AssistantContext = Readonly<{ turn: Turn; messageId: string | undefined; parent: string | undefined }>;
+
+/** The text of a text or thinking block; undefined for any other block. */
+function blockText(block: Json) {
+  if (block.type === "text") return str(block.text);
+  return block.type === "thinking" ? str(block.thinking) : undefined;
+}
+
+/** The plan tool's todos as ACP plan entries; a malformed todo is skipped. */
+function planEntries(input: unknown) {
+  const todos = object(input)?.todos;
+  if (!Array.isArray(todos)) return [];
+  return todos.flatMap((todo) => {
+    const entry = object(todo);
+    return entry ? [{ content: str(entry.content) ?? "", status: str(entry.status) ?? "", priority: PLAN_PRIORITY }] : [];
+  });
+}
+
 /** One agent's observer feed. */
 export class Telemetry {
   private seq = 0;
@@ -430,54 +450,52 @@ class ProcessTap implements StreamTap {
     const turn = this.current();
     if (!turn) return;
     const body = object(message.message);
-    const messageId = str(body?.id);
-    const parent = str(message.parent_tool_use_id);
+    const context: AssistantContext = { turn, messageId: str(body?.id), parent: str(message.parent_tool_use_id) };
+    for (const value of Array.isArray(body?.content) ? body.content : []) {
+      const block = object(value);
+      if (block) this.assistantBlock(context, block);
+    }
+  }
+
+  /** One assistant content block as its ACP update: text and thinking as
+   * chunks, the plan tool as the plan, any other tool use as a pending tool
+   * call. Other blocks show nothing. */
+  private assistantBlock({ turn, messageId, parent }: AssistantContext, block: Json) {
     const meta = (toolName?: string) => ({
       claudeCode: { ...(toolName ? { toolName } : {}), ...(parent ? { parentToolUseId: parent } : {}) },
     });
-    for (const value of Array.isArray(body?.content) ? body.content : []) {
-      const block = object(value);
-      if (!block) continue;
-      const text = block.type === "text" ? str(block.text) : block.type === "thinking" ? str(block.thinking) : undefined;
-      if (text) {
-        this.update(turn, {
-          ...(parent ? { _meta: meta() } : {}),
-          sessionUpdate: block.type === "text" ? "agent_message_chunk" : "agent_thought_chunk",
-          content: { type: "text", text },
-          ...(messageId ? { messageId } : {}),
-        });
-        continue;
-      }
-      if (block.type !== "tool_use") continue;
-      const id = str(block.id);
-      const name = str(block.name) ?? "";
-      if (!id) continue;
-      this.remember(id, name, block.input);
-      if (name === PLAN_TOOL) {
-        const todos = object(block.input)?.todos;
-        const entries = Array.isArray(todos)
-          ? todos.flatMap((todo) => {
-              const entry = object(todo);
-              return entry ? [{ content: str(entry.content) ?? "", status: str(entry.status) ?? "", priority: PLAN_PRIORITY }] : [];
-            })
-          : [];
-        this.update(turn, { sessionUpdate: "plan", entries });
-        continue;
-      }
-      const facts = toolFacts(name, block.input, this.cwd);
+    const text = blockText(block);
+    if (text) {
       this.update(turn, {
-        _meta: meta(name),
-        toolCallId: id,
-        sessionUpdate: "tool_call",
-        name,
-        rawInput: block.input ?? {},
-        status: "pending",
-        title: facts.title,
-        kind: facts.kind,
-        content: facts.content ?? [],
-        ...(facts.locations ? { locations: facts.locations } : {}),
+        ...(parent ? { _meta: meta() } : {}),
+        sessionUpdate: block.type === "text" ? "agent_message_chunk" : "agent_thought_chunk",
+        content: { type: "text", text },
+        ...(messageId ? { messageId } : {}),
       });
+      return;
     }
+    if (block.type !== "tool_use") return;
+    const id = str(block.id);
+    const name = str(block.name) ?? "";
+    if (!id) return;
+    this.remember(id, name, block.input);
+    if (name === PLAN_TOOL) {
+      this.update(turn, { sessionUpdate: "plan", entries: planEntries(block.input) });
+      return;
+    }
+    const facts = toolFacts(name, block.input, this.cwd);
+    this.update(turn, {
+      _meta: meta(name),
+      toolCallId: id,
+      sessionUpdate: "tool_call",
+      name,
+      rawInput: block.input ?? {},
+      status: "pending",
+      title: facts.title,
+      kind: facts.kind,
+      content: facts.content ?? [],
+      ...(facts.locations ? { locations: facts.locations } : {}),
+    });
   }
 
   /** Tool results come back as a user message of tool_result blocks. */
@@ -669,46 +687,56 @@ class AcpTap implements StreamTap {
     for (const line of lines) {
       const message = parse(line);
       const method = str(message?.method);
-      if (!message || !method) continue;
-      const params = object(message.params) ?? {};
-      const session = str(params.sessionId);
-      if (method === "session/new") {
-        this.secrets(params);
-        if (message.id !== undefined) remember(this.opening, String(message.id), str(params.cwd) ?? "");
-        continue;
-      }
-      if (!session) continue;
-      if (method === "_goose/unstable/session/system-prompt/set") {
-        const opened = this.opened.get(session);
-        if (opened) opened.system = str(params.text);
-        continue;
-      }
-      if (method === "session/prompt") {
-        const turn = this.current(session);
-        if (!turn) continue;
-        if (message.id !== undefined && message.id !== null) {
-          remember(this.prompts, String(message.id), session);
-          turn.prompt = message.id as number | string;
-        }
-        this.send(turn, true, message);
-        continue;
-      }
-      if (method === "_goose/unstable/session/steer") {
-        const turn = this.current(session);
-        if (turn)
-          this.send(turn, true, {
-            jsonrpc: JSONRPC,
-            id: this.telemetry.nextId(),
-            method: "_session/steering",
-            params: { sessionId: session, prompt: params.prompt ?? [] },
-          });
-        continue;
-      }
-      if (method === "session/cancel") {
-        const turn = this.current(session);
-        if (turn) this.send(turn, true, message);
-      }
+      if (message && method) this.written(message, method);
     }
+  }
+
+  /** One request the runner wrote: a `session/new` is held until its session
+   * id is known; a request on a session goes to its turn when shown. */
+  private written(message: Json, method: string) {
+    const params = object(message.params) ?? {};
+    const session = str(params.sessionId);
+    if (method === "session/new") {
+      this.secrets(params);
+      if (message.id !== undefined) remember(this.opening, String(message.id), str(params.cwd) ?? "");
+      return;
+    }
+    if (!session) return;
+    if (method === "_goose/unstable/session/system-prompt/set") {
+      const opened = this.opened.get(session);
+      if (opened) opened.system = str(params.text);
+      return;
+    }
+    if (method === "session/prompt") return this.prompted(message, session);
+    if (method === "_goose/unstable/session/steer") return this.steered(params, session);
+    if (method === "session/cancel") {
+      const turn = this.current(session);
+      if (turn) this.send(turn, true, message);
+    }
+  }
+
+  /** A prompt opens the turn's request; its id is kept so that the response
+   * that ends it is shown in the same turn. */
+  private prompted(message: Json, session: string) {
+    const turn = this.current(session);
+    if (!turn) return;
+    if (message.id !== undefined && message.id !== null) {
+      remember(this.prompts, String(message.id), session);
+      turn.prompt = message.id as number | string;
+    }
+    this.send(turn, true, message);
+  }
+
+  /** Goose's steer, shown as the `_session/steering` that buzz-acp sends. */
+  private steered(params: Json, session: string) {
+    const turn = this.current(session);
+    if (turn)
+      this.send(turn, true, {
+        jsonrpc: JSONRPC,
+        id: this.telemetry.nextId(),
+        method: "_session/steering",
+        params: { sessionId: session, prompt: params.prompt ?? [] },
+      });
   }
 
   stdout(line: string) {

@@ -432,24 +432,39 @@ export class AgentRuntime {
     if (!config.acceptAttested && this.deps.isHosted(event.pubkey)) return drop("hosted-agent");
     const channel = event.tags.find((tag) => tag[0] === "h")?.[1];
     if (!channel) return drop("no-channel");
-    const dm = event.kind === KIND_CHAT && this.deps.isDm(channel);
-    const addressed = addressedTo(event, this.agent) && CHAT_KINDS.includes(event.kind);
-    const reply = !dm && !addressed && (await this.replyTarget(event, channel));
-    if (!dm && !addressed && !reply) return drop("not-addressed");
-    let sender = "owner";
-    if (event.pubkey !== config.ownerPubkey) {
-      if (config.allowedSenders.includes(event.pubkey)) sender = "allowed";
-      else if (config.acceptAttested && (await attestedOwner(event)) === config.ownerPubkey) sender = "attested";
-      else return drop("not-owner");
-    }
+    const via = await this.wakeRoute(event, channel);
+    if (!via) return drop("not-addressed");
+    const sender = await this.senderKind(event);
+    if (!sender) return drop("not-owner");
     // The signature check yields: the agent may have stopped meanwhile.
     if (this.disposed) return drop("agent-stopped");
-    const via = dm ? "dm" : addressed ? "mention" : `reply (${reply})`;
     log.info("event accepted", { event: event.id.slice(0, 12), kind: event.kind, via, sender });
     void this.run(event, channel).catch((error) =>
       log.error("turn failed before delivery", { event: event.id.slice(0, 12), error }),
     );
     return true;
+  }
+
+  /** The wake rule's address step, kept apart from `handle`'s gate order: how
+   * the event reaches this agent (a DM, a mention, or a reply rule), for the
+   * accepted log, or undefined when it is not addressed here. The reply rule
+   * reads the relay, so it runs only when neither cheaper route matched. */
+  private async wakeRoute(event: RelayEvent, channel: string): Promise<string | undefined> {
+    if (event.kind === KIND_CHAT && this.deps.isDm(channel)) return "dm";
+    if (addressedTo(event, this.agent) && CHAT_KINDS.includes(event.kind)) return "mention";
+    const reply = await this.replyTarget(event, channel);
+    return reply ? `reply (${reply})` : undefined;
+  }
+
+  /** The wake rule's sender step: which allowance admits the author, for the
+   * accepted log, or undefined for a sender the gate refuses. The attestation
+   * check verifies a signature, so it runs last. */
+  private async senderKind(event: RelayEvent): Promise<string | undefined> {
+    const { config } = this.deps;
+    if (event.pubkey === config.ownerPubkey) return "owner";
+    if (config.allowedSenders.includes(event.pubkey)) return "allowed";
+    if (config.acceptAttested && (await attestedOwner(event)) === config.ownerPubkey) return "attested";
+    return undefined;
   }
 
   /** The reply-wake plugin's rule (`sagmans.reply-wake` layer 2), applied
@@ -470,44 +485,60 @@ export class AgentRuntime {
     try {
       const summary = await withTimeout(this.deps.reads.channel(channel), REPLY_READ_TIMEOUT_MS, "reply channel read");
       if (summary.channelType && REPLY_SKIPPED_CHANNEL_TYPES.has(summary.channelType)) return undefined;
-      if (thread.parentId !== thread.rootId) {
-        const [parent] = await withTimeout(
-          this.deps.reads.read([{ ids: [thread.parentId], kinds: [KIND_CHAT], "#h": [channel], limit: 1 }]),
-          REPLY_READ_TIMEOUT_MS,
-          "reply parent read",
-        );
-        return parent?.id === thread.parentId &&
-          parent.pubkey === this.agent &&
-          channelOf(parent) === channel &&
-          verified(parent)
-          ? "reply"
-          : undefined;
-      }
-      const events = await withTimeout(
-        this.deps.reads.read([
-          { ids: [thread.rootId], kinds: [KIND_CHAT], "#h": [channel], limit: 1 },
-          { kinds: [KIND_CHAT], "#e": [thread.rootId], "#h": [channel], until: event.created_at, limit: REPLY_THREAD_READ_LIMIT },
-        ]),
-        REPLY_READ_TIMEOUT_MS,
-        "reply thread read",
-      );
-      const mine = orderKey(event);
-      const earlier = events
-        .filter(
-          (item) =>
-            item.id !== event.id &&
-            item.kind === KIND_CHAT &&
-            channelOf(item) === channel &&
-            orderKey(item) <= mine &&
-            (item.id === thread.rootId || threadReference(item)?.rootId === thread.rootId),
-        )
-        .sort((a, b) => orderKey(b) - orderKey(a));
-      for (const item of earlier) if (await this.ownersAgent(item)) return item.pubkey === this.agent ? "last agent" : undefined;
-      return undefined;
+      if (thread.parentId !== thread.rootId) return await this.replyRule(thread.parentId, channel);
+      return await this.lastAgentRule(event, thread, channel);
     } catch (error) {
       log.warn("reply target unreadable", { event: event.id.slice(0, 12), channel, error: errorMessage(error) });
       return undefined;
     }
+  }
+
+  /** The "reply" rule, for a reply inside a thread: the replied message must
+   * be this agent's own, in this channel, with a valid signature. Read
+   * failures reach `replyTarget`, which fails closed. */
+  private async replyRule(parentId: string, channel: string): Promise<string | undefined> {
+    const [parent] = await withTimeout(
+      this.deps.reads.read([{ ids: [parentId], kinds: [KIND_CHAT], "#h": [channel], limit: 1 }]),
+      REPLY_READ_TIMEOUT_MS,
+      "reply parent read",
+    );
+    return parent?.id === parentId &&
+      parent.pubkey === this.agent &&
+      channelOf(parent) === channel &&
+      verified(parent)
+      ? "reply"
+      : undefined;
+  }
+
+  /** The "last agent" rule, for a reply to a thread root: the newest earlier
+   * thread message by one of the owner's agents decides. Read failures reach
+   * `replyTarget`, which fails closed. */
+  private async lastAgentRule(
+    event: RelayEvent,
+    thread: NonNullable<ReturnType<typeof threadReference>>,
+    channel: string,
+  ): Promise<string | undefined> {
+    const events = await withTimeout(
+      this.deps.reads.read([
+        { ids: [thread.rootId], kinds: [KIND_CHAT], "#h": [channel], limit: 1 },
+        { kinds: [KIND_CHAT], "#e": [thread.rootId], "#h": [channel], until: event.created_at, limit: REPLY_THREAD_READ_LIMIT },
+      ]),
+      REPLY_READ_TIMEOUT_MS,
+      "reply thread read",
+    );
+    const mine = orderKey(event);
+    const earlier = events
+      .filter(
+        (item) =>
+          item.id !== event.id &&
+          item.kind === KIND_CHAT &&
+          channelOf(item) === channel &&
+          orderKey(item) <= mine &&
+          (item.id === thread.rootId || threadReference(item)?.rootId === thread.rootId),
+      )
+      .sort((a, b) => orderKey(b) - orderKey(a));
+    for (const item of earlier) if (await this.ownersAgent(item)) return item.pubkey === this.agent ? "last agent" : undefined;
+    return undefined;
   }
 
   /** Whether `event` is by one of the owner's agents: this agent, another

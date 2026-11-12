@@ -79,10 +79,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 export async function pluginSmoke({ request, check, authTag, community, workspaceRoot }) {
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM("<!doctype html><body></body>", { url: DOM_URL });
-  const saved = Object.fromEntries(DOM_GLOBALS.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-  for (const name of DOM_GLOBALS)
-    Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const saved = installDomGlobals(dom);
   const cleanups = [];
   const buildDir = mkdtempSync(join(tmpdir(), "buzz-plugin-smoke-"));
   const fronts = [];
@@ -99,16 +96,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     // runner: agents made through the lab front are hidden from the smoke
     // front, or the plugin would rightly refuse them as another host's.
     const labAgents = new Set();
-    /** A front that forwards to the runner, as `tailscale serve` does. */
-    const forward = (log, down, own) => async ({ method, path, body }) => {
-      log.push(`${method} ${path}`);
-      if (down()) return "drop";
-      const pubkey = /^\/v1\/agents\/([0-9a-f]{64})/.exec(path)?.[1];
-      if (pubkey && labAgents.has(pubkey) !== own) return { status: 404, body: JSON.stringify({ error: "not_found", message: "no such agent" }) };
-      const reply = await request(method, path, body);
-      if (own && method === "POST" && path === "/v1/agents" && reply.status === 200) labAgents.add(JSON.parse(reply.text).pubkey);
-      return { status: reply.status, body: reply.text };
-    };
+    const forward = frontForward(request, labAgents);
     const smokeFront = await startFront(tls, forward(calls, () => hostDown, false));
     const labFront = await startFront(tls, forward(labCalls, () => false, true));
     fronts.push(smokeFront, labFront);
@@ -121,108 +109,20 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");
     const { act } = React;
-    /** `host.spawn` as Desktop runs a declared process: program and leading
-     * arguments from the installed manifest, the caller's after them, no
-     * shell. NODE_EXTRA_CA_CERTS stands for the user's trust store, which
-     * trusts the certificate of `tailscale serve`. */
-    const desktopSpawn = (manifestPath) => async (id, { args = [], onStdout, onStderr } = {}) => {
-      helpers.spawns += 1;
-      if (helpers.failSpawn) throw new Error("spawn node ENOENT");
-      const entry = JSON.parse(readFileSync(manifestPath, "utf8")).host?.processes?.find((item) => item.id === id);
-      if (!entry || entry.program !== "node") throw new Error(`no declared process ${id}`);
-      const child = spawn(process.execPath, [...entry.args, ...args], { env: { ...process.env, NODE_EXTRA_CA_CERTS: tls.cert }, stdio: ["pipe", "pipe", "pipe"] });
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk) => onStdout?.(chunk));
-      child.stderr.on("data", (chunk) => onStderr?.(chunk));
-      const exited = new Promise((done) => child.once("exit", (code) => done(code)));
-      helpers.children.add(child);
-      void exited.then(() => helpers.children.delete(child));
-      return {
-        write: (data) => {
-          helpers.lines.push(String(data));
-          return new Promise((done, fail) => child.stdin.write(data, (error) => (error ? fail(error) : done())));
-        },
-        end: (data = "") => child.stdin.end(data),
-        kill: () => child.kill("SIGTERM"),
-        exited,
-      };
-    };
     const types = [];
-    const ctx = {
-      react: React,
-      agents: {
-        register(type) {
-          if (!TYPE_ID.test(type.id ?? "") || !type.title || typeof type.defaults !== "function")
-            throw new Error("Agent types need an id, a title and defaults");
-          if (types.some((item) => item.id === type.id)) throw new Error(`Contribution already registered: ${type.id}`);
-          types.push(type);
-        },
-      },
-      host: { spawn: desktopSpawn(join(outDir, "manifest.json")) },
-      effect(run) {
-        cleanups.push(run());
-      },
-    };
+    const ctx = desktopContext({ React, types, cleanups, spawn: desktopSpawn(helpers, tls, join(outDir, "manifest.json")) });
     // Left by builds with a type per harness; the plugin must clear it.
     localStorage.setItem(LEGACY_HARNESS_CACHE_KEY, JSON.stringify([{ id: "codex", title: "Codex" }]));
     // An agent an earlier build placed on this host.
     localStorage.setItem(EARLIER_HOST_KEY, SMOKE_HOST.id);
     check("plugin: the source manifest grants no host access", JSON.parse(readFileSync(SOURCE_MANIFEST, "utf8")).host === undefined);
-    // The owner's ask: the address names the machine, and the runner port is
-    // the helper's to add. A port that the user wrote stays.
-    const callTo = (origin) => runnerUrl([{ id: "a", label: "a", origin }], { host: "a", method: "GET", path: "/health", timeoutMs: 1000 }).href;
-    check(
-      "plugin: the helper calls the runner port when the address has none, and keeps a written port",
-      callTo("https://machine.example.invalid") === `https://machine.example.invalid:${RUNNER_PORT}/v1/health` &&
-        callTo(`https://machine.example.invalid:${RUNNER_PORT}`) === `https://machine.example.invalid:${RUNNER_PORT}/v1/health` &&
-        callTo("https://machine.example.invalid:8443") === "https://machine.example.invalid:8443/v1/health",
-      callTo("https://machine.example.invalid"),
-    );
-    let samePort;
-    try {
-      validateHosts({ hosts: [{ id: "a", label: "a", origin: "https://machine.example.invalid" }, { id: "b", label: "b", origin: `https://machine.example.invalid:${RUNNER_PORT}` }] });
-    } catch (error) {
-      samePort = error;
-    }
-    check("plugin: hosts.json refuses one machine twice, with and without the runner port", samePort instanceof PluginBuildError && /duplicate origin/.test(samePort.message), String(samePort));
-    const grant = JSON.parse(readFileSync(join(outDir, "manifest.json"), "utf8")).host;
-    check(
-      "plugin: the build grants one host process, node on the helper with this hosts.json, and no network origin",
-      JSON.stringify(Object.keys(grant)) === JSON.stringify(["processes"]) &&
-        grant.processes.length === 1 &&
-        grant.processes[0].id === "hosts" &&
-        grant.processes[0].program === "node" &&
-        JSON.stringify(grant.processes[0].args) === JSON.stringify([HOSTS_HELPER, "--hosts", hostsPath]),
-      JSON.stringify(grant),
-    );
-    check("plugin: the build holds no host list", readFileSync(PLUGIN, "utf8") === readFileSync(resolve(HERE, "../../plugin/plugin.js"), "utf8"));
+    buildChecks(check, { outDir, hostsPath, PLUGIN });
     const plugin = await import(`${pathToFileURL(PLUGIN).href}?smoke=${Date.now()}`);
     check("plugin: injects react, agents and host", JSON.stringify(plugin.inject) === JSON.stringify(["react", "agents", "host"]));
     await plugin.apply(ctx);
-    check(
-      "plugin: one hosted type, registered at once, with the legacy id; New agent's picker names its one host",
-      types.length === 1 && types[0].id === TYPE_ID_VALUE && types[0].title === `${TYPE_TITLE} · ${SMOKE_HOST.label}`,
-      JSON.stringify(types.map((item) => [item.id, item.title])),
-    );
-    const [hosted] = types;
-    check("plugin: the type has its own icon and no harness suffix in its title", typeof hosted.icon === "function" && !/\(remote\)/.test(hosted.title));
-    check("plugin: the type is hosted, with no run, models or timeoutMs", hosted.remote && !hosted.run && !hosted.models && hosted.timeoutMs === undefined);
-    check("plugin: the old per-harness cache is removed", localStorage.getItem(LEGACY_HARNESS_CACHE_KEY) === null);
-    check(
-      "plugin: an earlier build's agent-to-host entry moves to this build's key",
-      localStorage.getItem(MIGRATED_HOST_KEY) === SMOKE_HOST.id && localStorage.getItem(EARLIER_HOST_KEY) === null,
-    );
+    const hosted = registeredTypeChecks(check, types, SMOKE_HOST);
 
-    const until = async (predicate, label) => {
-      const end = Date.now() + WAIT_MS;
-      while (Date.now() < end) {
-        const value = await act(async () => predicate());
-        if (value) return value;
-        await act(async () => sleep(POLL_MS));
-      }
-      throw new Error(`timed out waiting for ${label}`);
-    };
+    const until = actUntil(act);
     await until(() => hosted.provider.snapshot().readiness === "ready", "provider ready");
     check("plugin: provider is ready while one harness is ready", hosted.provider.snapshot().readiness === "ready", JSON.stringify(hosted.provider.snapshot()));
     check("plugin: provider snapshots are stable objects", hosted.provider.snapshot() === hosted.provider.snapshot());
@@ -230,96 +130,19 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     // ---- Desktop markup helpers ------------------------------------------
     // The plugin draws Desktop's own Select and Menu markup, so the smoke
     // drives it the way the owner does: open the pill, press an option.
-    const mount = () => {
-      const node = document.createElement("div");
-      document.body.append(node);
-      const root = createRoot(node);
-      return { node, root, render: (element) => act(async () => root.render(element)), unmount: () => act(async () => root.unmount()) };
-    };
-    const press = (element) =>
-      act(async () => {
-        element.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true }));
-        element.click();
-      });
-    const key = (element, name) =>
-      act(async () => {
-        element.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
-      });
-    const typeText = (control, value) =>
-      act(async () => {
-        const proto = control instanceof dom.window.HTMLTextAreaElement ? dom.window.HTMLTextAreaElement : dom.window.HTMLInputElement;
-        Object.getOwnPropertyDescriptor(proto.prototype, "value").set.call(control, value);
-        control.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-      });
-    const combobox = (node, label) => node.querySelector(`[role=combobox][aria-label="${label}"]`);
-    const shownValue = (trigger) => trigger?.querySelector(".buzz-select-value")?.textContent;
-    const shownSuffix = (trigger) => trigger?.querySelector(".buzz-select-value-suffix")?.textContent ?? "";
-    /** Opens a pill and returns its popup. */
-    const open = async (trigger) => {
-      await press(trigger);
-      return document.getElementById(trigger.getAttribute("aria-controls"));
-    };
-    const optionsOf = (popup) => [...popup.querySelectorAll("[role=option],[role=menuitemradio]")];
-    const nameOf = (option) => option.getAttribute("aria-label") ?? option.querySelector(".buzz-choice-row-label")?.textContent;
-    const labels = (popup) => optionsOf(popup).map(nameOf);
-    /** Picks an option by its label in the pill named `label`. */
-    const choose = async (node, label, option) => {
-      const trigger = await until(() => combobox(node, label), `${label} pill`);
-      const popup = await open(trigger);
-      const target = optionsOf(popup).find((item) => nameOf(item) === option);
-      if (!target) throw new Error(`${label} has no option ${option}: ${JSON.stringify(labels(popup))}`);
-      await press(target);
-    };
-    const fieldControl = (node, label) => {
-      const caption = [...node.querySelectorAll("label.buzz-field-label")].find((item) => item.textContent.startsWith(label));
-      return caption ? document.getElementById(caption.htmlFor) : null;
-    };
-    const rowTitles = (node) => [...node.querySelectorAll(".buzz-preference-row-label")].map((item) => item.textContent);
-    // Every class the plugin draws, checked against Desktop's at the end.
-    const drawn = new Set();
-    const collect = (node) => {
-      for (const element of [node, ...node.querySelectorAll("[class]")])
-        for (const name of (element.getAttribute("class") ?? "").split(/\s+/)) if (name) drawn.add(name);
-    };
+    const { mount, press, key, typeText, combobox, shownValue, shownSuffix, open, optionsOf, nameOf, labels, choose, fieldControl, rowTitles, drawn, collect } = desktopMarkup({ dom, act, createRoot, until });
 
     // ---- New agent dialog -------------------------------------------------
     let config = hosted.defaults().config;
     check("plugin: defaults name Claude, thread sessions and the first host", config.harness === "claude-code" && config.scope === "thread" && config.host === SMOKE_HOST.id, JSON.stringify(config));
     const dialog = mount();
-    // Holds the draft as Desktop's dialog does: CreateModel in the Model row
-    // of the AI configuration group, Create under it.
-    function Dialog({ start }) {
-      const [draft, setDraft] = React.useState(start);
+    const Dialog = draftDialog(React, hosted, (draft) => {
       config = draft;
-      return React.createElement(
-        "div",
-        null,
-        React.createElement(
-          "div",
-          { className: "buzz-preference-row", "data-row": "model" },
-          React.createElement("div", { className: "buzz-preference-row-trailing" }, React.createElement(hosted.CreateModel, { config: draft, disabled: false, onChange: setDraft })),
-        ),
-        React.createElement(hosted.Create, { config: draft, disabled: false, onChange: setDraft }),
-      );
-    }
+    });
     await dialog.render(React.createElement(Dialog, { start: config }));
     const harnessPill = await until(() => combobox(dialog.node, "Harness"), "harness pill");
     const modelPill = await until(() => combobox(dialog.node, "Model"), "model pill");
-    check(
-      "plugin: dialog Model row holds the harness pill and the model pill, laid out as Desktop's CreateModelChoices",
-      harnessPill.closest("div.flex.max-w-full.flex-wrap.items-center.justify-end.gap-2") === modelPill.closest("div.flex.max-w-full.flex-wrap.items-center.justify-end.gap-2") &&
-        harnessPill.closest(".flex") !== null,
-    );
-    check(
-      "plugin: both pills are Desktop's compact Select (outline, sm, capsule, chevron)",
-      [harnessPill, modelPill].every(
-        (pill) =>
-          pill.matches("button.buzz-button[data-variant=outline][data-size=sm][data-button-shape=capsule]") &&
-          pill.closest(".buzz-select[data-variant=compact][data-appearance=outlined]") &&
-          pill.querySelector(".buzz-button-label > .buzz-select-value-content") &&
-          pill.querySelector("svg.buzz-dropdown-chevron.tabler-icon-chevron-down"),
-      ),
-    );
+    pillMarkupChecks(check, harnessPill, modelPill);
     check("plugin: the harness pill shows Claude with its mark", shownValue(harnessPill) === "Claude" && harnessPill.querySelector(".buzz-select-leading svg") !== null, shownValue(harnessPill));
     const harnessList = await open(harnessPill);
     collect(dialog.node);
@@ -607,7 +430,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
     writeFileSync(twoHostsPath, JSON.stringify({ hosts: [ROGUE_HOST, SMOKE_HOST] }));
     const { outDir: twoDir } = buildPlugin({ hostsPath: twoHostsPath, outDir: join(buildDir, "dist-two") });
     const rogueTypes = [];
-    const rogueCtx = { ...ctx, agents: { register: (type) => rogueTypes.push(type) }, host: { spawn: desktopSpawn(join(twoDir, "manifest.json")) } };
+    const rogueCtx = { ...ctx, agents: { register: (type) => rogueTypes.push(type) }, host: { spawn: desktopSpawn(helpers, tls, join(twoDir, "manifest.json")) } };
     const twoHosts = await import(`${pathToFileURL(join(twoDir, "plugin.js")).href}?smoke=${Date.now()}`);
     await twoHosts.apply(rogueCtx);
     const [rogueHosted] = rogueTypes;
@@ -1066,7 +889,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
 
     // ---- The helper's own refusals, as the plugin could send them --------
     let rawOut = "";
-    const raw = await desktopSpawn(join(outDir, "manifest.json"))("hosts", { onStdout: (chunk) => (rawOut += chunk) });
+    const raw = await desktopSpawn(helpers, tls, join(outDir, "manifest.json"))("hosts", { onStdout: (chunk) => (rawOut += chunk) });
     const asks = [
       { id: 1, op: "request", host: "nowhere", method: "GET", path: "/harnesses", timeoutMs: 5000 },
       { id: 2, op: "request", host: SMOKE_HOST.id, method: "GET", path: "/../health", timeoutMs: 5000 },
@@ -1088,7 +911,7 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
       JSON.stringify(answers),
     );
     check("helper: a listed host's route answers", answers[5]?.ok === true && answers[5].status === 200 && JSON.parse(answers[5].body).ok === true, JSON.stringify(answers[5]));
-    const extraArgs = await desktopSpawn(join(outDir, "manifest.json"))("hosts", { args: ["--hosts", "/dev/null"] });
+    const extraArgs = await desktopSpawn(helpers, tls, join(outDir, "manifest.json"))("hosts", { args: ["--hosts", "/dev/null"] });
     check("helper: refuses arguments the caller adds after the declared ones", (await extraArgs.exited) === 64);
 
     // ---- Same classes as Desktop -----------------------------------------
@@ -1115,15 +938,260 @@ export async function pluginSmoke({ request, check, authTag, community, workspac
   } finally {
     // The plugin's poll timer must not outlive the run.
     for (const cleanup of cleanups) if (typeof cleanup === "function") cleanup();
-    for (const [name, descriptor] of Object.entries(saved)) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globalThis[name];
-    }
-    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreDomGlobals(saved);
     dom.window.close();
     for (const child of helpers.children) child.kill("SIGTERM");
     await Promise.all(fronts.map((front) => front.close()));
     rmSync(buildDir, { recursive: true, force: true });
   }
   // #lizard forgives: one end-to-end scenario through the plugin UI that must read in run order
+}
+
+/** A front that forwards to the runner, as `tailscale serve` does. `labAgents`
+ * is shared by both fronts, so each hides the agents that the other holds. */
+function frontForward(request, labAgents) {
+  return (log, down, own) => async ({ method, path, body }) => {
+    log.push(`${method} ${path}`);
+    if (down()) return "drop";
+    const pubkey = /^\/v1\/agents\/([0-9a-f]{64})/.exec(path)?.[1];
+    if (pubkey && labAgents.has(pubkey) !== own) return { status: 404, body: JSON.stringify({ error: "not_found", message: "no such agent" }) };
+    const reply = await request(method, path, body);
+    if (own && method === "POST" && path === "/v1/agents" && reply.status === 200) labAgents.add(JSON.parse(reply.text).pubkey);
+    return { status: reply.status, body: reply.text };
+  };
+}
+
+/** `host.spawn` as Desktop runs a declared process: program and leading
+ * arguments from the installed manifest, the caller's after them, no
+ * shell. NODE_EXTRA_CA_CERTS stands for the user's trust store, which
+ * trusts the certificate of `tailscale serve`. `helpers` tracks each child
+ * so that none outlives the run. */
+function desktopSpawn(helpers, tls, manifestPath) {
+  return async (id, { args = [], onStdout, onStderr } = {}) => {
+    helpers.spawns += 1;
+    if (helpers.failSpawn) throw new Error("spawn node ENOENT");
+    const entry = JSON.parse(readFileSync(manifestPath, "utf8")).host?.processes?.find((item) => item.id === id);
+    if (!entry || entry.program !== "node") throw new Error(`no declared process ${id}`);
+    const child = spawn(process.execPath, [...entry.args, ...args], { env: { ...process.env, NODE_EXTRA_CA_CERTS: tls.cert }, stdio: ["pipe", "pipe", "pipe"] });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => onStdout?.(chunk));
+    child.stderr.on("data", (chunk) => onStderr?.(chunk));
+    const exited = new Promise((done) => child.once("exit", (code) => done(code)));
+    helpers.children.add(child);
+    void exited.then(() => helpers.children.delete(child));
+    return {
+      write: (data) => {
+        helpers.lines.push(String(data));
+        return new Promise((done, fail) => child.stdin.write(data, (error) => (error ? fail(error) : done())));
+      },
+      end: (data = "") => child.stdin.end(data),
+      kill: () => child.kill("SIGTERM"),
+      exited,
+    };
+  };
+}
+
+/** The slice of Desktop's plugin context that the plugin injects, with a
+ * register that applies Desktop's own refusals, so the smoke sees them too. */
+function desktopContext({ React, types, cleanups, spawn }) {
+  return {
+    react: React,
+    agents: {
+      register(type) {
+        if (!TYPE_ID.test(type.id ?? "") || !type.title || typeof type.defaults !== "function")
+          throw new Error("Agent types need an id, a title and defaults");
+        if (types.some((item) => item.id === type.id)) throw new Error(`Contribution already registered: ${type.id}`);
+        types.push(type);
+      },
+    },
+    host: { spawn },
+    effect(run) {
+      cleanups.push(run());
+    },
+  };
+}
+
+/** What the build writes, judged before the plugin runs: the helper's runner
+ * URL rule, hosts.json refusals and the manifest's one host grant. */
+function buildChecks(check, { outDir, hostsPath, PLUGIN }) {
+  // The owner's ask: the address names the machine, and the runner port is
+  // the helper's to add. A port that the user wrote stays.
+  const callTo = (origin) => runnerUrl([{ id: "a", label: "a", origin }], { host: "a", method: "GET", path: "/health", timeoutMs: 1000 }).href;
+  check(
+    "plugin: the helper calls the runner port when the address has none, and keeps a written port",
+    callTo("https://machine.example.invalid") === `https://machine.example.invalid:${RUNNER_PORT}/v1/health` &&
+      callTo(`https://machine.example.invalid:${RUNNER_PORT}`) === `https://machine.example.invalid:${RUNNER_PORT}/v1/health` &&
+      callTo("https://machine.example.invalid:8443") === "https://machine.example.invalid:8443/v1/health",
+    callTo("https://machine.example.invalid"),
+  );
+  let samePort;
+  try {
+    validateHosts({ hosts: [{ id: "a", label: "a", origin: "https://machine.example.invalid" }, { id: "b", label: "b", origin: `https://machine.example.invalid:${RUNNER_PORT}` }] });
+  } catch (error) {
+    samePort = error;
+  }
+  check("plugin: hosts.json refuses one machine twice, with and without the runner port", samePort instanceof PluginBuildError && /duplicate origin/.test(samePort.message), String(samePort));
+  const grant = JSON.parse(readFileSync(join(outDir, "manifest.json"), "utf8")).host;
+  check(
+    "plugin: the build grants one host process, node on the helper with this hosts.json, and no network origin",
+    JSON.stringify(Object.keys(grant)) === JSON.stringify(["processes"]) &&
+      grant.processes.length === 1 &&
+      grant.processes[0].id === "hosts" &&
+      grant.processes[0].program === "node" &&
+      JSON.stringify(grant.processes[0].args) === JSON.stringify([HOSTS_HELPER, "--hosts", hostsPath]),
+    JSON.stringify(grant),
+  );
+  check("plugin: the build holds no host list", readFileSync(PLUGIN, "utf8") === readFileSync(resolve(HERE, "../../plugin/plugin.js"), "utf8"));
+}
+
+/** Waits as React Testing Library's waitFor does, inside act, so each poll
+ * lets the plugin's effects and state updates land first. */
+function actUntil(act) {
+  return async (predicate, label) => {
+    const end = Date.now() + WAIT_MS;
+    while (Date.now() < end) {
+      const value = await act(async () => predicate());
+      if (value) return value;
+      await act(async () => sleep(POLL_MS));
+    }
+    throw new Error(`timed out waiting for ${label}`);
+  };
+}
+
+/** Drivers for Desktop's own Select, Menu and field markup, as the owner
+ * uses them: open the pill, press an option. `drawn` gathers every class the
+ * plugin draws for the check against Desktop's styles. */
+function desktopMarkup({ dom, act, createRoot, until }) {
+  const mount = () => {
+    const node = document.createElement("div");
+    document.body.append(node);
+    const root = createRoot(node);
+    return { node, root, render: (element) => act(async () => root.render(element)), unmount: () => act(async () => root.unmount()) };
+  };
+  const press = (element) =>
+    act(async () => {
+      element.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true }));
+      element.click();
+    });
+  const key = (element, name) =>
+    act(async () => {
+      element.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
+    });
+  const typeText = (control, value) =>
+    act(async () => {
+      const proto = control instanceof dom.window.HTMLTextAreaElement ? dom.window.HTMLTextAreaElement : dom.window.HTMLInputElement;
+      Object.getOwnPropertyDescriptor(proto.prototype, "value").set.call(control, value);
+      control.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+  const combobox = (node, label) => node.querySelector(`[role=combobox][aria-label="${label}"]`);
+  const shownValue = (trigger) => trigger?.querySelector(".buzz-select-value")?.textContent;
+  const shownSuffix = (trigger) => trigger?.querySelector(".buzz-select-value-suffix")?.textContent ?? "";
+  /** Opens a pill and returns its popup. */
+  const open = async (trigger) => {
+    await press(trigger);
+    return document.getElementById(trigger.getAttribute("aria-controls"));
+  };
+  const optionsOf = (popup) => [...popup.querySelectorAll("[role=option],[role=menuitemradio]")];
+  const nameOf = (option) => option.getAttribute("aria-label") ?? option.querySelector(".buzz-choice-row-label")?.textContent;
+  const labels = (popup) => optionsOf(popup).map(nameOf);
+  /** Picks an option by its label in the pill named `label`. */
+  const choose = async (node, label, option) => {
+    const trigger = await until(() => combobox(node, label), `${label} pill`);
+    const popup = await open(trigger);
+    const target = optionsOf(popup).find((item) => nameOf(item) === option);
+    if (!target) throw new Error(`${label} has no option ${option}: ${JSON.stringify(labels(popup))}`);
+    await press(target);
+  };
+  const fieldControl = (node, label) => {
+    const caption = [...node.querySelectorAll("label.buzz-field-label")].find((item) => item.textContent.startsWith(label));
+    return caption ? document.getElementById(caption.htmlFor) : null;
+  };
+  const rowTitles = (node) => [...node.querySelectorAll(".buzz-preference-row-label")].map((item) => item.textContent);
+  // Every class the plugin draws, checked against Desktop's at the end.
+  const drawn = new Set();
+  const collect = (node) => {
+    for (const element of [node, ...node.querySelectorAll("[class]")])
+      for (const name of (element.getAttribute("class") ?? "").split(/\s+/)) if (name) drawn.add(name);
+  };
+  return { mount, press, key, typeText, combobox, shownValue, shownSuffix, open, optionsOf, nameOf, labels, choose, fieldControl, rowTitles, drawn, collect };
+}
+
+/** Gives the run jsdom's window as the browser globals React and the plugin
+ * read. Returns what they were, for restoreDomGlobals. */
+function installDomGlobals(dom) {
+  const saved = Object.fromEntries(DOM_GLOBALS.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of DOM_GLOBALS)
+    Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  return saved;
+}
+
+/** Puts back the globals that installDomGlobals replaced, so later smoke
+ * steps in this process see no browser. */
+function restoreDomGlobals(saved) {
+  for (const [name, descriptor] of Object.entries(saved)) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete globalThis[name];
+  }
+  delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+}
+
+/** What apply registered with Desktop, and the storage it migrated. Returns
+ * the one hosted type that the scenarios drive. */
+function registeredTypeChecks(check, types, SMOKE_HOST) {
+  check(
+    "plugin: one hosted type, registered at once, with the legacy id; New agent's picker names its one host",
+    types.length === 1 && types[0].id === TYPE_ID_VALUE && types[0].title === `${TYPE_TITLE} · ${SMOKE_HOST.label}`,
+    JSON.stringify(types.map((item) => [item.id, item.title])),
+  );
+  const [hosted] = types;
+  check("plugin: the type has its own icon and no harness suffix in its title", typeof hosted.icon === "function" && !/\(remote\)/.test(hosted.title));
+  check("plugin: the type is hosted, with no run, models or timeoutMs", hosted.remote && !hosted.run && !hosted.models && hosted.timeoutMs === undefined);
+  check("plugin: the old per-harness cache is removed", localStorage.getItem(LEGACY_HARNESS_CACHE_KEY) === null);
+  check(
+    "plugin: an earlier build's agent-to-host entry moves to this build's key",
+    localStorage.getItem(MIGRATED_HOST_KEY) === SMOKE_HOST.id && localStorage.getItem(EARLIER_HOST_KEY) === null,
+  );
+  return hosted;
+}
+
+/** Holds the draft as Desktop's dialog does: CreateModel in the Model row
+ * of the AI configuration group, Create under it. `onDraft` hands each draft
+ * to the scenario that reads it. */
+function draftDialog(React, hosted, onDraft) {
+  return function Dialog({ start }) {
+    const [draft, setDraft] = React.useState(start);
+    onDraft(draft);
+    return React.createElement(
+      "div",
+      null,
+      React.createElement(
+        "div",
+        { className: "buzz-preference-row", "data-row": "model" },
+        React.createElement("div", { className: "buzz-preference-row-trailing" }, React.createElement(hosted.CreateModel, { config: draft, disabled: false, onChange: setDraft })),
+      ),
+      React.createElement(hosted.Create, { config: draft, disabled: false, onChange: setDraft }),
+    );
+  };
+}
+
+/** The dialog's two pills must be Desktop's compact Select, side by side, or
+ * the plugin's row would not look like Desktop's own. */
+function pillMarkupChecks(check, harnessPill, modelPill) {
+  check(
+    "plugin: dialog Model row holds the harness pill and the model pill, laid out as Desktop's CreateModelChoices",
+    harnessPill.closest("div.flex.max-w-full.flex-wrap.items-center.justify-end.gap-2") === modelPill.closest("div.flex.max-w-full.flex-wrap.items-center.justify-end.gap-2") &&
+      harnessPill.closest(".flex") !== null,
+  );
+  check(
+    "plugin: both pills are Desktop's compact Select (outline, sm, capsule, chevron)",
+    [harnessPill, modelPill].every(
+      (pill) =>
+        pill.matches("button.buzz-button[data-variant=outline][data-size=sm][data-button-shape=capsule]") &&
+        pill.closest(".buzz-select[data-variant=compact][data-appearance=outlined]") &&
+        pill.querySelector(".buzz-button-label > .buzz-select-value-content") &&
+        pill.querySelector("svg.buzz-dropdown-chevron.tabler-icon-chevron-down"),
+    ),
+  );
 }

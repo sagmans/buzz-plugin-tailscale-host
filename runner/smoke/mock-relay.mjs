@@ -277,46 +277,64 @@ export class MockRelay {
       return;
     }
     const [type, ...rest] = data;
-    if (type === "AUTH") {
-      const event = rest[0];
-      const tag = (name) => event?.tags?.find((item) => item[0] === name);
-      let reason = "";
-      if (!verifyEvent(event)) reason = "bad signature";
-      else if (event.kind !== 22242) reason = "bad kind";
-      else if (tag("challenge")?.[1] !== connection.challenge) reason = "bad challenge";
-      else if (tag("relay")?.[1] !== this.url) reason = "bad relay";
-      else if (!tag("auth")) reason = "no auth tag";
-      const ok = !reason;
-      this.auths.push({ event, ok, reason });
-      if (ok) connection.authed = event.pubkey;
-      this.send(connection, ["OK", event?.id, ok, reason]);
-      return;
-    }
-    if (type === "REQ") {
-      const [subId, ...filters] = rest;
-      if (!connection.authed) return this.send(connection, ["CLOSED", subId, "auth-required:"]);
-      this.reqs.push({ subId, filters, agent: connection.authed });
-      connection.subs.set(subId, filters);
-      for (const event of this.query(filters)) this.send(connection, ["EVENT", subId, event]);
-      if (this.unfinished.delete(`${connection.authed}:${subId}`)) return;
-      this.send(connection, ["EOSE", subId]);
-      return;
-    }
-    if (type === "EVENT") {
-      const event = rest[0];
-      const tags = JSON.stringify(event?.tags ?? []);
-      let reason = "";
-      if (!connection.authed) reason = "auth-required:";
-      else if (!verifyEvent(event)) reason = "invalid: bad signature";
-      else if (event.pubkey !== connection.authed) reason = "restricted: not the authenticated agent";
-      else if (event.kind !== KIND_AGENT_OBSERVER) reason = "restricted: kind not accepted over WebSocket";
-      else if (Math.abs(event.created_at - Math.floor(Date.now() / 1000)) > OBSERVER_FRESHNESS_S) reason = "invalid: stale";
-      else if (tags !== JSON.stringify([["p", this.owner], ["agent", event.pubkey], ["frame", "telemetry"]])) reason = "invalid: route tags";
-      const ok = !reason;
-      this.observed.push({ event, ok, reason, at: Date.now() });
-      this.send(connection, ["OK", event?.id, ok, reason]);
-      return;
-    }
+    if (type === "AUTH") return this.authFrame(connection, rest[0]);
+    if (type === "REQ") return this.reqFrame(connection, rest);
+    if (type === "EVENT") return this.eventFrame(connection, rest[0]);
     if (type === "CLOSE") connection.subs.delete(rest[0]);
+  }
+
+  /** NIP-42 AUTH: records every attempt, so scenarios can assert what the
+   * runner signed, and authenticates the connection on success. */
+  authFrame(connection, event) {
+    const reason = this.authRefusal(connection, event);
+    const ok = !reason;
+    this.auths.push({ event, ok, reason });
+    if (ok) connection.authed = event.pubkey;
+    this.send(connection, ["OK", event?.id, ok, reason]);
+  }
+
+  /** Why the relay refuses an AUTH event, in the order a relay checks; empty
+   * when it accepts it. */
+  authRefusal(connection, event) {
+    const tag = (name) => event?.tags?.find((item) => item[0] === name);
+    if (!verifyEvent(event)) return "bad signature";
+    if (event.kind !== 22242) return "bad kind";
+    if (tag("challenge")?.[1] !== connection.challenge) return "bad challenge";
+    if (tag("relay")?.[1] !== this.url) return "bad relay";
+    if (!tag("auth")) return "no auth tag";
+    return "";
+  }
+
+  /** A REQ: stored events, then EOSE unless a scenario holds it back to
+   * test a load that never completes. Refused before AUTH, as the relay. */
+  reqFrame(connection, [subId, ...filters]) {
+    if (!connection.authed) return this.send(connection, ["CLOSED", subId, "auth-required:"]);
+    this.reqs.push({ subId, filters, agent: connection.authed });
+    connection.subs.set(subId, filters);
+    for (const event of this.query(filters)) this.send(connection, ["EVENT", subId, event]);
+    if (this.unfinished.delete(`${connection.authed}:${subId}`)) return;
+    this.send(connection, ["EOSE", subId]);
+  }
+
+  /** An EVENT over WebSocket, which the relay takes only for observer
+   * frames; every attempt is recorded for the telemetry scenarios. */
+  eventFrame(connection, event) {
+    const reason = this.observerRefusal(connection, event);
+    const ok = !reason;
+    this.observed.push({ event, ok, reason, at: Date.now() });
+    this.send(connection, ["OK", event?.id, ok, reason]);
+  }
+
+  /** Why the relay refuses an observer frame, in the relay's check order;
+   * empty when it accepts it. */
+  observerRefusal(connection, event) {
+    const tags = JSON.stringify(event?.tags ?? []);
+    if (!connection.authed) return "auth-required:";
+    if (!verifyEvent(event)) return "invalid: bad signature";
+    if (event.pubkey !== connection.authed) return "restricted: not the authenticated agent";
+    if (event.kind !== KIND_AGENT_OBSERVER) return "restricted: kind not accepted over WebSocket";
+    if (Math.abs(event.created_at - Math.floor(Date.now() / 1000)) > OBSERVER_FRESHNESS_S) return "invalid: stale";
+    if (tags !== JSON.stringify([["p", this.owner], ["agent", event.pubkey], ["frame", "telemetry"]])) return "invalid: route tags";
+    return "";
   }
 }

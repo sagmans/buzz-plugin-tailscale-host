@@ -91,8 +91,14 @@ export function createApi(config: RunnerConfig, agents: AgentManager, log: Logge
   return server;
 }
 
+/** Every route, in match order: the runner-wide ones, then the per-agent
+ * ones. Split in two so each group reads as one API surface. */
 function buildRoutes(config: RunnerConfig, agents: AgentManager): Route[] {
-  const agentPath = (suffix = "") => new RegExp(`^${API_PREFIX}/agents/${PK}${suffix}$`);
+  return [...runnerRoutes(config, agents), ...agentRoutes(config, agents)];
+}
+
+/** Routes about the runner itself: health, harnesses and making an agent. */
+function runnerRoutes(config: RunnerConfig, agents: AgentManager): Route[] {
   return [
     {
       method: "GET",
@@ -127,6 +133,13 @@ function buildRoutes(config: RunnerConfig, agents: AgentManager): Route[] {
         return { status: 200, body: created };
       },
     },
+  ];
+}
+
+/** Routes on one agent, addressed by its pubkey in the path. */
+function agentRoutes(config: RunnerConfig, agents: AgentManager): Route[] {
+  const agentPath = (suffix = "") => new RegExp(`^${API_PREFIX}/agents/${PK}${suffix}$`);
+  return [
     {
       method: "GET",
       pattern: agentPath(),
