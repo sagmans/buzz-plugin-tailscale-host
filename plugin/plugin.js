@@ -23,6 +23,12 @@
 // page, or by hand in the file, works at once, with no new build and no
 // Update; Buzz would let the plugin reach only the origins of its installed
 // manifest itself.
+//
+// One file, on purpose. AGENTS.md ("Plugin rules") requires plugin.js to stay a
+// single file with no runtime imports, and scripts/build-plugin.mjs ships it
+// by copying this one module into dist/. The factories below (createStore,
+// the make* parts, PART_FACTORIES) are the seams for a later split, but a
+// split is a change to that rule, so it is not made here.
 
 // Cordis starts apply() only after these host services exist.
 export const inject = ["react", "agents", "host"];
@@ -112,8 +118,8 @@ const SCOPES = Object.freeze([
   ["channel", "One session per channel"],
 ]);
 const DEFAULT_SCOPE = "thread";
-// The Sessions select's options, built once; a named mapper because lizard
-// 1.24.3 misreads a destructured arrow parameter inside an object literal.
+// The Sessions select's options, built once from SCOPES so the picker offers
+// exactly the scopes that cleanConfig accepts.
 const scopeOption = (entry) => {
   const [value, label] = entry;
   return { value, label };
@@ -782,22 +788,80 @@ const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for 
  * Everything apply's views share and change while the plugin runs. One object,
  * so each factory reads and writes the same state, and a missing key shows
  * here rather than as a stray global.
+ * Values that take several shapes are typed `any`: what this type guards is the
+ * key names, which a typo in a factory would otherwise leave as a silent `undefined`.
  * @typedef {object} PluginStore
  * @property {boolean} disposed Set when Desktop disposes the plugin; late answers are dropped.
- * @property {Readonly<Record<string, object>>} hosts Each host's harness list; a host has no entry until its first answer, which reads as checking.
- * @property {Readonly<Record<string, object>>} models The model lists asked for so far, by host and harness.
+ * @property {Readonly<Record<string, any>>} hosts Each host's harness list; a host has no entry until its first answer, which reads as checking.
+ * @property {Readonly<Record<string, any>>} models The model lists asked for so far, by host and harness.
  * @property {Set<string>} modelsInFlight Keys with a fetch in flight: a stale list stays "ok" while it refreshes, so its state alone cannot stop a second picker from asking again.
  * @property {Set<() => void>} listeners The views subscribed through useSyncExternalStore.
  * @property {Promise<void> | undefined} refreshing The status round that runs, if any.
  * @property {Promise<void> | undefined} refreshAgain The one extra round queued by a call that came while a round ran.
- * @property {object | undefined} snapshot A stable provider snapshot, as useSyncExternalStore requires.
+ * @property {any} snapshot A stable provider snapshot, as useSyncExternalStore requires.
  * @property {Readonly<{state: string, error?: string, busy: boolean}>} hostsFile hosts.json as last read or saved; `busy`: one save at a time, so two saves never race on the file.
- * @property {object | undefined} communityReader Desktop's community reader, if any (injected at the end of apply): it names the owner and the relay a new host's config gets.
- * @property {Readonly<object>} setupRun The one host setup that may run, and its progress.
- * @property {object | null} setupForm The add form's values while a setup runs or after it failed, so that the owner corrects one field and not all. Never the password.
+ * @property {any} communityReader Desktop's community reader, if any (injected at the end of apply): it names the owner and the relay a new host's config gets.
+ * @property {Readonly<any>} setupRun The one host setup that may run, and its progress.
+ * @property {any} setupForm The add form's values while a setup runs or after it failed, so that the owner corrects one field and not all. Never the password.
  * @property {Map<string, string>} sshLogins The SSH login last used on each host, so that the next sign-in there asks only for the password. In memory only; a login name is not a secret.
- * @property {Readonly<object>} signinRun The one harness sign-in that may run, and its terminal.
+ * @property {Readonly<any>} signinRun The one harness sign-in that may run, and its terminal.
  * @property {(() => void) | undefined} openHostsPage Opens the Hosts page, once Desktop's pages scope gave one.
+ */
+
+/**
+ * One part of the plugin's views or logic, as another factory reads it from `parts`.
+ * Parts are functions and components alike; the signature stays loose because the
+ * guard against a typo is the name, which the per-factory typedefs below fix.
+ * @typedef {(...args: any[]) => any} PartFn
+ *
+ * What apply hands every factory: React and `h`, and the two icon sets.
+ * @typedef {object} Ui
+ * @property {any} React Desktop's React, from `ctx.react`.
+ * @property {(...args: any[]) => any} h React.createElement.
+ * @property {ReturnType<typeof makeIcons>} icons The type's and the harnesses' marks.
+ * @property {ReturnType<typeof makeGlyphs>} glyphs Desktop's small outline glyphs.
+ *
+ * The parts each factory returns. A factory is typed to return exactly its own
+ * typedef, so a part added to or dropped from a factory fails `tsc --checkJs` (run by
+ * hand; scripts/check does not run it) until the typedef follows, and `Parts` below then rejects a name no factory makes.
+ * @typedef {{ call: PartFn, remember: PartFn, forget: PartFn }} RunnerCallParts
+ * @typedef {{ holds: PartFn, locate: PartFn, requireNewKey: PartFn }} AgentRoutingParts
+ * @typedef {{ statusOf: PartFn, emit: PartFn, subscribe: PartFn, useStore: PartFn, refresh: PartFn }} StatusStoreParts
+ * @typedef {{ modelKey: PartFn, modelsFresh: PartFn, loadModels: PartFn, useModels: PartFn, harnessOn: PartFn, harnessTitle: PartFn, providerSnapshot: PartFn }} ModelStoreParts
+ * @typedef {{ setHostsFile: PartFn, parseFileHosts: PartFn, setHostList: PartFn, fileCall: PartFn, readHostsFile: PartFn, saveHostsFile: PartFn, sameHosts: PartFn, fileHosts: PartFn, placedHostIds: PartFn, agentsOn: PartFn }} HostsFileParts
+ * @typedef {{ setSetupRun: PartFn, parseProgress: PartFn, parseSetupResult: PartFn, communityDefaults: PartFn, startSetup: PartFn, resetSetup: PartFn }} SetupParts
+ * @typedef {{ setSigninRun: PartFn, startSignIn: PartFn, sendSignInInput: PartFn, cancelSignIn: PartFn, resetSignIn: PartFn }} SignInParts
+ * @typedef {{ fileHost: PartFn, checkNewHost: PartFn, updateHost: PartFn, removeHost: PartFn }} HostEditsParts
+ * @typedef {{ Button: PartFn, PreferenceRow: PartFn, SettingsGroup: PartFn, ChoiceRow: PartFn, Field: PartFn, Input: PartFn }} ControlsParts
+ * @typedef {{ AgentInstructions: PartFn }} InstructionsParts
+ * @typedef {{ Floating: PartFn }} FloatingParts
+ * @typedef {{ useListPopup: PartFn }} ListPopupParts
+ * @typedef {{ selectValue: PartFn, selectTrigger: PartFn }} SelectTriggerParts
+ * @typedef {{ selectOption: PartFn, selectPopup: PartFn }} SelectListParts
+ * @typedef {{ Select: PartFn }} SelectParts
+ * @typedef {{ harnessIcon: PartFn, modelLogo: PartFn, harnessChoices: PartFn, HarnessSelect: PartFn }} HarnessSelectParts
+ * @typedef {{ HarnessMenu: PartFn }} HarnessMenuParts
+ * @typedef {{ ModelSelect: PartFn, customModelField: PartFn }} ModelSelectParts
+ * @typedef {{ dedupe: PartFn, effortsFor: PartFn, EffortSelect: PartFn, keptEffort: PartFn, pick: PartFn, harnessProblem: PartFn, runsOn: PartFn, readinessLine: PartFn }} EffortParts
+ * @typedef {{ CreateModel: PartFn, Create: PartFn }} CreateParts
+ * @typedef {{ useSettingsLoad: PartFn, settingsIdentity: PartFn, saveButton: PartFn }} SettingsPartsParts
+ * @typedef {{ Settings: PartFn }} SettingsParts
+ * @typedef {{ DialogBody: PartFn, PanelFooter: PartFn }} ProviderViewsParts
+ * @typedef {{ HostForm: PartFn, ContentHeader: PartFn, StateDot: PartFn }} HostFormParts
+ * @typedef {{ StepMark: PartFn, ApproveLink: PartFn, SetupSteps: PartFn, SetupResult: PartFn }} SetupStepsParts
+ * @typedef {{ setupTitle: PartFn, setupProgressLine: PartFn, SetupProgress: PartFn }} SetupProgressParts
+ * @typedef {{ AddHostForm: PartFn, AddHostView: PartFn }} AddHostParts
+ * @typedef {{ RadioCard: PartFn, SignInStart: PartFn }} SignInStartParts
+ * @typedef {{ SignInAnswer: PartFn, signInEnd: PartFn, SignInTerminal: PartFn, SignInPanel: PartFn }} SignInTerminalParts
+ * @typedef {{ harnessLine: PartFn, hostLine: PartFn, hostTone: PartFn, HarnessRow: PartFn, HarnessSection: PartFn }} HarnessRowsParts
+ * @typedef {{ HostDetail: PartFn, hostSubtitle: PartFn }} HostDetailParts
+ * @typedef {{ HostList: PartFn }} HostListParts
+ * @typedef {{ HostsView: PartFn }} HostsViewParts
+ * @typedef {{ HostsPage: PartFn, HostsSummary: PartFn, HostsSettings: PartFn }} HostsPageParts
+ *
+ * Every part, by the factory that makes it, plus the helper that apply makes first.
+ * A part of a later factory is read only inside a handler (see PART_FACTORIES).
+ * @typedef {{ helper: HelperClient } & RunnerCallParts & AgentRoutingParts & StatusStoreParts & ModelStoreParts & HostsFileParts & SetupParts & SignInParts & HostEditsParts & ControlsParts & InstructionsParts & FloatingParts & ListPopupParts & SelectTriggerParts & SelectListParts & SelectParts & HarnessSelectParts & HarnessMenuParts & ModelSelectParts & EffortParts & CreateParts & SettingsPartsParts & SettingsParts & ProviderViewsParts & HostFormParts & SetupStepsParts & SetupProgressParts & AddHostParts & SignInStartParts & SignInTerminalParts & HarnessRowsParts & HostDetailParts & HostListParts & HostsViewParts & HostsPageParts} Parts
  */
 
 /** A fresh store for one apply: each load of the plugin starts empty.
@@ -822,7 +886,14 @@ function createStore() {
   };
 }
 
-/** Every host call goes through one runner path, so timeouts and errors read the same everywhere. */
+/**
+ * The one path every runner request takes, so a refusal, a timeout or a bad reply reads the same on every page and a helper that cannot run is told apart from a host that is down.
+ * It also owns the saved agent-to-host choice, because that is part of how a call finds its host.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {RunnerCallParts}
+ */
 function makeRunnerCall(ui, store, parts) {
   const { helper } = parts;
   /** One JSON call to a host's runner, through the helper; throws
@@ -879,7 +950,13 @@ function makeRunnerCall(ui, store, parts) {
   return { call, remember, forget };
 }
 
-/** Which host holds an agent: asked of the hosts, never taken from a host's own claim. */
+/**
+ * Settings, profile and delete calls act on whatever host they reach, so the host of an agent is found by asking the hosts, never by trusting one host's claim. Apart from the call path because only agent calls need routing; host status and file calls do not.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {AgentRoutingParts}
+ */
 function makeAgentRouting(ui, store, parts) {
   const { call, remember } = parts;
   /** Whether `host`'s runner keeps the agent `pubkey`. Only a record that
@@ -951,7 +1028,14 @@ function makeAgentRouting(ui, store, parts) {
 // them with useSyncExternalStore; snapshots are replaced, never mutated, so
 // React sees each change.
 
-/** Views subscribe to one status snapshot, so a refresh redraws them together; apply owns the poll. */
+/**
+ * One status snapshot that every view subscribes to, so a refresh redraws the Hosts page, the provider dialog and the pickers together instead of each polling alone.
+ * apply owns the poll timer; this holds only the refresh round.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {StatusStoreParts}
+ */
 function makeStatusStore(ui, store, parts) {
   const { React } = ui;
   const { call } = parts;
@@ -1006,7 +1090,14 @@ function makeStatusStore(ui, store, parts) {
   return { statusOf, emit, subscribe, useStore, refresh };
 }
 
-/** Model lists per host and harness, fetched once and shared by every picker, and the provider snapshot. */
+/**
+ * Several pickers ask for the same host's models, and a model list costs a runner call. One shared cache per host and harness, refreshed after MODELS_TTL_MS, saves those calls and keeps the pickers on one list.
+ * The provider snapshot is here because it reads the same per-host statuses.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {ModelStoreParts}
+ */
 function makeModelStore(ui, store, parts) {
   const { React } = ui;
   const { emit, call, useStore, statusOf } = parts;
@@ -1085,7 +1176,13 @@ function makeModelStore(ui, store, parts) {
 // the helper. A read or save also replaces HOSTS, which New agent and every
 // runner call use, so a change is in use at once.
 
-/** hosts.json through the hosts helper: the file state the Settings page shows and edits. */
+/**
+ * hosts.json is the one host list, but the plugin cannot read files. This routes every read and save through the hosts helper and checks each answer, so a broken or hand-edited file shows its reason on the page instead of breaking it.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HostsFileParts}
+ */
 function makeHostsFile(ui, store, parts) {
   const { emit, helper } = parts;
   const setHostsFile = (change) => {
@@ -1169,7 +1266,14 @@ function makeHostsFile(ui, store, parts) {
 // in the view, so a setup's progress is still shown when the owner opens the
 // page again: the helper runs the setup on, whatever page is open.
 
-/** Host setup that outlives the page: one run at a time, its progress kept in the store. */
+/**
+ * A host setup takes minutes and the owner may leave the page. Its run lives in the store, not in a component, so the progress and the result are still there on return.
+ * One run at a time, as the store allows.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SetupParts}
+ */
 function makeSetup(ui, store, parts) {
   const { emit, placedHostIds, helper, refresh } = parts;
   const setSetupRun = (change) => {
@@ -1266,7 +1370,14 @@ function makeSetup(ui, store, parts) {
 // (scripts/host-signin.mjs). Kept here, as the setup is, so a sign-in that
 // waits for the owner's browser goes on when the page closes and opens.
 
-/** Harness sign-in that outlives the page: one terminal at a time, kept in the store. */
+/**
+ * A harness sign-in waits for the owner and may outlast the page. Its terminal lives in the store, not in a component, so the sign-in survives a page change.
+ * One run at a time, as the store allows.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SignInParts}
+ */
 function makeSignIn(ui, store, parts) {
   const { emit, helper, refresh } = parts;
   const setSigninRun = (change) => {
@@ -1307,7 +1418,13 @@ function makeSignIn(ui, store, parts) {
   return { setSigninRun, startSignIn, sendSignInInput, cancelSignIn, resetSignIn };
 }
 
-/** Checks and edits of hosts.json entries, refused while agents still run on a host. */
+/**
+ * The rules for a change to hosts.json live here once, so no view re-implements them: an id never changes, because each agent's config names it, and a host that this device's agents still use is not removed.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HostEditsParts}
+ */
 function makeHostEdits(ui, store, parts) {
   const { fileHosts, saveHostsFile, agentsOn } = parts;
   function fileHost(list, id) {
@@ -1366,7 +1483,13 @@ function makeHostEdits(ui, store, parts) {
 // AgentInstructions, AgentSaveButton), so a hosted agent looks and acts as
 // Desktop's own agents. Keep them in step with those files.
 
-/** Desktop's basic controls, rebuilt from its markup because a plugin cannot import them. */
+/**
+ * Desktop's controls are not importable by a plugin. They are rebuilt from its markup in one place, so every view of this plugin looks like Desktop's own.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {ControlsParts}
+ */
 function makeControls(ui, store, parts) {
   const { React, h } = ui;
   function Button({ variant = "subtle", size = "md", shape = "capsule", type = "button", loading = false, disabled, children, ...props }) {
@@ -1448,7 +1571,13 @@ function makeControls(ui, store, parts) {
   return { Button, PreferenceRow, SettingsGroup, ChoiceRow, Field, Input };
 }
 
-/** The instructions field shared by New agent and Settings. */
+/**
+ * New agent and Settings both edit an agent's instructions. One field keeps the two from drifting apart.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {InstructionsParts}
+ */
 function makeInstructions(ui, store, parts) {
   const { React, h } = ui;
   const { Field } = parts;
@@ -1476,7 +1605,13 @@ function makeInstructions(ui, store, parts) {
   return { AgentInstructions };
 }
 
-/** The floating layer under a trigger that every popup list uses. */
+/**
+ * Every popup list needs the same anchoring beside its trigger, flipping and top-layer placement. One layer shared by Select and the harness menu keeps them identical and small.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {FloatingParts}
+ */
 function makeFloating(ui, store, parts) {
   const { React, h } = ui;
   /** Desktop's anchored popup (Base UI Positioner): fixed beside its trigger,
@@ -1572,7 +1707,13 @@ function makeFloating(ui, store, parts) {
   return { Floating };
 }
 
-/** Keyboard and focus behaviour shared by Select and the harness menu. */
+/**
+ * Select and the harness menu must open, move and close under the same keys as Desktop's lists. One hook keeps the two from diverging.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {ListPopupParts}
+ */
 function makeListPopup(ui, store, parts) {
   const { React } = ui;
   /** Open state, highlight and keys of one Desktop list popup (Select or
@@ -1638,7 +1779,13 @@ function makeListPopup(ui, store, parts) {
   return { useListPopup };
 }
 
-/** Select's trigger parts, kept apart so each render function stays small. */
+/**
+ * Select's trigger pieces, apart from Select so that its render function stays within the repository's complexity limit (LIZARD_MAX_CCN and LIZARD_MAX_LENGTH in scripts/check).
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SelectTriggerParts}
+ */
 function makeSelectTrigger(ui, store, parts) {
   const { h, glyphs } = ui;
   const { Button } = parts;
@@ -1708,7 +1855,13 @@ function makeSelectTrigger(ui, store, parts) {
   return { selectValue, selectTrigger };
 }
 
-/** Select's open list and its option rows. */
+/**
+ * Select's open list and option rows, apart from Select for the same complexity limit as the trigger parts.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SelectListParts}
+ */
 function makeSelectList(ui, store, parts) {
   const { h, glyphs } = ui;
   const { Floating } = parts;
@@ -1795,7 +1948,13 @@ function makeSelectList(ui, store, parts) {
   return { selectOption, selectPopup };
 }
 
-/** Desktop's Select, assembled from its trigger and list parts. */
+/**
+ * The picker that most forms use, in the three shapes Desktop gives it. It is assembled here from the trigger and list parts so that callers see one component with Desktop's props.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SelectParts}
+ */
 function makeSelect(ui, store, parts) {
   const { React, h } = ui;
   const { useListPopup, selectValue, selectTrigger, selectPopup, PreferenceRow, Field } = parts;
@@ -1836,7 +1995,13 @@ function makeSelect(ui, store, parts) {
 
 // ---- Hosted rows ----------------------------------------------------------
 
-/** Harness marks and the compact harness picker of the New agent dialog. */
+/**
+ * The New agent dialog needs a harness pill. The marks and the harness list it uses are also read by Settings and the provider dialog, so those lookups live here once.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HarnessSelectParts}
+ */
 function makeHarnessSelect(ui, store, parts) {
   const { h, icons } = ui;
   const { useStore, Select } = parts;
@@ -1874,8 +2039,11 @@ function makeHarnessSelect(ui, store, parts) {
     if (status.state === "checking")
       return h("span", { role: "status", className: "text-body-sm text-secondary" }, "Checking harnesses…");
     const items = harnessChoices(hostId, value);
-    // Kept out of the object literal below: lizard reads a bare `<` there as
-    // a generic type opener and loses the rest of the file's scan.
+    // Kept out of the object literal below. lizard 1.24.3 reads a `<`
+    // comparison in an object property value as a generic type opener and
+    // merges the functions that follow into this one (terryyin/lizard#549,
+    // fixed in 1.26.0). Remove this hoist once LIZARD_MIN_VERSION in
+    // scripts/check is 1.26.0 or later.
     const nothingToPick = items.length < 2;
     return h(Select, {
       label: LABELS.harness,
@@ -1891,7 +2059,13 @@ function makeHarnessSelect(ui, store, parts) {
   return { harnessIcon, modelLogo, harnessChoices, HarnessSelect };
 }
 
-/** The harness menu of the Settings tab, as Desktop's own. */
+/**
+ * Desktop draws the Settings harness row as a menu pill, not as the dialog's Select. It uses the popup hook directly, so it is its own factory.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HarnessMenuParts}
+ */
 function makeHarnessMenu(ui, store, parts) {
   const { React, h, glyphs } = ui;
   const { useStore, harnessChoices, useListPopup, harnessIcon, Button, Floating, ChoiceRow, PreferenceRow } = parts;
@@ -1991,7 +2165,13 @@ function makeHarnessMenu(ui, store, parts) {
   return { HarnessMenu };
 }
 
-/** The model picker and its custom model field. */
+/**
+ * Models belong to one host and one harness, and Desktop adds a custom model id. New agent and Settings both need this picker, so it is shared.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {ModelSelectParts}
+ */
 function makeModelSelect(ui, store, parts) {
   const { React, h } = ui;
   const { useModels, modelLogo, Select, Field, Input, Button } = parts;
@@ -2073,7 +2253,13 @@ function makeModelSelect(ui, store, parts) {
   return { ModelSelect, customModelField };
 }
 
-/** Thinking levels and the readiness words the agent views share. */
+/**
+ * Thinking levels depend on the model, and Desktop's rules for keeping or resetting a level apply to every view that edits a run. The rules and the readiness words live once for Create, Settings and the provider dialog.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {EffortParts}
+ */
 function makeEffort(ui, store, parts) {
   const { h, icons } = ui;
   const { useModels, Select, modelKey, harnessOn } = parts;
@@ -2161,7 +2347,13 @@ function makeEffort(ui, store, parts) {
 
 // ---- The hosted agent type ------------------------------------------------
 
-/** The New agent dialog's pills and its host form. */
+/**
+ * Desktop's New agent dialog gives a hosted type two slots, the Model row and the rest of the form. Both read the same host, harness and model draft, so they are built together.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {CreateParts}
+ */
 function makeCreate(ui, store, parts) {
   const { React, h } = ui;
   const { useStore, pick, harnessProblem, harnessOn, useModels, HarnessSelect, ModelSelect, Button, loadModels, Select, AgentInstructions } = parts;
@@ -2238,7 +2430,13 @@ function makeCreate(ui, store, parts) {
   return { CreateModel, Create };
 }
 
-/** The Settings load hook, identity group and save button sit apart so the form stays within the size limit. */
+/**
+ * The load hook, identity group and save button of Settings, apart from Settings so that its form stays within the repository's complexity limit.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SettingsPartsParts}
+ */
 function makeSettingsParts(ui, store, parts) {
   const { React, h } = ui;
   const { locate, call, SettingsGroup, PreferenceRow, runsOn, HarnessMenu, ModelSelect, EffortSelect, Button } = parts;
@@ -2294,7 +2492,13 @@ function makeSettingsParts(ui, store, parts) {
   return { useSettingsLoad, settingsIdentity, saveButton };
 }
 
-/** The Settings tab of a hosted agent. */
+/**
+ * The one place where the owner changes a hosted agent's host, harness, model and instructions after creation, shaped as Desktop's own Settings tab.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SettingsParts}
+ */
 function makeSettings(ui, store, parts) {
   const { React, h } = ui;
   const { useStore, useSettingsLoad, call, harnessTitle, harnessProblem, harnessOn, pick, settingsIdentity, AgentInstructions, Field, Input, Select, saveButton } = parts;
@@ -2321,7 +2525,7 @@ function makeSettings(ui, store, parts) {
       try {
         await call(state.host, "PUT", `/agents/${agent.pubkey}/config`, runtimeConfig(draft));
         setSaved(draft);
-        // Out of the object literal: lizard 1.24.3 misreads a ternary call there.
+        // One message, named before setState so the sentence reads on its own.
         const notice = moved ? `Saved. The agent restarted on ${harnessTitle(state.host.id, draft.harness)}.` : "Saved. New sessions use it.";
         setState({ ...state, saving: false, notice });
       } catch (error) {
@@ -2333,7 +2537,9 @@ function makeSettings(ui, store, parts) {
     const problem = harnessProblem(state.host.id, draft.harness);
     const ready = Boolean(harnessOn(state.host.id, draft.harness)?.ready);
     const set = (patch) => setDraft(pick(draft, patch));
-    // Hoisted: lizard 1.24.3 misreads this ternary call inside the form's arguments.
+    // Hoisted: lizard 1.24.3 drops a later nested function (seen as `onChange`
+    // missing from its list) when a `cond ? call({ ... }) : null` argument sits
+    // among h("form", ...)'s arguments. No upstream issue found.
     const identityGroup = identity ? settingsIdentity({ state, draft, ready, set }) : null;
     return h(
       "form",
@@ -2374,7 +2580,13 @@ function makeSettings(ui, store, parts) {
   return { Settings };
 }
 
-/** The provider dialog and the panel notice for unreachable hosts. */
+/**
+ * Desktop shows the provider dialog and the panel footer when it checks the type. They tell the owner which host does not answer and why, so that the owner can act.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {ProviderViewsParts}
+ */
 function makeProviderViews(ui, store, parts) {
   const { React, h } = ui;
   const { useStore, statusOf, SettingsGroup, PreferenceRow, harnessIcon, readinessLine, Button, refresh } = parts;
@@ -2452,7 +2664,13 @@ function makeProviderViews(ui, store, parts) {
 
 // ---- The Hosts page and the Settings card ---------------------------------
 
-/** The host edit form and the page's shared headers and marks. */
+/**
+ * The edit form and the headers and marks that every Hosts page view draws. They are built before those views so that each reads them from one place.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HostFormParts}
+ */
 function makeHostForm(ui, store, parts) {
   const { React, h } = ui;
   const { updateHost, Field, Input, Button } = parts;
@@ -2540,7 +2758,13 @@ function makeHostForm(ui, store, parts) {
   return { HostForm, ContentHeader, StateDot };
 }
 
-/** The setup's step list and its result. */
+/**
+ * A setup shows each step's state and what is left to the owner. These parts draw only that, so the progress view stays a layout of them.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SetupStepsParts}
+ */
 function makeSetupSteps(ui, store, parts) {
   const { h, glyphs } = ui;
   const { StateDot, useStore, Button } = parts;
@@ -2632,7 +2856,13 @@ function makeSetupSteps(ui, store, parts) {
   return { StepMark, ApproveLink, SetupSteps, SetupResult };
 }
 
-/** A running or finished setup as the Hosts page shows it. */
+/**
+ * The setup's heading and progress line, apart from the steps because they also summarise a setup that has ended.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SetupProgressParts}
+ */
 function makeSetupProgress(ui, store, parts) {
   const { h } = ui;
   const { ContentHeader, SetupSteps, Button, resetSetup, SetupResult } = parts;
@@ -2673,7 +2903,13 @@ function makeSetupProgress(ui, store, parts) {
   return { setupTitle, setupProgressLine, SetupProgress };
 }
 
-/** Add a host: the setup form, or the setup it started. */
+/**
+ * Adding a host has two states, the form and the setup it started. One view switches between them from the store's run, so a running setup keeps its view after the form is gone.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {AddHostParts}
+ */
 function makeAddHost(ui, store, parts) {
   const { React, h } = ui;
   const { communityDefaults, checkNewHost, startSetup, Field, Input, ContentHeader, Button, useStore, SetupProgress } = parts;
@@ -2755,7 +2991,13 @@ function makeAddHost(ui, store, parts) {
   return { AddHostForm, AddHostView };
 }
 
-/** The sign-in form that starts a harness sign-in. */
+/**
+ * Starting a harness sign-in asks for how to sign in and how to reach root on the host. Its own factory, so that the running sign-in views do not carry the form.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SignInStartParts}
+ */
 function makeSignInStart(ui, store, parts) {
   const { React, h } = ui;
   const { startSignIn, Field, Input, Button } = parts;
@@ -2834,7 +3076,13 @@ function makeSignInStart(ui, store, parts) {
   return { RadioCard, SignInStart };
 }
 
-/** A running sign-in: its terminal and the answer field. */
+/**
+ * The running sign-in needs a terminal and an answer field, because the host's login may ask the owner a question. Apart from the start form because it renders from the store's run, not from form state.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {SignInTerminalParts}
+ */
 function makeSignInTerminal(ui, store, parts) {
   const { React, h } = ui;
   const { sendSignInInput, Field, Input, Button, cancelSignIn, resetSignIn, ApproveLink, useStore, ContentHeader, SignInStart } = parts;
@@ -2926,7 +3174,13 @@ function makeSignInTerminal(ui, store, parts) {
   return { SignInAnswer, signInEnd, SignInTerminal, SignInPanel };
 }
 
-/** A host's harness rows and their status lines. */
+/**
+ * The Hosts page must show at a glance which host or harness needs work. The wording and tone rules for that live here, so the list and the detail agree.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HarnessRowsParts}
+ */
 function makeHarnessRows(ui, store, parts) {
   const { h } = ui;
   const { statusOf, harnessOn, Button, PreferenceRow, harnessIcon, ContentHeader, SettingsGroup } = parts;
@@ -2964,8 +3218,9 @@ function makeHarnessRows(ui, store, parts) {
   function HarnessRow({ host, harness, blocked, onSignIn }) {
     const entry = harnessOn(host.id, harness.id);
     const offered = statusOf(host.id).state !== "ok" || Boolean(entry);
-    // Built before the props object: lizard misreads a line-leading `?` with
-    // a call inside an object literal and loses the rest of the file's scan.
+    // Built before the props object: lizard 1.24.3 reports a phantom `h`
+    // function and merges the enclosing one when a line starts with `?`, then
+    // a call, inside an object literal. No upstream issue found.
     const trailing = offered
       ? h(Button, { size: "sm", variant: entry?.ready ? "subtle" : "prominent", disabled: blocked, "aria-label": `Sign in to ${harness.title} on ${host.label}`, onClick: () => onSignIn(harness.id) }, entry?.ready ? "Sign in again" : "Sign in")
       : null;
@@ -3007,7 +3262,13 @@ function makeHarnessRows(ui, store, parts) {
   return { harnessLine, hostLine, hostTone, HarnessRow, HarnessSection };
 }
 
-/** One host's page: its status, edit form, harnesses and sign-in. */
+/**
+ * The page's right side joins one host's status, edit form, harnesses and sign-in, so the owner fixes a host in one place.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HostDetailParts}
+ */
 function makeHostDetail(ui, store, parts) {
   const { React, h } = ui;
   const { statusOf, Button, ContentHeader, HostForm, SignInPanel, HarnessSection } = parts;
@@ -3061,7 +3322,13 @@ function makeHostDetail(ui, store, parts) {
   return { HostDetail, hostSubtitle };
 }
 
-/** The host list beside the detail. */
+/**
+ * The page's left side, where the owner picks a host or starts to add one, and where the page-wide actions sit.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HostListParts}
+ */
 function makeHostList(ui, store, parts) {
   const { React, h } = ui;
   const { refresh, ContentHeader, StateDot, hostTone, hostLine, Button } = parts;
@@ -3118,7 +3385,13 @@ function makeHostList(ui, store, parts) {
   return { HostList };
 }
 
-/** The whole Hosts view: list, detail and add flow. */
+/**
+ * The Hosts page and the Settings card on a Desktop without pages show the same view. One component owns the selection and the add flow for both.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HostsViewParts}
+ */
 function makeHostsView(ui, store, parts) {
   const { React, h } = ui;
   const { useStore, readHostsFile, resetSetup, removeHost, refresh, HostList, HostDetail, resetSignIn, AddHostView } = parts;
@@ -3219,7 +3492,13 @@ function makeHostsView(ui, store, parts) {
   return { HostsView };
 }
 
-/** The Hosts page and the Settings card that leads to it. */
+/**
+ * Desktop needs a page component and a Settings card. The card is a summary beside the page, or the whole view when Desktop has no pages, so that the hosts stay reachable on both.
+ * @param {Ui} ui
+ * @param {PluginStore} store
+ * @param {Parts} parts
+ * @returns {HostsPageParts}
+ */
 function makeHostsPage(ui, store, parts) {
   const { h, icons } = ui;
   const { HostsView, useStore, SettingsGroup, PreferenceRow, hostLine, Button } = parts;
@@ -3270,7 +3549,9 @@ function makeHostsPage(ui, store, parts) {
 }
 
 /** The hosted agent type as Desktop registers it: its views, provider and
- * remote calls, all routed to the host that holds each agent. */
+ * remote calls, all routed to the host that holds each agent.
+ * @param {Ui} ui
+ * @param {Parts} parts */
 function hostedAgentType(ui, parts) {
   const { icons } = ui;
   const { harnessTitle, Create, CreateModel, PanelFooter, providerSnapshot, subscribe, refresh, DialogBody, Settings, call, requireNewKey, remember, locate, forget } = parts;
@@ -3389,13 +3670,14 @@ const PART_FACTORIES = Object.freeze([
 export async function apply(ctx) {
   const React = ctx.react;
   const h = React.createElement;
+  /** @type {Ui} */
   const ui = Object.freeze({ React, h, icons: makeIcons(h), glyphs: makeGlyphs(h) });
   const store = createStore();
   migrateStore();
 
   // Each factory reads the parts made before it; a part used before its
   // factory runs is read from `parts` when called.
-  const parts = { helper: new HelperClient(ctx.host) };
+  const parts = /** @type {Parts} */ (/** @type {unknown} */ ({ helper: new HelperClient(ctx.host) }));
   for (const make of PART_FACTORIES) Object.assign(parts, make(ui, store, parts));
 
   // The first read, before the type: its picker title names the hosts. A

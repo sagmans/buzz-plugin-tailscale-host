@@ -218,6 +218,72 @@ const lines = (path) =>
         })
     : [];
 
+/**
+ * The property bag that the lifted scenario steps share. Each phase adds keys
+ * to it in run order (main, then livePhase, gatePhase, ...), and a step that
+ * reads a key before its phase gets `undefined` at run time. So the bag is
+ * typed as one cumulative type per phase: a step is annotated with the type of
+ * the phase it runs in, and `tsc --checkJs` on this file (run by hand;
+ * scripts/check does not run it) then rejects a key that is wrong or not set yet. Keep a new key in the typedef of the phase that sets it.
+ *
+ * @typedef {{ status: number, text: string, json?: any }} SmokeReply One runner answer over the socket.
+ * @typedef {typeof sign extends (...args: any[]) => infer Event ? Event : never} SmokeEvent A signed relay event.
+ *
+ * Set by main before any step runs (smokeFixtures and the temp paths).
+ * @typedef {object} SmokeFixtureCtx
+ * @property {import("node:child_process").ChildProcess | undefined} runner The main runner; a restart replaces it, so it is read when used.
+ * @property {Promise<any> | undefined} runnerExit Settles with the exit code and signal when `runner` exits.
+ * @property {string} temp The run's private directory.
+ * @property {string} stateDir The runner's state directory.
+ * @property {string} fakeLog The fake claude's log file.
+ * @property {string} sudoLog The fake sudo's argv log.
+ * @property {string} runnerLog The runner's own log file.
+ * @property {string} configPath The runner's config file.
+ * @property {MockRelay} relay The mock relay.
+ * @property {(method: string, path: string, options?: object) => Promise<SmokeReply>} api One call to the main runner's socket.
+ * @property {(name: string, seed: number, overrides?: object) => Promise<any>} startExtra A second runner with its own socket and state.
+ * @property {string} relayUrl The relay's URL.
+ * @property {string} otherCommunity The same relay under a second allowed name.
+ * @property {string} socketPath The main runner's socket.
+ * @property {Uint8Array} ownerSecret The owner's key.
+ * @property {string} owner The owner's public key.
+ * @property {Uint8Array} strangerSecret A sender that is not allowed.
+ * @property {Uint8Array} peerSecret A sibling hosted agent's key.
+ * @property {Uint8Array} senderSecret A sender named in allowedSenders.
+ * @property {string} node The node binary the fakes run under.
+ * @property {string} fakeSudo The fake sudo script.
+ * @property {string} fakeWrapper The fake wrapper script.
+ * @property {Record<string, any>} config The runner's config as written.
+ * @property {string} channel A group stream's id.
+ * @property {string} dm A one-to-one DM's id.
+ *
+ * Set by main after provisioning and activation, before livePhase.
+ * @typedef {SmokeFixtureCtx & { startRunner: () => Promise<void>, lastRunnerPid: () => number, first: SmokeReply, agent: string, again: SmokeReply, other: SmokeReply, keyFile: string, secretOf: (path: string) => any, agentSecret: any, otherSecret: any, mode: (path: string) => number, view: SmokeReply, tag: string[] }} SmokeAgentCtx
+ *
+ * Set by livePhase before its roster-scope steps.
+ * @typedef {SmokeAgentCtx & { membershipReqs: () => number, mentionScopes: () => string[][], scopeIs: (ids: Iterable<string>) => boolean, loadsBefore: number }} SmokeLiveCtx
+ *
+ * Set by gatePhase before its first gate step.
+ * @typedef {SmokeLiveCtx & { fake: () => any[], runnerLines: () => any[], dropped: (id: string, reason: string) => any, replyTo: (root: string) => any, typingFor: (pk: string, trigger: string) => any[], opened: Map<string, any>, frames: (pk: string) => any[], turnOf: (pk: string, trigger: string) => any }} SmokeGateCtx
+ *
+ * Set by gatePhase before the cursor steps.
+ * @typedef {SmokeGateCtx & { sessionsFile: string, cursor: () => any }} SmokeCursorCtx
+ *
+ * Set by turnPhase before the first turn.
+ * @typedef {SmokeCursorCtx & { mention: SmokeEvent }} SmokeTurnCtx
+ *
+ * Set by turnPhase before the attested-sender steps.
+ * @typedef {SmokeTurnCtx & { accepted: (id: string, sender: string) => any }} SmokeAcceptedCtx
+ *
+ * Set by replyWakePhase, in three steps as its scenario grows.
+ * @typedef {SmokeAcceptedCtx & { acceptedVia: (id: string, via: string) => any }} SmokeViaCtx
+ * @typedef {SmokeViaCtx & { wakeRoot: SmokeEvent, rootReply: any, threadReplies: () => number, inThread: (secret: Uint8Array, extra: string[][], content: string, at?: number) => SmokeEvent }} SmokeThreadCtx
+ *
+ * Everything set once replyWakePhase is done: what lifecyclePhase and suitePhase read.
+ * `stuckPid` is set by stuckChildSetupStep for the steps after it.
+ * @typedef {SmokeThreadCtx & { peerNote: SmokeEvent, stuckPid: number | undefined }} SmokeCtx
+ */
+
 async function main() {
   if (!existsSync(RUNNER)) throw new Error(`build first: ${RUNNER} is missing`);
   const temp = mkdtempSync(join(tmpdir(), "buzz-runner-smoke-"));
@@ -233,7 +299,8 @@ async function main() {
   try {
     // What the lifted steps read: each local joins once main declares it,
     // and the runner, which a restart replaces, is read when used.
-    const c = { get runner() { return runner; }, get runnerExit() { return runnerExit; } };
+    // Typed as the final shape: each step is annotated with the phase it runs in.
+    const c = /** @type {SmokeCtx} */ (/** @type {unknown} */ ({ get runner() { return runner; }, get runnerExit() { return runnerExit; } }));
     // --- fixtures ---------------------------------------------------------
     const { relayUrl, otherCommunity, socketPath, ownerSecret, owner, strangerSecret, peerSecret, senderSecret, node, fakeSudo, fakeWrapper, config, channel, dm } = await smokeFixtures(relay, { temp, stateDir, fakeLog, sudoLog, configPath });
 
@@ -311,8 +378,11 @@ async function main() {
   }
 }
 
-/** The strict and capped runners, the harness pickers, and the suites that
- * run on their own runners: Pi, Goose, Codex, host setup and sign-in. */
+/**
+ * The strict and capped runners, the harness pickers, and the suites that
+ * run on their own runners: Pi, Goose, Codex, host setup and sign-in.
+ * @param {SmokeCtx} c
+ */
 async function suitePhase(c) {
   const { temp, relay, relayUrl, ownerSecret, owner, channel, config, fakeSudo, sudoLog, startExtra, typingFor, frames, turnOf } = c;
   await step("strict: attestEvents false and acceptAttested false", () => strictModeStep(c));
@@ -406,7 +476,11 @@ async function smokeFixtures(relay, { temp, stateDir, fakeLog, sudoLog, configPa
   return { relayUrl, otherCommunity, socketPath, ownerSecret, owner, strangerSecret, peerSecret, senderSecret, node, fakeSudo, fakeWrapper, config, channel, dm };
 }
 
-/** The agent's profile, its live subscriptions and its roster scope. */
+/**
+ * The agent's profile, its live subscriptions and its roster scope.
+ * @param {SmokeCtx} c Typed as the final shape: Object.assign below does not narrow it, and the steps it
+ * calls are annotated with the phase they run in.
+ */
 async function livePhase(c) {
   const { relay, api, relayUrl, agent, tag } = c;
   await step("kind 0: published by agent with auth tag", () => profilePublishStep(c));
@@ -437,7 +511,11 @@ async function livePhase(c) {
   check("activate: repeat call gives 204", repeat.status === 204, repeat.text);
 }
 
-/** Who may wake the agent, and what a dropped event leaves behind. */
+/**
+ * Who may wake the agent, and what a dropped event leaves behind.
+ * @param {SmokeCtx} c Typed as the final shape: Object.assign below does not narrow it, and the steps it
+ * calls are annotated with the phase they run in.
+ */
 async function gatePhase(c) {
   const { stateDir, fakeLog, runnerLog, relay, ownerSecret, owner, agent } = c;
   // --- sender gate -----------------------------------------------------------
@@ -468,7 +546,11 @@ async function gatePhase(c) {
   await step("gate: no content in drop logs", () => dropLogContentStep(c));
 }
 
-/** A full turn from the owner, its telemetry and memory, and attested senders. */
+/**
+ * A full turn from the owner, its telemetry and memory, and attested senders.
+ * @param {SmokeCtx} c Typed as the final shape: Object.assign below does not narrow it, and the steps it
+ * calls are annotated with the phase they run in.
+ */
 async function turnPhase(c) {
   const { relay, ownerSecret, channel, agent, runnerLines } = c;
   // --- a full turn -------------------------------------------------------------
@@ -491,7 +573,11 @@ async function turnPhase(c) {
   await step("gate: allowedSenders entry wakes the agent", () => allowedSendersGateStep(c));
 }
 
-/** Untagged thread replies that wake, or must not wake, the agent. */
+/**
+ * Untagged thread replies that wake, or must not wake, the agent.
+ * @param {SmokeCtx} c Typed as the final shape: Object.assign below does not narrow it, and the steps it
+ * calls are annotated with the phase they run in.
+ */
 async function replyWakePhase(c) {
   const { relay, ownerSecret, peerSecret, channel, agent, runnerLines, replyTo } = c;
   // --- reply-wake: the owner's untagged thread replies (config replyWake) ----
@@ -517,7 +603,10 @@ async function replyWakePhase(c) {
   await step("cursor: future-dated admitted event is clamped", () => futureCursorStep(c));
 }
 
-/** DMs, steering, stops, limits and the agent's whole lifecycle. */
+/**
+ * DMs, steering, stops, limits and the agent's whole lifecycle.
+ * @param {SmokeCtx} c
+ */
 async function lifecyclePhase(c) {
   await step("dm: owner message in one-to-one DM wakes without mention", () => dmWakeStep(c));
 
@@ -796,7 +885,10 @@ function harnessContext({ temp, relay, relayUrl, ownerSecret, owner, channel, co
   };
 }
 
-/** Scenario step: activate: a DELETE after the activate deadline stays deleted. */
+/**
+ * Scenario step: activate: a DELETE after the activate deadline stays deleted.
+ * @param {SmokeFixtureCtx} c
+ */
 async function lateDeleteStep(c) {
   const { temp, sudoLog, relay, startExtra, relayUrl, ownerSecret, fakeSudo } = c;
   const dir = join(temp, "late-sudo");
@@ -838,13 +930,19 @@ async function lateDeleteStep(c) {
   }
 }
 
-/** Scenario step: config: missing config exits 78. */
+/**
+ * Scenario step: config: missing config exits 78.
+ * @param {SmokeFixtureCtx} c
+ */
 async function missingConfigStep(c) {
   const code = await runOnce([RUNNER], {});
   check("config: missing config exits 78", code === EXIT_CONFIG, `exit ${code}`);
 }
 
-/** Scenario step: config: invalid config exits 78. */
+/**
+ * Scenario step: config: invalid config exits 78.
+ * @param {SmokeFixtureCtx} c
+ */
 async function invalidConfigStep(c) {
   const { temp, config } = c;
   const bad = join(temp, "bad.json");
@@ -876,7 +974,10 @@ async function invalidConfigStep(c) {
   }
 }
 
-/** Scenario step: socket: unsafe socket directory refuses start. */
+/**
+ * Scenario step: socket: unsafe socket directory refuses start.
+ * @param {SmokeFixtureCtx} c
+ */
 async function unsafeSocketDirStep(c) {
   const { temp, stateDir, config } = c;
   const bad = join(temp, "bad-socket.json");
@@ -895,7 +996,10 @@ async function unsafeSocketDirStep(c) {
   check("socket: no state written by a refused start", !existsSync(join(stateDir, "agents")) || readdirSync(join(stateDir, "agents")).length === 0);
 }
 
-/** Scenario step: kind 0: published by agent with auth tag. */
+/**
+ * Scenario step: kind 0: published by agent with auth tag.
+ * @param {SmokeAgentCtx} c
+ */
 async function profilePublishStep(c) {
   const { relay, agent, tag } = c;
   const profile = await waitFor(() => relay.published.find((item) => item.event.kind === 0 && item.event.pubkey === agent), "kind 0");
@@ -909,7 +1013,10 @@ async function profilePublishStep(c) {
   );
 }
 
-/** Scenario step: live: NIP-42 AUTH with auth tag. */
+/**
+ * Scenario step: live: NIP-42 AUTH with auth tag.
+ * @param {SmokeAgentCtx} c
+ */
 async function liveAuthStep(c) {
   const { relay, agent, tag } = c;
   const auth = await waitFor(() => relay.auths.find((item) => item.ok && item.event.pubkey === agent), "AUTH");
@@ -917,7 +1024,10 @@ async function liveAuthStep(c) {
   check("live: NIP-42 AUTH ok (relay, challenge, auth tag)", JSON.stringify(eventTag) === JSON.stringify(tag), JSON.stringify(auth.event.tags));
 }
 
-/** Scenario step: live: REQ filters. */
+/**
+ * Scenario step: live: REQ filters.
+ * @param {SmokeAgentCtx} c
+ */
 async function liveReqFiltersStep(c) {
   const { relay, agent } = c;
   const mentions = await waitFor(() => relay.reqs.find((item) => item.agent === agent && item.subId === "mentions"), "mentions REQ");
@@ -939,7 +1049,10 @@ async function liveReqFiltersStep(c) {
   );
 }
 
-/** Scenario step: live: a join after connect scopes mentions at the notice. */
+/**
+ * Scenario step: live: a join after connect scopes mentions at the notice.
+ * @param {SmokeLiveCtx} c
+ */
 async function liveJoinScopeStep(c) {
   const { relay, owner, strangerSecret, channel, dm, agent, membershipReqs, mentionScopes, scopeIs, loadsBefore } = c;
   relay.inject(relay.relaySigned(39002, [["d", channel], ["p", owner], ["p", agent], ["p", getPublicKey(strangerSecret)]]));
@@ -954,7 +1067,10 @@ async function liveJoinScopeStep(c) {
   check("live: notice puts its channel in the mentions REQ #h before any roster load", membershipReqs() === loadsBefore, `${loadsBefore} -> ${membershipReqs()}`);
 }
 
-/** Scenario step: live: a forged notice changes nothing. */
+/**
+ * Scenario step: live: a forged notice changes nothing.
+ * @param {SmokeLiveCtx} c
+ */
 async function liveForgedNoticeStep(c) {
   const { runnerLog, relay, strangerSecret, channel, dm, agent, mentionScopes, scopeIs } = c;
   const scopes = mentionScopes().length;
@@ -963,7 +1079,10 @@ async function liveForgedNoticeStep(c) {
   check("live: notice not signed by the relay is dropped", mentionScopes().length === scopes && scopeIs([channel, dm]), JSON.stringify(mentionScopes().at(-1)));
 }
 
-/** Scenario step: live: DM REQ. */
+/**
+ * Scenario step: live: DM REQ.
+ * @param {SmokeLiveCtx} c
+ */
 async function liveDmReqStep(c) {
   const { relay, dm, agent, membershipReqs, loadsBefore } = c;
   // A DM needs its full roster: it comes with the settled roster load.
@@ -972,7 +1091,10 @@ async function liveDmReqStep(c) {
   check("live: one-to-one DM found from relay roster, dms REQ {kinds:[9], #h:[dm]}", dms.filters[0]["#h"]?.length === 1 && dms.filters[0]["#h"][0] === dm, JSON.stringify(dms.filters));
 }
 
-/** Scenario step: live: a leave after connect drops the channel from the scope. */
+/**
+ * Scenario step: live: a leave after connect drops the channel from the scope.
+ * @param {SmokeLiveCtx} c
+ */
 async function liveLeaveScopeStep(c) {
   const { relay, owner, channel, dm, agent, mentionScopes, scopeIs } = c;
   const late = randomUUID();
@@ -986,7 +1108,10 @@ async function liveLeaveScopeStep(c) {
   check("live: join adds and leave removes a channel in the mentions REQ", scopeIs([channel, dm]), JSON.stringify(mentionScopes().slice(-2)));
 }
 
-/** Scenario step: live: a roster load without EOSE ends the socket, and the next one loads. */
+/**
+ * Scenario step: live: a roster load without EOSE ends the socket, and the next one loads.
+ * @param {SmokeLiveCtx} c
+ */
 async function liveRosterReloadStep(c) {
   const { runnerLog, relay, channel, dm, agent, mentionScopes, scopeIs } = c;
   const sessions = () => lines(runnerLog).filter((line) => line.msg === "relay session ended" && JSON.stringify(line.error ?? "").includes("roster load timed out")).length;
@@ -998,7 +1123,10 @@ async function liveRosterReloadStep(c) {
   check("live: roster load timeout reconnects and restores the scope", scopeIs([channel, dm]), JSON.stringify(mentionScopes().at(-1)));
 }
 
-/** Scenario step: live: a grant whose remove was missed while down ends at the settled load. */
+/**
+ * Scenario step: live: a grant whose remove was missed while down ends at the settled load.
+ * @param {SmokeLiveCtx} c
+ */
 async function liveMissedRemoveStep(c) {
   const { relay, channel, dm, agent, mentionScopes, scopeIs } = c;
   const gone = randomUUID();
@@ -1012,7 +1140,10 @@ async function liveMissedRemoveStep(c) {
   check("live: stale grant leaves the mentions REQ after a reconnect", scopeIs([channel, dm]), JSON.stringify(mentionScopes().slice(-3)));
 }
 
-/** Scenario step: gate: stranger mention dropped as not-owner. */
+/**
+ * Scenario step: gate: stranger mention dropped as not-owner.
+ * @param {SmokeGateCtx} c
+ */
 async function strangerGateStep(c) {
   const { relay, strangerSecret, channel, agent, fake, dropped } = c;
   const event = sign(strangerSecret, 9, [["h", channel], ["p", agent]], "hi from a stranger");
@@ -1022,7 +1153,10 @@ async function strangerGateStep(c) {
   check("gate: stranger mention dropped as not-owner, no claude started", !fake().some((line) => line.type === "start"), "claude started");
 }
 
-/** Scenario step: gate: unaddressed message dropped. */
+/**
+ * Scenario step: gate: unaddressed message dropped.
+ * @param {SmokeGateCtx} c
+ */
 async function unaddressedGateStep(c) {
   const { relay, ownerSecret, channel, dropped } = c;
   const event = sign(ownerSecret, 9, [["h", channel]], "not for the agent");
@@ -1031,7 +1165,10 @@ async function unaddressedGateStep(c) {
   check("gate: owner message without p-tag in a group dropped as not-addressed", true);
 }
 
-/** Scenario step: gate: bad signature dropped. */
+/**
+ * Scenario step: gate: bad signature dropped.
+ * @param {SmokeGateCtx} c
+ */
 async function badSignatureGateStep(c) {
   const { relay, ownerSecret, channel, agent, runnerLines } = c;
   const event = { ...sign(ownerSecret, 9, [["h", channel], ["p", agent]], "tampered"), content: "changed" };
@@ -1040,7 +1177,10 @@ async function badSignatureGateStep(c) {
   check("gate: event with a bad signature dropped", true);
 }
 
-/** Scenario step: gate: unattested event from another hosted agent dropped. */
+/**
+ * Scenario step: gate: unattested event from another hosted agent dropped.
+ * @param {SmokeCursorCtx} c
+ */
 async function unattestedHostedGateStep(c) {
   const { relay, channel, agent, otherSecret, dropped } = c;
   const event = sign(Buffer.from(otherSecret, "hex"), 9, [["h", channel], ["p", agent]], "ping from a sibling on this host");
@@ -1049,7 +1189,10 @@ async function unattestedHostedGateStep(c) {
   check("gate: mention by a hosted sibling without an owner tag dropped as not-owner", true);
 }
 
-/** Scenario step: gate: an agent never wakes on its own event. */
+/**
+ * Scenario step: gate: an agent never wakes on its own event.
+ * @param {SmokeCursorCtx} c
+ */
 async function ownEventGateStep(c) {
   const { relay, channel, agent, agentSecret, tag, dropped } = c;
   const event = sign(Buffer.from(agentSecret, "hex"), 9, [["h", channel], ["p", agent], tag], "talking to myself");
@@ -1058,7 +1201,10 @@ async function ownEventGateStep(c) {
   check("gate: own attested mention of itself dropped as self", true);
 }
 
-/** Scenario step: cursor: dropped events do not move the cursor. */
+/**
+ * Scenario step: cursor: dropped events do not move the cursor.
+ * @param {SmokeCursorCtx} c
+ */
 async function droppedCursorStep(c) {
   const { relay, strangerSecret, channel, agent, dropped, cursor } = c;
   const before = cursor();
@@ -1069,7 +1215,10 @@ async function droppedCursorStep(c) {
   check("cursor: a dropped (future-dated) event leaves the cursor unchanged", cursor() === before, `${before} -> ${cursor()}`);
 }
 
-/** Scenario step: cursor: events older than since are dropped. */
+/**
+ * Scenario step: cursor: events older than since are dropped.
+ * @param {SmokeCursorCtx} c
+ */
 async function oldEventCursorStep(c) {
   const { relay, ownerSecret, channel, agent, fake, runnerLines } = c;
   const event = sign(ownerSecret, 9, [["h", channel], ["p", agent]], "very old", now() - 7 * 3600);
@@ -1078,14 +1227,20 @@ async function oldEventCursorStep(c) {
   check("cursor: owner mention older than the subscription's since is dropped", !fake().some((line) => line.type === "start"));
 }
 
-/** Scenario step: gate: no content in drop logs. */
+/**
+ * Scenario step: gate: no content in drop logs.
+ * @param {SmokeCursorCtx} c
+ */
 async function dropLogContentStep(c) {
   const { runnerLog } = c;
   const text = readFileSync(runnerLog, "utf8");
   check("log: dropped event content never logged", !text.includes("hi from a stranger") && !text.includes("not for the agent"), "content found");
 }
 
-/** Scenario step: turn: owner mention runs a turn and the reply reaches the relay. */
+/**
+ * Scenario step: turn: owner mention runs a turn and the reply reaches the relay.
+ * @param {SmokeTurnCtx} c
+ */
 async function ownerTurnStep(c) {
   const { config, channel, agent, agentSecret, tag, fake, replyTo, typingFor, mention } = c;
   const reply = await waitFor(() => replyTo(mention.id), "agent reply");
@@ -1140,7 +1295,10 @@ async function ownerTurnStep(c) {
   check("spawn: child env has no key and no runner variables", !JSON.stringify(start.env).includes(agentSecret) && !Object.keys(start.env).some((key) => key.startsWith("BUZZ")), Object.keys(start.env).join(","));
 }
 
-/** Scenario step: turn: follow-up in thread reuses the process with thread context. */
+/**
+ * Scenario step: turn: follow-up in thread reuses the process with thread context.
+ * @param {SmokeTurnCtx} c
+ */
 async function followUpTurnStep(c) {
   const { relay, ownerSecret, channel, agent, tag, fake, typingFor, mention } = c;
   const startsBefore = fake().filter((line) => line.type === "start").length;
@@ -1159,7 +1317,10 @@ async function followUpTurnStep(c) {
   check("turn: thread context read with #e root, as the agent (NIP-98 + x-auth-tag)", contextRead && relay.queries.at(-1).author === agent && relay.queries.at(-1).authTag === JSON.stringify(tag));
 }
 
-/** Scenario step: telemetry: a hosted turn reaches the owner as encrypted observer frames. */
+/**
+ * Scenario step: telemetry: a hosted turn reaches the owner as encrypted observer frames.
+ * @param {SmokeTurnCtx} c
+ */
 async function telemetryStep(c) {
   const { runnerLog, relay, ownerSecret, owner, channel, agent, replyTo, frames, turnOf } = c;
   const tools = sign(ownerSecret, 9, [["h", channel], ["p", agent]], "TOOLS please");
@@ -1288,7 +1449,10 @@ function telemetryToolChecks({ all, update, prompt }) {
   check("telemetry: no turn_error on success", !all.some((frame) => frame.kind === "turn_error"));
 }
 
-/** Scenario step: memory: mem_set and mem_get work without the auth tag on events. */
+/**
+ * Scenario step: memory: mem_set and mem_get work without the auth tag on events.
+ * @param {SmokeTurnCtx} c
+ */
 async function memoryStep(c) {
   const { relay, ownerSecret, owner, channel, agent, tag, fake, replyTo } = c;
   const event = sign(ownerSecret, 9, [["h", channel], ["p", agent]], "MEMORY check");
@@ -1306,7 +1470,10 @@ async function memoryStep(c) {
   );
 }
 
-/** Scenario step: gate: attested desktop agent wakes the agent (acceptAttested default). */
+/**
+ * Scenario step: gate: attested desktop agent wakes the agent (acceptAttested default).
+ * @param {SmokeAcceptedCtx} c
+ */
 async function attestedDesktopGateStep(c) {
   const { relay, ownerSecret, peerSecret, channel, agent, replyTo, accepted } = c;
   const peer = getPublicKey(peerSecret);
@@ -1316,7 +1483,10 @@ async function attestedDesktopGateStep(c) {
   check("gate: mention from an owner-attested agent on another host runs a turn", !!accepted(event.id, "attested"));
 }
 
-/** Scenario step: gate: attested sibling on this runner wakes the agent. */
+/**
+ * Scenario step: gate: attested sibling on this runner wakes the agent.
+ * @param {SmokeAcceptedCtx} c
+ */
 async function attestedSiblingGateStep(c) {
   const { relay, ownerSecret, channel, agent, other, otherSecret, replyTo, accepted } = c;
   const event = sign(Buffer.from(otherSecret, "hex"), 9, [["h", channel], ["p", agent], authTag(ownerSecret, other.json.pubkey)], "from a sibling with a tag");
@@ -1325,7 +1495,10 @@ async function attestedSiblingGateStep(c) {
   check("gate: mention from an owner-attested sibling on this runner runs a turn", !!accepted(event.id, "attested"));
 }
 
-/** Scenario step: gate: forged and misbound owner tags rejected. */
+/**
+ * Scenario step: gate: forged and misbound owner tags rejected.
+ * @param {SmokeAcceptedCtx} c
+ */
 async function forgedOwnerTagGateStep(c) {
   const { relay, ownerSecret, owner, strangerSecret, peerSecret, channel, agent, dropped, replyTo, accepted } = c;
   const peer = getPublicKey(peerSecret);
@@ -1342,7 +1515,10 @@ async function forgedOwnerTagGateStep(c) {
   check("gate: no turn started for any of them", ![forged, misbound, stranger].some((event) => accepted(event.id, "attested")), String(peer).slice(0, 8));
 }
 
-/** Scenario step: gate: allowedSenders entry wakes the agent. */
+/**
+ * Scenario step: gate: allowedSenders entry wakes the agent.
+ * @param {SmokeAcceptedCtx} c
+ */
 async function allowedSendersGateStep(c) {
   const { relay, senderSecret, channel, agent, replyTo } = c;
   const event = sign(senderSecret, 9, [["h", channel], ["p", agent]], "from an allowed sender");
@@ -1351,7 +1527,10 @@ async function allowedSendersGateStep(c) {
   check("gate: mention from a pubkey in allowedSenders runs a turn", true);
 }
 
-/** Scenario step: reply-wake: owner replies REQ scoped to the agent's channels. */
+/**
+ * Scenario step: reply-wake: owner replies REQ scoped to the agent's channels.
+ * @param {SmokeViaCtx} c
+ */
 async function replyWakeReqStep(c) {
   const { relay, owner, channel, agent } = c;
   const replies = await waitFor(() => relay.reqs.findLast((item) => item.agent === agent && item.subId === "replies"), "replies REQ");
@@ -1366,7 +1545,10 @@ async function replyWakeReqStep(c) {
   );
 }
 
-/** Scenario step: reply-wake: untagged owner reply wakes the thread's last agent. */
+/**
+ * Scenario step: reply-wake: untagged owner reply wakes the thread's last agent.
+ * @param {SmokeThreadCtx} c
+ */
 async function replyWakeLastAgentStep(c) {
   const { relay, ownerSecret, acceptedVia, wakeRoot, threadReplies, inThread } = c;
   const before = threadReplies();
@@ -1377,7 +1559,10 @@ async function replyWakeLastAgentStep(c) {
   check("reply-wake: untagged owner reply in the agent's thread runs a turn (last agent)", true);
 }
 
-/** Scenario step: reply-wake: another owner agent spoke last, so this agent stays asleep. */
+/**
+ * Scenario step: reply-wake: another owner agent spoke last, so this agent stays asleep.
+ * @param {SmokeCtx} c
+ */
 async function replyWakeOtherAgentStep(c) {
   const { relay, ownerSecret, dropped, accepted, wakeRoot, inThread } = c;
   const event = inThread(ownerSecret, [["e", wakeRoot.id, "", "reply"]], "for the desktop agent", now() + 3);
@@ -1386,7 +1571,10 @@ async function replyWakeOtherAgentStep(c) {
   check("reply-wake: untagged owner reply after another agent's message dropped as not-addressed", !accepted(event.id, "owner"));
 }
 
-/** Scenario step: reply-wake: reply to this agent's message wakes it (reply rule). */
+/**
+ * Scenario step: reply-wake: reply to this agent's message wakes it (reply rule).
+ * @param {SmokeCtx} c
+ */
 async function replyWakeReplyRuleStep(c) {
   const { relay, ownerSecret, acceptedVia, rootReply, threadReplies, inThread } = c;
   const before = threadReplies();
@@ -1397,7 +1585,10 @@ async function replyWakeReplyRuleStep(c) {
   check("reply-wake: untagged owner reply to the agent's message runs a turn (reply)", true);
 }
 
-/** Scenario step: reply-wake: reply to another agent's message and untagged non-owner replies do not wake. */
+/**
+ * Scenario step: reply-wake: reply to another agent's message and untagged non-owner replies do not wake.
+ * @param {SmokeCtx} c
+ */
 async function replyWakeNoWakeStep(c) {
   const { relay, ownerSecret, strangerSecret, runnerLines, dropped, accepted, wakeRoot, inThread, peerNote } = c;
   const toPeer = inThread(ownerSecret, [["e", peerNote.id, "", "reply"]], "reply to the desktop agent", now() + 5);
@@ -1410,7 +1601,10 @@ async function replyWakeNoWakeStep(c) {
   check("reply-wake: stranger's untagged thread reply never wakes the agent", !runnerLines().some((line) => line.msg === "event accepted" && line.event === fromStranger.id.slice(0, 12)));
 }
 
-/** Scenario step: cursor: future-dated admitted event is clamped. */
+/**
+ * Scenario step: cursor: future-dated admitted event is clamped.
+ * @param {SmokeCtx} c
+ */
 async function futureCursorStep(c) {
   const { relay, ownerSecret, channel, agent, replyTo, cursor } = c;
   const event = sign(ownerSecret, 9, [["h", channel], ["p", agent]], "from the future", now() + 3600);
@@ -1421,7 +1615,10 @@ async function futureCursorStep(c) {
   check("cursor: admitted event dated +1 h moves the cursor at most now + 60 s", value <= now() + FUTURE_SKEW_S && value >= now() - 5, `cursor ${value}, now ${now()}`);
 }
 
-/** Scenario step: dm: owner message in one-to-one DM wakes without mention. */
+/**
+ * Scenario step: dm: owner message in one-to-one DM wakes without mention.
+ * @param {SmokeCtx} c
+ */
 async function dmWakeStep(c) {
   const { relay, ownerSecret, dm, agent } = c;
   const event = sign(ownerSecret, 9, [["h", dm]], "dm without a mention");
@@ -1433,7 +1630,10 @@ async function dmWakeStep(c) {
   check("dm: owner DM without p-tag runs a turn and the reply lands in the DM", !!reply);
 }
 
-/** Scenario step: steer: message during a busy turn is steered into it. */
+/**
+ * Scenario step: steer: message during a busy turn is steered into it.
+ * @param {SmokeCtx} c
+ */
 async function steerStep(c) {
   const { relay, ownerSecret, channel, agent, fake, replyTo, typingFor } = c;
   const turnsBefore = fake().filter((line) => line.type === "turn").length;
@@ -1460,7 +1660,10 @@ async function steerStep(c) {
   check("typing: pulse stops when the turn ends", typingFor(agent, slow.id).length === settled, `${settled} -> ${typingFor(agent, slow.id).length}`);
 }
 
-/** Scenario step: interrupt: owner Stop interrupts the running turn. */
+/**
+ * Scenario step: interrupt: owner Stop interrupts the running turn.
+ * @param {SmokeCtx} c
+ */
 async function interruptStep(c) {
   const { relay, api, ownerSecret, channel, agent, fake, frames, turnOf } = c;
   const hang = sign(ownerSecret, 9, [["h", channel], ["p", agent]], "HANG please");
@@ -1494,7 +1697,10 @@ async function interruptStep(c) {
   check("telemetry: an interrupted prompt is answered with stopReason cancelled", cancelled.payload.result.stopReason === "cancelled", JSON.stringify(cancelled.payload));
 }
 
-/** Scenario step: media: total saved media stays under the budget. */
+/**
+ * Scenario step: media: total saved media stays under the budget.
+ * @param {SmokeCtx} c
+ */
 async function mediaBudgetStep(c) {
   const { stateDir, relay, relayUrl, ownerSecret, channel, agent, fake, replyTo } = c;
   const mediaDir = join(stateDir, "media", agent);
@@ -1519,7 +1725,10 @@ async function mediaBudgetStep(c) {
   check("media: oldest file evicted, total under 200 MiB", !left.includes("old-1.bin") && left.includes("old-2.bin") && total <= MEDIA_TOTAL_MAX_BYTES, `${left.join(",")} ${total}`);
 }
 
-/** Scenario step: output cap: a stdout line over 8 MiB stops claude with a generic failure post. */
+/**
+ * Scenario step: output cap: a stdout line over 8 MiB stops claude with a generic failure post.
+ * @param {SmokeCtx} c
+ */
 async function outputCapStep(c) {
   const { relay, ownerSecret, owner, channel, agent, fake, runnerLines, replyTo, frames, turnOf } = c;
   const event = sign(ownerSecret, 9, [["h", channel], ["p", agent]], "FLOOD now");
@@ -1549,7 +1758,10 @@ async function outputCapStep(c) {
   );
 }
 
-/** Scenario step: profile: rename republishes kind 0. */
+/**
+ * Scenario step: profile: rename republishes kind 0.
+ * @param {SmokeCtx} c
+ */
 async function profileRenameStep(c) {
   const { relay, api, agent } = c;
   const before = relay.published.filter((item) => item.event.kind === 0).length;
@@ -1562,7 +1774,10 @@ async function profileRenameStep(c) {
   check("profile: new kind 0 with new name and no picture, newer created_at", body.name === "Renamed" && body.picture === undefined && latest.event.created_at > relay.published.filter((item) => item.event.kind === 0).at(-2).event.created_at, latest.event.content);
 }
 
-/** Scenario step: config: update and validation. */
+/**
+ * Scenario step: config: update and validation.
+ * @param {SmokeCtx} c
+ */
 async function configUpdateStep(c) {
   const { relay, api, ownerSecret, channel, agent, fake, mention } = c;
   const effort = await api("PUT", `/v1/agents/${agent}/config`, { body: { effort: "turbo" } });
@@ -1591,7 +1806,10 @@ async function configUpdateStep(c) {
   await waitFor(() => fake().some((line) => line.type === "hook" && line.pid === start.pid), "reply after config");
 }
 
-/** Scenario step: restart: SIGTERM stops gracefully, state survives, catch-up and resume work. */
+/**
+ * Scenario step: restart: SIGTERM stops gracefully, state survives, catch-up and resume work.
+ * @param {SmokeCtx} c
+ */
 async function restartStep(c) {
   const { stateDir, relay, ownerSecret, channel, startRunner, agent, fake, runnerLines, replyTo, mention } = c;
   const sessionsFile = join(stateDir, "sessions", `${agent}.json`);
@@ -1642,7 +1860,10 @@ async function restartStep(c) {
   check("restart: thread session resumes with --resume <saved id>", resumed.resume && (!threadSession || resumed.resume === threadSession), `${resumed.resume} vs ${threadSession}`);
 }
 
-/** Scenario step: stop: stuck child set up. */
+/**
+ * Scenario step: stop: stuck child set up.
+ * @param {SmokeCtx} c
+ */
 async function stuckChildSetupStep(c) {
   const { relay, ownerSecret, channel, agent, fake } = c;
   const event = sign(ownerSecret, 9, [["h", channel], ["p", agent]], "STUCK forever");
@@ -1652,7 +1873,10 @@ async function stuckChildSetupStep(c) {
   check("stop: stuck child is running", alive(c.stuckPid));
 }
 
-/** Scenario step: delete: stops agent, removes key, idempotent. */
+/**
+ * Scenario step: delete: stops agent, removes key, idempotent.
+ * @param {SmokeCtx} c
+ */
 async function deleteAgentStep(c) {
   const { stateDir, relay, api, ownerSecret, channel, agent, other, keyFile, runnerLines } = c;
   const logMark = runnerLines().length;
@@ -1683,7 +1907,10 @@ async function deleteAgentStep(c) {
   check("health: agent count back to 0", health.json?.agents === 0, health.text);
 }
 
-/** Scenario step: stop: stdin EOF, then SIGTERM, then SIGKILL, within the bound. */
+/**
+ * Scenario step: stop: stdin EOF, then SIGTERM, then SIGKILL, within the bound.
+ * @param {SmokeCtx} c
+ */
 async function stopSequenceStep(c) {
   const { fake } = c;
   if (!c.stuckPid) throw new Error("no stuck child");
@@ -1694,7 +1921,10 @@ async function stopSequenceStep(c) {
   check("stop: stuck child ended within the 20 s bound", Date.now() - started <= STOP_SEQUENCE_WAIT_MS);
 }
 
-/** Scenario step: socket: second runner on a live socket refuses start. */
+/**
+ * Scenario step: socket: second runner on a live socket refuses start.
+ * @param {SmokeCtx} c
+ */
 async function liveSocketRefusalStep(c) {
   const { configPath, api } = c;
   const code = await runOnce([RUNNER, "--config", configPath], {});
@@ -1703,7 +1933,10 @@ async function liveSocketRefusalStep(c) {
   check("socket: first runner still serves after the refused start", health.status === 200, health.text);
 }
 
-/** Scenario step: socket: stale socket after a crash is replaced. */
+/**
+ * Scenario step: socket: stale socket after a crash is replaced.
+ * @param {SmokeCtx} c
+ */
 async function staleSocketStep(c) {
   const { api, socketPath, startRunner } = c;
   c.runner.kill("SIGKILL");
@@ -1714,7 +1947,10 @@ async function staleSocketStep(c) {
   check("socket: restart after a crash serves again on a fresh 0600 socket", health.status === 200 && (statSync(socketPath).mode & 0o777) === 0o600, health.text);
 }
 
-/** Scenario step: limits: provision rate limit. */
+/**
+ * Scenario step: limits: provision rate limit.
+ * @param {SmokeCtx} c
+ */
 async function provisionRateStep(c) {
   const { startExtra, relayUrl } = c;
   const extra = await startExtra("rate", 0);
@@ -1732,7 +1968,10 @@ async function provisionRateStep(c) {
   }
 }
 
-/** Scenario step: limits: agent record cap. */
+/**
+ * Scenario step: limits: agent record cap.
+ * @param {SmokeCtx} c
+ */
 async function agentRecordCapStep(c) {
   const { startExtra, relayUrl } = c;
   const extra = await startExtra("cap", AGENT_RECORDS_MAX - 1);
@@ -1750,7 +1989,10 @@ async function agentRecordCapStep(c) {
   }
 }
 
-/** Scenario step: strict: attestEvents false and acceptAttested false. */
+/**
+ * Scenario step: strict: attestEvents false and acceptAttested false.
+ * @param {SmokeCtx} c
+ */
 async function strictModeStep(c) {
   const { temp, sudoLog, relay, startExtra, relayUrl, ownerSecret, peerSecret, fakeSudo, channel, typingFor } = c;
   // Own sudo log, so the main argv check sees only the main agent.
@@ -1800,7 +2042,10 @@ async function strictModeStep(c) {
   }
 }
 
-/** Scenario step: cap: maxLiveSessions stops the LRU idle process, resumes it, and makes a turn wait when all are busy. */
+/**
+ * Scenario step: cap: maxLiveSessions stops the LRU idle process, resumes it, and makes a turn wait when all are busy.
+ * @param {SmokeCtx} c
+ */
 async function liveSessionCapStep(c) {
   const { temp, sudoLog, relay, startExtra, relayUrl, ownerSecret, fakeSudo, channel, fake } = c;
   const dir = join(temp, "livecap-sudo");
@@ -1876,7 +2121,10 @@ async function liveSessionCapStep(c) {
   }
 }
 
-/** Scenario step: harnesses: list, readiness, models, validation and channel scope. */
+/**
+ * Scenario step: harnesses: list, readiness, models, validation and channel scope.
+ * @param {SmokeCtx} c
+ */
 async function harnessesStep(c) {
   const { temp, sudoLog, relay, startExtra, relayUrl, ownerSecret, fakeSudo, config, channel, fake } = c;
   const dir = join(temp, "harness-sudo");
