@@ -32,6 +32,9 @@ REPO_TOP="$(cd "$SELF_DIR/.." && pwd -P)"
 HOOK_LIB="$REPO_TOP/.githooks/lib"
 # shellcheck source-path=SCRIPTDIR source=../.githooks/lib/tools.sh
 . "$HOOK_LIB/tools.sh"
+# run_with_timeout, which the checks below use, lives here.
+# shellcheck source-path=SCRIPTDIR source=../.githooks/lib/helpers.sh
+. "$HOOK_LIB/helpers.sh"
 
 CHECK=repo-check
 PLUGIN_DIR=plugin
