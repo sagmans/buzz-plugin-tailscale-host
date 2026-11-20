@@ -52,7 +52,11 @@ const TYPE_TITLE = "Tailscale host";
 // keeps the title it got at registration, so it names the hosts as the
 // plugin found them at start; the Host field always shows the list as it is.
 const pickerTitle = (list) =>
-  list.length === 1 ? `${TYPE_TITLE} · ${list[0].label}` : list.length ? `${TYPE_TITLE} · ${list.length} hosts` : TYPE_TITLE;
+  list.length === 1
+    ? `${TYPE_TITLE} · ${list[0].label}`
+    : list.length
+      ? `${TYPE_TITLE} · ${list.length} hosts`
+      : TYPE_TITLE;
 // The harness an agent gets when its config names none: every agent made
 // before harnesses existed runs Claude.
 const CLAUDE_HARNESS = "claude-code";
@@ -83,7 +87,6 @@ const INSTRUCTIONS_EXAMPLE = "Help me plan my week and prioritize tasks.";
 // `modelLogo`), limited to the marks this plugin carries.
 const CLAUDE_MODEL = /claude|anthropic|opus|sonnet|haiku/;
 const OPENAI_MODEL = /(?:^|[\s/._-])(?:gpt|codex|o[134](?:[\s/._-]|$))|openai/;
-const API_PREFIX = "/v1";
 // Activation publishes a profile and opens a relay connection on the host, and
 // a harness check may start claude twice, so these get more time than plain
 // record calls.
@@ -154,18 +157,24 @@ const LABELS = Object.freeze({
   save: "Save",
   saving: "Saving…",
   // The plugin's Settings page.
-  summaryIntro: "New agent can run on each of these hosts. Add hosts and sign their harnesses in on the Tailscale hosts page.",
-  hostsFileNote: "New agent offers these hosts; the first is the default. You can also edit hosts.json by hand, then select Check again.",
-  addIntro: "This installs buzz-runner on the machine over Tailscale SSH, or aligns the runner already there. It also installs the runner's own Node and each harness that the machine does not have yet.",
+  summaryIntro:
+    "New agent can run on each of these hosts. Add hosts and sign their harnesses in on the Tailscale hosts page.",
+  hostsFileNote:
+    "New agent offers these hosts; the first is the default. You can also edit hosts.json by hand, then select Check again.",
+  addIntro:
+    "This installs buzz-runner on the machine over Tailscale SSH, or aligns the runner already there. It also installs the runner's own Node and each harness that the machine does not have yet.",
   addNeeds: "The machine needs Linux, an ACL tag, Tailscale SSH, and curl or wget.",
   sshLoginHelp: "The Linux user that Tailscale SSH signs you in as. Empty: your user name here.",
-  sudoHelp: "Only for a login that sudo asks a password of. It goes to sudo on the machine, and is not saved.",
+  sudoHelp:
+    "Only for a login that sudo asks a password of. It goes to sudo on the machine, and is not saved.",
   signInTitle: "Harnesses",
   harnessesIntro: "An agent can work only when its harness on this host is signed in.",
   signInIntro: "This runs on the host's own terminal, as the harness user.",
-  signInSteps: "Follow the terminal: open the link that it shows, type the code or key in Answer, and select Send.",
+  signInSteps:
+    "Follow the terminal: open the link that it shows, type the code or key in Answer, and select Send.",
   noHosts: "No Tailscale hosts. Add one in Settings > Plugins > Tailscale hosts.",
-  helperMissing: "This version of Buzz Desktop cannot run the hosts helper, which this plugin needs to reach its hosts.",
+  helperMissing:
+    "This version of Buzz Desktop cannot run the hosts helper, which this plugin needs to reach its hosts.",
   helperSilent:
     "The hosts helper did not answer. Buzz runs node from your login shell's PATH: check that node is there, then select Check again.",
 });
@@ -203,12 +212,11 @@ const HOSTS_MAX = 16;
 // plugin is one file with no imports: an id is saved in each agent's config;
 // a label is cut as runner titles are. The helper checks them again.
 const HOST_ID = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
-const HOST_ID_MAX = 32;
-const HOST_ID_FALLBACK = "host";
 const LABEL_MAX = 40;
 // A DNS name is at most 253 characters; with scheme and port this bounds an
 // origin well before it could matter as stored data.
 const ORIGIN_MAX = 300;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional rejection of control bytes in host labels and ids
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 // The plugin's own page under Settings, beside the other plugins' cards.
 const SETTINGS_CARD_ID = "hosts";
@@ -227,23 +235,58 @@ const STEP_MARK_SIZE = 16;
 const ADD_VIEW = "+add";
 // What a state's dot looks like: Desktop's status tokens, so that the dots
 // follow the theme. The words beside a dot carry the meaning.
-const TONE_COLORS = Object.freeze({ good: "var(--status-online)", wait: "var(--status-away)", bad: "var(--color-danger)", off: "var(--status-offline)" });
+const TONE_COLORS = Object.freeze({
+  good: "var(--status-online)",
+  wait: "var(--status-away)",
+  bad: "var(--color-danger)",
+  off: "var(--status-offline)",
+});
 // The page's layout. Desktop's Tailwind build holds only the classes that
 // Desktop itself uses, so a size that it lacks is an inline style here.
-const DOT_STYLE = Object.freeze({ display: "inline-block", flex: "none", width: "0.5rem", height: "0.5rem", borderRadius: "50%" });
-const COLUMNS_STYLE = Object.freeze({ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: "1.5rem" });
+const DOT_STYLE = Object.freeze({
+  display: "inline-block",
+  flex: "none",
+  width: "0.5rem",
+  height: "0.5rem",
+  borderRadius: "50%",
+});
+const COLUMNS_STYLE = Object.freeze({
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "flex-start",
+  gap: "1.5rem",
+});
 const LIST_STYLE = Object.freeze({ flex: "1 1 15rem", maxWidth: "20rem", minWidth: 0 });
 const DETAIL_STYLE = Object.freeze({ flex: "3 1 24rem", minWidth: 0 });
-const CARD_STYLE = Object.freeze({ padding: "1.25rem", borderRadius: "0.75rem", border: "1px solid var(--border-standard)" });
+const CARD_STYLE = Object.freeze({
+  padding: "1.25rem",
+  borderRadius: "0.75rem",
+  border: "1px solid var(--border-standard)",
+});
 const FIELDSET_STYLE = Object.freeze({ border: 0, margin: 0, padding: 0, minWidth: 0 });
 const LEGEND_STYLE = Object.freeze({ padding: 0, marginBottom: "0.5rem" });
 const DISCLOSED_STYLE = Object.freeze({ marginTop: "0.75rem" });
 const STEP_ROW_STYLE = Object.freeze({ display: "flex", alignItems: "flex-start", gap: "0.75rem" });
-const STEP_MARK_STYLE = Object.freeze({ display: "flex", flex: "none", alignItems: "center", justifyContent: "center", width: "1rem", height: "1.25rem" });
+const STEP_MARK_STYLE = Object.freeze({
+  display: "flex",
+  flex: "none",
+  alignItems: "center",
+  justifyContent: "center",
+  width: "1rem",
+  height: "1.25rem",
+});
 const GROW_STYLE = Object.freeze({ flex: "1 1 auto", minWidth: 0 });
-const TERMINAL_STYLE = Object.freeze({ padding: "0.75rem", borderRadius: "0.5rem", border: "1px solid var(--border-standard)", fontFamily: "ui-monospace, monospace" });
+const TERMINAL_STYLE = Object.freeze({
+  padding: "0.75rem",
+  borderRadius: "0.5rem",
+  border: "1px solid var(--border-standard)",
+  fontFamily: "ui-monospace, monospace",
+});
 const PAGE_SCROLL_STYLE = Object.freeze({ flex: "1 1 0", minHeight: 0, overflowY: "auto" });
-const PAGE_BODY_STYLE = Object.freeze({ padding: "var(--space-panel-inset, 1.25rem)", maxWidth: "64rem" });
+const PAGE_BODY_STYLE = Object.freeze({
+  padding: "var(--space-panel-inset, 1.25rem)",
+  maxWidth: "64rem",
+});
 const ORIGIN_EXAMPLE = "https://runner-host.example.ts.net";
 // The port of the runner's tailscale serve (scripts/build-plugin.mjs
 // RUNNER_PORT). The owner knows the machine, not where the runner listens,
@@ -329,7 +372,8 @@ const PASSWORD_MAX = 256;
 // Add host gives its login a sudo rule for buzz-login only (install.sh
 // --login-user), so a sign-in asks no password. Hosts set up before that
 // rule, or by another login, still need one.
-const SIGNIN_PASSWORD_HELP = "Leave it empty for the login that ran Add host: sudo asks it no password for a sign-in. Only a host that an older Add host or another login set up needs it. Not saved.";
+const SIGNIN_PASSWORD_HELP =
+  "Leave it empty for the login that ran Add host: sudo asks it no password for a sign-in. Only a host that an older Add host or another login set up needs it. Not saved.";
 const RELAY_MAX = 300;
 // The relay the runner's agents connect to: the community the owner has
 // open, as Desktop names it (an https:// or wss:// origin), as wss://.
@@ -338,7 +382,7 @@ const RELAY_EXAMPLE = "wss://relay.example.ts.net";
 /** A failed runner call, carrying what is needed to diagnose it in one pass. */
 class RunnerError extends Error {
   constructor(message, details) {
-    super(message, details && details.cause ? { cause: details.cause } : undefined);
+    super(message, details?.cause ? { cause: details.cause } : undefined);
     this.name = "RunnerError";
     this.details = details;
   }
@@ -358,7 +402,9 @@ class HostConfigError extends Error {
 function checkHostLabel(value) {
   const label = typeof value === "string" ? value.trim() : "";
   if (!label || label.length > LABEL_MAX || CONTROL_CHARS.test(label))
-    throw new HostConfigError(`Name must be 1-${LABEL_MAX} printable characters.`, { field: "label" });
+    throw new HostConfigError(`Name must be 1-${LABEL_MAX} printable characters.`, {
+      field: "label",
+    });
   return label;
 }
 
@@ -369,45 +415,39 @@ function checkHostLabel(value) {
  * read the same on the page. */
 function checkHostOrigin(value) {
   const typed = typeof value === "string" ? value.trim() : "";
-  if (!typed || typed.length > ORIGIN_MAX) throw new HostConfigError("Enter the host's https:// address.", { field: "origin" });
+  if (!typed || typed.length > ORIGIN_MAX)
+    throw new HostConfigError("Enter the host's https:// address.", { field: "origin" });
   let url;
   try {
     url = new URL(typed);
   } catch {
-    throw new HostConfigError(`Address is not a URL. Example: ${ORIGIN_EXAMPLE}`, { field: "origin" });
+    throw new HostConfigError(`Address is not a URL. Example: ${ORIGIN_EXAMPLE}`, {
+      field: "origin",
+    });
   }
-  if (url.protocol !== "https:") throw new HostConfigError("Address must start with https://.", { field: "origin" });
-  if (url.username || url.password) throw new HostConfigError("Address must not hold a user name or password.", { field: "origin" });
+  if (url.protocol !== "https:")
+    throw new HostConfigError("Address must start with https://.", { field: "origin" });
+  if (url.username || url.password)
+    throw new HostConfigError("Address must not hold a user name or password.", {
+      field: "origin",
+    });
   const typedOrigin = url.origin;
   if (url.port === RUNNER_PORT) url.port = "";
   if (typed !== typedOrigin && typed !== `${typedOrigin}/`)
-    throw new HostConfigError(`Address must have no path. Write it as ${url.origin}`, { field: "origin" });
+    throw new HostConfigError(`Address must have no path. Write it as ${url.origin}`, {
+      field: "origin",
+    });
   return url.origin;
-}
-
-/** A new host's id, made from its label: the owner never sees it, but it is
- * saved in each agent's config, so it stays fixed when the label changes. */
-function hostIdFor(label, taken) {
-  const base =
-    label
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, HOST_ID_MAX)
-      .replace(/-+$/g, "") || HOST_ID_FALLBACK;
-  for (let index = 1; ; index += 1) {
-    const suffix = index === 1 ? "" : `-${index}`;
-    const id = `${base.slice(0, HOST_ID_MAX - suffix.length).replace(/-+$/g, "")}${suffix}`;
-    if (HOST_ID.test(id) && !taken.has(id)) return id;
-  }
 }
 
 /** Checks one host against the others in the list: the same id, origin or
  * name (case-insensitive) twice would route agents to the wrong runner. */
 function checkUnique(host, others) {
   for (const other of others) {
-    if (other.id === host.id) throw new HostConfigError(`Duplicate host id ${host.id}.`, { field: "id" });
-    if (other.origin === host.origin) throw new HostConfigError(`${other.label} already uses this address.`, { field: "origin" });
+    if (other.id === host.id)
+      throw new HostConfigError(`Duplicate host id ${host.id}.`, { field: "id" });
+    if (other.origin === host.origin)
+      throw new HostConfigError(`${other.label} already uses this address.`, { field: "origin" });
     if (other.label.toLowerCase() === host.label.toLowerCase())
       throw new HostConfigError(`A host is already named ${other.label}.`, { field: "label" });
   }
@@ -421,21 +461,29 @@ function hostById(id) {
 }
 
 const text = (value, max) => (typeof value === "string" ? value.slice(0, max) : undefined);
-const errorText = (error) => String((error && error.message) || error);
+const errorText = (error) => String(error?.message || error);
 
 /** Keeps only fields the runner accepts, so a stale or edited config can not
  * send unexpected data across the trust boundary. The runner checks the
  * harness again: this only keeps the id well formed. */
 function cleanConfig(config) {
   const value = config && typeof config === "object" ? config : {};
-  const harness = typeof value.harness === "string" && HARNESS_ID.test(value.harness) ? value.harness : CLAUDE_HARNESS;
+  const harness =
+    typeof value.harness === "string" && HARNESS_ID.test(value.harness)
+      ? value.harness
+      : CLAUDE_HARNESS;
   const out = {
-    host: typeof value.host === "string" && HOSTS.some((entry) => entry.id === value.host) ? value.host : defaultHostId(),
+    host:
+      typeof value.host === "string" && HOSTS.some((entry) => entry.id === value.host)
+        ? value.host
+        : defaultHostId(),
     harness,
     scope: SCOPES.some(([id]) => id === value.scope) ? value.scope : DEFAULT_SCOPE,
-    instructions: typeof value.instructions === "string" ? value.instructions.slice(0, INSTRUCTIONS_MAX) : "",
+    instructions:
+      typeof value.instructions === "string" ? value.instructions.slice(0, INSTRUCTIONS_MAX) : "",
   };
-  if (typeof value.model === "string" && value.model.trim()) out.model = value.model.trim().slice(0, MODEL_MAX);
+  if (typeof value.model === "string" && value.model.trim())
+    out.model = value.model.trim().slice(0, MODEL_MAX);
   if (
     typeof value.effort === "string" &&
     EFFORT_ID.test(value.effort) &&
@@ -453,7 +501,8 @@ function runtimeConfig(config) {
 
 /** A runner's harness list, bounded and shape-checked; bad entries dropped. */
 function parseHarnesses(reply) {
-  const list = reply && Array.isArray(reply.harnesses) ? reply.harnesses.slice(0, HARNESSES_MAX) : [];
+  const list =
+    reply && Array.isArray(reply.harnesses) ? reply.harnesses.slice(0, HARNESSES_MAX) : [];
   return list
     .filter((item) => item && typeof item.id === "string" && HARNESS_ID.test(item.id))
     .map((item) => ({
@@ -481,9 +530,10 @@ function parseModels(reply) {
       id: item.id,
       label: text(item.label, TITLE_MAX) || item.id,
       efforts: efforts(item.efforts),
-      effort: typeof item.effort === "string" && EFFORT_ID.test(item.effort) ? item.effort : undefined,
+      effort:
+        typeof item.effort === "string" && EFFORT_ID.test(item.effort) ? item.effort : undefined,
     }));
-  return { current: text(reply && reply.current, MODEL_MAX) || "", models };
+  return { current: text(reply?.current, MODEL_MAX) || "", models };
 }
 
 // ---- Icons ----------------------------------------------------------------
@@ -495,7 +545,8 @@ function parseModels(reply) {
 
 /** Claude's bundled brand mark, as Desktop ships it (claude.png). Claude is a
  * trademark of Anthropic; see NOTICE. */
-const CLAUDE_PNG = "data:image/png;base64,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";
+const CLAUDE_PNG =
+  "data:image/png;base64,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";
 
 /** What ModelSelect offers for one models reply: the host's default first,
  * then the other models, an unknown saved id, and Custom outside compact
@@ -516,7 +567,9 @@ function modelChoices(list, value, compact) {
   const shown = [fallback, ...listed];
   const selected = shown.find((model) => model.id === (value || defaultModel)) || fallback;
   const inherited = value === "";
-  const choices = compact ? shown : [...shown, { id: CUSTOM_MODEL, label: LABELS.custom, description: LABELS.customDescription }];
+  const choices = compact
+    ? shown
+    : [...shown, { id: CUSTOM_MODEL, label: LABELS.custom, description: LABELS.customDescription }];
   return { loading, known, selected, inherited, choices };
 }
 
@@ -524,7 +577,18 @@ function makeIcons(h) {
   const svg = (viewBox, extra, children) =>
     function HarnessIcon({ size = "1em", ...props }) {
       const length = typeof size === "number" ? `${size / REM_PX}rem` : size;
-      return h("svg", { width: length, height: length, viewBox, xmlns: "http://www.w3.org/2000/svg", ...extra, ...props }, ...children);
+      return h(
+        "svg",
+        {
+          width: length,
+          height: length,
+          viewBox,
+          xmlns: "http://www.w3.org/2000/svg",
+          ...extra,
+          ...props,
+        },
+        ...children,
+      );
     };
   return {
     // The type's own mark: a plain server rack, because the type stands for
@@ -532,14 +596,22 @@ function makeIcons(h) {
     // third-party license.
     host: svg(
       "0 0 24 24",
-      { fill: "none", stroke: "currentColor", strokeWidth: "1.75", strokeLinecap: "round", strokeLinejoin: "round" },
+      {
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: "1.75",
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+      },
       [
         h("rect", { key: "t", x: "3", y: "4", width: "18", height: "7", rx: "2" }),
         h("rect", { key: "b", x: "3", y: "13", width: "18", height: "7", rx: "2" }),
         h("path", { key: "d", d: "M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6" }),
       ],
     ),
-    "claude-code": svg("0 0 32 32", {}, [h("image", { key: "i", href: CLAUDE_PNG, width: "32", height: "32" })]),
+    "claude-code": svg("0 0 32 32", {}, [
+      h("image", { key: "i", href: CLAUDE_PNG, width: "32", height: "32" }),
+    ]),
     // OpenAI's Blossom mark for Codex, from OpenAI's brand kit. OpenAI and the
     // Blossom logo are trademarks of OpenAI.
     codex: svg("176 176 364 364", { fill: "currentColor" }, [
@@ -663,7 +735,9 @@ class HelperClient {
     try {
       reply = JSON.parse(line);
     } catch {
-      console.warn("tailscale-host: hosts helper wrote a line that is not JSON", { line: line.slice(0, HELPER_LOG_MAX) });
+      console.warn("tailscale-host: hosts helper wrote a line that is not JSON", {
+        line: line.slice(0, HELPER_LOG_MAX),
+      });
       return;
     }
     const entry = reply && this.pending.get(reply.id);
@@ -677,7 +751,11 @@ class HelperClient {
     if (!entry) {
       // A late reply after its wait ended, or a refusal of a line that
       // could not be read (id null): the request already failed.
-      if (reply && reply.ok === false) console.warn("tailscale-host: hosts helper refused a request", { id: reply.id, error: text(reply.error, TEXT_MAX * 3) });
+      if (reply && reply.ok === false)
+        console.warn("tailscale-host: hosts helper refused a request", {
+          id: reply.id,
+          error: text(reply.error, TEXT_MAX * 3),
+        });
       return;
     }
     this.pending.delete(reply.id);
@@ -685,17 +763,24 @@ class HelperClient {
     if (reply.ok === true) entry.resolve(reply);
     // `refused`: the helper ran the request and it failed, as opposed to a
     // helper that is missing or does not answer.
-    else entry.reject(new HostConfigError(text(reply.error, TEXT_MAX * 3) || "The hosts helper refused the request.", { op: entry.op, refused: true }));
+    else
+      entry.reject(
+        new HostConfigError(
+          text(reply.error, TEXT_MAX * 3) || "The hosts helper refused the request.",
+          { op: entry.op, refused: true },
+        ),
+      );
   }
 
   /** Desktop hands stdout over in chunks, not lines. */
   onOutput(chunk) {
     this.buffer += chunk;
-    let newline;
-    while ((newline = this.buffer.indexOf("\n")) !== -1) {
+    let newline = this.buffer.indexOf("\n");
+    while (newline !== -1) {
       const line = this.buffer.slice(0, newline);
       this.buffer = this.buffer.slice(newline + 1);
       this.onReplyLine(line);
+      newline = this.buffer.indexOf("\n");
     }
     // A reply never gets this long; the helper is broken, so start it again.
     if (this.buffer.length > HELPER_REPLY_MAX) {
@@ -723,12 +808,14 @@ class HelperClient {
   /** The running helper, started when there is none. */
   running() {
     if (this.process) return Promise.resolve(this.process);
-    if (typeof this.host.spawn !== "function") return Promise.reject(new HostConfigError(LABELS.helperMissing, { op: "spawn" }));
+    if (typeof this.host.spawn !== "function")
+      return Promise.reject(new HostConfigError(LABELS.helperMissing, { op: "spawn" }));
     this.starting ??= this.host
       .spawn(HOSTS_PROCESS, {
         onStdout: (chunk) => this.onOutput(chunk),
         // The helper logs each failure as one JSON line, for the app's log.
-        onStderr: (chunk) => console.warn("tailscale-host: hosts helper", String(chunk).slice(0, HELPER_LOG_MAX)),
+        onStderr: (chunk) =>
+          console.warn("tailscale-host: hosts helper", String(chunk).slice(0, HELPER_LOG_MAX)),
       })
       .then(
         (child) => this.adopt(child),
@@ -750,7 +837,10 @@ class HelperClient {
   async call(request, waitMs, onProgress) {
     const id = this.nextId++;
     const line = `${JSON.stringify({ id, ...request })}\n`;
-    if (line.length > HELPER_LINE_MAX) throw new HostConfigError("The request is too large for the hosts helper.", { op: request.op });
+    if (line.length > HELPER_LINE_MAX)
+      throw new HostConfigError("The request is too large for the hosts helper.", {
+        op: request.op,
+      });
     const child = await this.running();
     return new Promise((resolve, reject) => {
       const entry = { op: request.op, resolve, reject, timer: undefined, onProgress };
@@ -779,10 +869,28 @@ class HelperClient {
   }
 }
 
-const SETUP_IDLE = Object.freeze({ state: "idle", label: "", steps: Object.freeze({}), result: undefined, error: undefined });
-const SIGNIN_IDLE = Object.freeze({ state: "idle", hostId: "", harness: null, output: "", link: undefined, error: undefined, code: undefined });
+const SETUP_IDLE = Object.freeze({
+  state: "idle",
+  label: "",
+  steps: Object.freeze({}),
+  result: undefined,
+  error: undefined,
+});
+const SIGNIN_IDLE = Object.freeze({
+  state: "idle",
+  hostId: "",
+  harness: null,
+  output: "",
+  link: undefined,
+  error: undefined,
+  code: undefined,
+});
 // The state of one step, in the words and with the mark the page shows.
-const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for you", failed: "Failed" });
+const STEP_WORDS = Object.freeze({
+  running: "Running…",
+  waiting: "Waiting for you",
+  failed: "Failed",
+});
 
 /**
  * Everything apply's views share and change while the plugin runs. One object,
@@ -827,22 +935,25 @@ const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for 
  * @typedef {{ call: PartFn, remember: PartFn, forget: PartFn }} RunnerCallParts
  * @typedef {{ holds: PartFn, locate: PartFn, requireNewKey: PartFn }} AgentRoutingParts
  * @typedef {{ statusOf: PartFn, emit: PartFn, subscribe: PartFn, useStore: PartFn, refresh: PartFn }} StatusStoreParts
- * @typedef {{ modelKey: PartFn, modelsFresh: PartFn, loadModels: PartFn, useModels: PartFn, harnessOn: PartFn, harnessTitle: PartFn, providerSnapshot: PartFn }} ModelStoreParts
- * @typedef {{ setHostsFile: PartFn, parseFileHosts: PartFn, setHostList: PartFn, fileCall: PartFn, readHostsFile: PartFn, saveHostsFile: PartFn, sameHosts: PartFn, fileHosts: PartFn, placedHostIds: PartFn, agentsOn: PartFn }} HostsFileParts
- * @typedef {{ setSetupRun: PartFn, parseProgress: PartFn, parseSetupResult: PartFn, communityDefaults: PartFn, startSetup: PartFn, resetSetup: PartFn }} SetupParts
+ * @typedef {{ loadModels: PartFn, useModels: PartFn, harnessOn: PartFn, harnessTitle: PartFn, providerSnapshot: PartFn }} ModelStoreParts
+ * @typedef {{ setHostsFile: PartFn, setHostList: PartFn, fileCall: PartFn, readHostsFile: PartFn, saveHostsFile: PartFn, fileHosts: PartFn, agentsOn: PartFn }} HostsFileParts
+ * @typedef {{ setSetupRun: PartFn, communityDefaults: PartFn, startSetup: PartFn, resetSetup: PartFn }} SetupParts
  * @typedef {{ setSigninRun: PartFn, startSignIn: PartFn, sendSignInInput: PartFn, cancelSignIn: PartFn, resetSignIn: PartFn }} SignInParts
  * @typedef {{ fileHost: PartFn, checkNewHost: PartFn, updateHost: PartFn, removeHost: PartFn }} HostEditsParts
- * @typedef {{ Button: PartFn, PreferenceRow: PartFn, SettingsGroup: PartFn, ChoiceRow: PartFn, Field: PartFn, Input: PartFn }} ControlsParts
+ * @typedef {{ Button: PartFn, ChoiceRow: PartFn }} BaseControlsParts
+ * @typedef {{ PreferenceRow: PartFn, SettingsGroup: PartFn, Field: PartFn, Input: PartFn }} ControlsParts
  * @typedef {{ AgentInstructions: PartFn }} InstructionsParts
  * @typedef {{ Floating: PartFn }} FloatingParts
  * @typedef {{ useListPopup: PartFn }} ListPopupParts
- * @typedef {{ selectValue: PartFn, selectTrigger: PartFn }} SelectTriggerParts
+ * @typedef {{ selectValue: PartFn }} SelectValueParts
+ * @typedef {{ selectTrigger: PartFn }} SelectTriggerParts
  * @typedef {{ selectOption: PartFn, selectPopup: PartFn }} SelectListParts
  * @typedef {{ Select: PartFn }} SelectParts
  * @typedef {{ harnessIcon: PartFn, modelLogo: PartFn, harnessChoices: PartFn, HarnessSelect: PartFn }} HarnessSelectParts
+ * @typedef {{ HarnessMenuItems: PartFn }} HarnessMenuItemsParts
  * @typedef {{ HarnessMenu: PartFn }} HarnessMenuParts
  * @typedef {{ ModelSelect: PartFn, customModelField: PartFn }} ModelSelectParts
- * @typedef {{ dedupe: PartFn, effortsFor: PartFn, EffortSelect: PartFn, keptEffort: PartFn, pick: PartFn, harnessProblem: PartFn, runsOn: PartFn, readinessLine: PartFn }} EffortParts
+ * @typedef {{ EffortSelect: PartFn, keptEffort: PartFn, pick: PartFn, harnessProblem: PartFn, runsOn: PartFn, readinessLine: PartFn }} EffortParts
  * @typedef {{ CreateModel: PartFn, Create: PartFn }} CreateParts
  * @typedef {{ useSettingsLoad: PartFn, settingsIdentity: PartFn, saveButton: PartFn }} SettingsPartsParts
  * @typedef {{ Settings: PartFn }} SettingsParts
@@ -861,7 +972,7 @@ const STEP_WORDS = Object.freeze({ running: "Running…", waiting: "Waiting for 
  *
  * Every part, by the factory that makes it, plus the helper that apply makes first.
  * A part of a later factory is read only inside a handler (see PART_FACTORIES).
- * @typedef {{ helper: HelperClient } & RunnerCallParts & AgentRoutingParts & StatusStoreParts & ModelStoreParts & HostsFileParts & SetupParts & SignInParts & HostEditsParts & ControlsParts & InstructionsParts & FloatingParts & ListPopupParts & SelectTriggerParts & SelectListParts & SelectParts & HarnessSelectParts & HarnessMenuParts & ModelSelectParts & EffortParts & CreateParts & SettingsPartsParts & SettingsParts & ProviderViewsParts & HostFormParts & SetupStepsParts & SetupProgressParts & AddHostParts & SignInStartParts & SignInTerminalParts & HarnessRowsParts & HostDetailParts & HostListParts & HostsViewParts & HostsPageParts} Parts
+ * @typedef {{ helper: HelperClient } & RunnerCallParts & AgentRoutingParts & StatusStoreParts & ModelStoreParts & HostsFileParts & SetupParts & SignInParts & HostEditsParts & BaseControlsParts & ControlsParts & InstructionsParts & FloatingParts & ListPopupParts & SelectValueParts & SelectTriggerParts & SelectListParts & SelectParts & HarnessSelectParts & HarnessMenuItemsParts & HarnessMenuParts & ModelSelectParts & EffortParts & CreateParts & SettingsPartsParts & SettingsParts & ProviderViewsParts & HostFormParts & SetupStepsParts & SetupProgressParts & AddHostParts & SignInStartParts & SignInTerminalParts & HarnessRowsParts & HostDetailParts & HostListParts & HostsViewParts & HostsPageParts} Parts
  */
 
 /** A fresh store for one apply: each load of the plugin starts empty.
@@ -889,12 +1000,12 @@ function createStore() {
 /**
  * The one path every runner request takes, so a refusal, a timeout or a bad reply reads the same on every page and a helper that cannot run is told apart from a host that is down.
  * It also owns the saved agent-to-host choice, because that is part of how a call finds its host.
- * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {Ui} _ui
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {RunnerCallParts}
  */
-function makeRunnerCall(ui, store, parts) {
+function makeRunnerCall(_ui, _store, parts) {
   const { helper } = parts;
   /** One JSON call to a host's runner, through the helper; throws
    * RunnerError on any failure. */
@@ -903,12 +1014,21 @@ function makeRunnerCall(ui, store, parts) {
     let response;
     try {
       response = await helper.call(
-        { op: "request", host: host.id, method, path, ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs },
+        {
+          op: "request",
+          host: host.id,
+          method,
+          path,
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          timeoutMs,
+        },
         timeoutMs + HELPER_GRACE_MS,
       );
     } catch (cause) {
       // A helper that does not run is not a host problem; say which it is.
-      const reason = cause?.details?.refused ? `Could not reach ${host.label}. Check Tailscale and buzz-runner.` : errorText(cause);
+      const reason = cause?.details?.refused
+        ? `Could not reach ${host.label}. Check Tailscale and buzz-runner.`
+        : errorText(cause);
       throw new RunnerError(reason, {
         op: `${method} ${path}`,
         host: host.id,
@@ -918,7 +1038,10 @@ function makeRunnerCall(ui, store, parts) {
     }
     if (response.status === HTTP_NO_CONTENT) return undefined;
     if (!Number.isInteger(response.status) || typeof response.body !== "string")
-      throw new RunnerError(`Invalid reply from ${host.label}.`, { op: `${method} ${path}`, host: host.id });
+      throw new RunnerError(`Invalid reply from ${host.label}.`, {
+        op: `${method} ${path}`,
+        host: host.id,
+      });
     let parsed;
     try {
       parsed = response.body ? JSON.parse(response.body) : undefined;
@@ -931,7 +1054,8 @@ function makeRunnerCall(ui, store, parts) {
       });
     }
     if (response.status < 200 || response.status >= 300) {
-      const reason = parsed && typeof parsed.message === "string" ? parsed.message.slice(0, TEXT_MAX) : "";
+      const reason =
+        parsed && typeof parsed.message === "string" ? parsed.message.slice(0, TEXT_MAX) : "";
       throw new RunnerError(
         `${host.label} refused the request (${response.status})${reason ? `: ${reason}` : ""}.`,
         { op: `${method} ${path}`, host: host.id, status: response.status, code: parsed?.error },
@@ -952,12 +1076,12 @@ function makeRunnerCall(ui, store, parts) {
 
 /**
  * Settings, profile and delete calls act on whatever host they reach, so the host of an agent is found by asking the hosts, never by trusting one host's claim. Apart from the call path because only agent calls need routing; host status and file calls do not.
- * @param {Ui} ui
+ * @param {Ui} _ui
  * @param {PluginStore} store
  * @param {Parts} parts
  * @returns {AgentRoutingParts}
  */
-function makeAgentRouting(ui, store, parts) {
+function makeAgentRouting(_ui, store, parts) {
   const { call, remember } = parts;
   /** Whether `host`'s runner keeps the agent `pubkey`. Only a record that
    * names that same pubkey counts: a host that answered for any key would
@@ -978,7 +1102,8 @@ function makeAgentRouting(ui, store, parts) {
     if (!HEX64.test(pubkey)) throw new RunnerError("Invalid agent pubkey.", { op: "locate" });
     // Without a host list no host can be asked, and "no host knows it" would
     // let a delete drop an agent that still runs.
-    if (!HOSTS.length) throw new RunnerError(store.hostsFile.error || LABELS.noHosts, { op: "locate" });
+    if (!HOSTS.length)
+      throw new RunnerError(store.hostsFile.error || LABELS.noHosts, { op: "locate" });
     const saved = localStorage.getItem(STORE_PREFIX + pubkey);
     if (saved && HOSTS.some((entry) => entry.id === saved)) return hostById(saved);
     for (const host of HOSTS) {
@@ -1002,7 +1127,8 @@ function makeAgentRouting(ui, store, parts) {
         host: host.id,
         holder: other.id,
       });
-    const holder = saved && saved !== host.id ? HOSTS.find((entry) => entry.id === saved) : undefined;
+    const holder =
+      saved && saved !== host.id ? HOSTS.find((entry) => entry.id === saved) : undefined;
     if (holder) throw taken(holder);
     for (const other of HOSTS) {
       if (other.id === host.id) continue;
@@ -1010,12 +1136,15 @@ function makeAgentRouting(ui, store, parts) {
       try {
         held = await holds(other, pubkey);
       } catch (cause) {
-        throw new RunnerError(`Could not check the new agent with ${other.label}. Try again when it answers.`, {
-          op: "provision",
-          host: host.id,
-          other: other.id,
-          cause,
-        });
+        throw new RunnerError(
+          `Could not check the new agent with ${other.label}. Try again when it answers.`,
+          {
+            op: "provision",
+            host: host.id,
+            other: other.id,
+            cause,
+          },
+        );
       }
       if (held) throw taken(other);
     }
@@ -1059,27 +1188,40 @@ function makeStatusStore(ui, store, parts) {
    * setup) wants seen. */
   function refresh() {
     if (store.refreshing) {
-      store.refreshAgain ??= store.refreshing.catch(() => undefined).then(() => {
-        store.refreshAgain = undefined;
-        return refresh();
-      });
+      store.refreshAgain ??= store.refreshing
+        .catch(() => undefined)
+        .then(() => {
+          store.refreshAgain = undefined;
+          return refresh();
+        });
       return store.refreshAgain;
     }
-    store.refreshing = parts.readHostsFile().then(() =>
-      Promise.all(
-      HOSTS.map(async (host) => {
-        try {
-          const list = parseHarnesses(await call(host, "GET", "/harnesses", undefined, HARNESS_TIMEOUT_MS));
-          return [host.id, Object.freeze({ state: "ok", harnesses: list })];
-        } catch (error) {
-          return [host.id, Object.freeze({ state: "down", error: errorText(error) })];
-        }
-      }),
-    ))
+    store.refreshing = parts
+      .readHostsFile()
+      .then(() =>
+        Promise.all(
+          HOSTS.map(async (host) => {
+            try {
+              const list = parseHarnesses(
+                await call(host, "GET", "/harnesses", undefined, HARNESS_TIMEOUT_MS),
+              );
+              return [host.id, Object.freeze({ state: "ok", harnesses: list })];
+            } catch (error) {
+              return [host.id, Object.freeze({ state: "down", error: errorText(error) })];
+            }
+          }),
+        ),
+      )
       .then((entries) => {
         if (store.disposed) return;
         // Only hosts still in the list keep a status.
-        store.hosts = Object.freeze(Object.fromEntries(HOSTS.map((host) => [host.id, store.hosts[host.id]]).filter(([, status]) => status).concat(entries)));
+        store.hosts = Object.freeze(
+          Object.fromEntries(
+            HOSTS.map((host) => [host.id, store.hosts[host.id]])
+              .filter(([, status]) => status)
+              .concat(entries),
+          ),
+        );
         emit();
       })
       .finally(() => {
@@ -1088,6 +1230,26 @@ function makeStatusStore(ui, store, parts) {
     return store.refreshing;
   }
   return { statusOf, emit, subscribe, useStore, refresh };
+}
+
+/** Keys the shared model cache by host and harness so pickers share one entry per pair. */
+const modelKey = (hostId, harness) => `${hostId}/${harness}`;
+
+/** Whether a fetched list still stands: an empty one never does (the
+ * owner may sign in on the host at any time), a full one for the TTL. */
+const modelsFresh = (entry) => entry.models.length > 0 && Date.now() - entry.at < MODELS_TTL_MS;
+
+/** Summarizes all host statuses into one provider state so Desktop shows one readiness badge. */
+function computeProviderSnapshot(statuses) {
+  if (!statuses.length) return { readiness: "attention", attentionLabel: "No Tailscale host" };
+  if (
+    statuses.some((status) => status.state === "ok" && status.harnesses.some((item) => item.ready))
+  )
+    return { readiness: "ready" };
+  if (statuses.some((status) => status.state === "checking")) return { readiness: "checking" };
+  if (statuses.every((status) => status.state === "down"))
+    return { readiness: "attention", attentionLabel: "Host unreachable" };
+  return { readiness: "attention", attentionLabel: "No harness ready on host" };
 }
 
 /**
@@ -1101,37 +1263,44 @@ function makeStatusStore(ui, store, parts) {
 function makeModelStore(ui, store, parts) {
   const { React } = ui;
   const { emit, call, useStore, statusOf } = parts;
-  const modelKey = (hostId, harness) => `${hostId}/${harness}`;
-
-  /** Whether a fetched list still stands: an empty one never does (the
-   * owner may sign in on the host at any time), a full one for the TTL. */
-  const modelsFresh = (entry) => entry.models.length > 0 && Date.now() - entry.at < MODELS_TTL_MS;
 
   /** The runner's model list for a harness on a host, fetched again when a
    * picker mounts after a sign-in may have changed it, or when retried. */
   function loadModels(hostId, harness, force = false) {
     const key = modelKey(hostId, harness);
     const known = store.models[key];
-    if (store.modelsInFlight.has(key) || (known && known.state === "ok" && !force && modelsFresh(known))) return;
+    if (
+      store.modelsInFlight.has(key) ||
+      (known && known.state === "ok" && !force && modelsFresh(known))
+    )
+      return;
     store.modelsInFlight.add(key);
     // A stale list stays shown while the new one loads, so a picker does not
     // flash to "loading" on every open.
-    if (!known || known.state !== "ok") {
+    if (known?.state !== "ok") {
       store.models = Object.freeze({ ...store.models, [key]: Object.freeze({ state: "loading" }) });
       emit();
     }
-    call(hostById(hostId), "GET", `/harnesses/${harness}/models`, undefined, HARNESS_TIMEOUT_MS).then(
-      (reply) => {
-        if (store.disposed) return;
-        store.models = Object.freeze({ ...store.models, [key]: Object.freeze({ state: "ok", at: Date.now(), ...parseModels(reply) }) });
-        emit();
-      },
-      (error) => {
-        if (store.disposed) return;
-        store.models = Object.freeze({ ...store.models, [key]: Object.freeze({ state: "error", error: errorText(error) }) });
-        emit();
-      },
-    ).finally(() => store.modelsInFlight.delete(key));
+    call(hostById(hostId), "GET", `/harnesses/${harness}/models`, undefined, HARNESS_TIMEOUT_MS)
+      .then(
+        (reply) => {
+          if (store.disposed) return;
+          store.models = Object.freeze({
+            ...store.models,
+            [key]: Object.freeze({ state: "ok", at: Date.now(), ...parseModels(reply) }),
+          });
+          emit();
+        },
+        (error) => {
+          if (store.disposed) return;
+          store.models = Object.freeze({
+            ...store.models,
+            [key]: Object.freeze({ state: "error", error: errorText(error) }),
+          });
+          emit();
+        },
+      )
+      .finally(() => store.modelsInFlight.delete(key));
   }
 
   /** `enabled` false skips the fetch: a harness that is not ready on the host
@@ -1147,7 +1316,9 @@ function makeModelStore(ui, store, parts) {
   /** One host's view of one harness. */
   function harnessOn(hostId, harness) {
     const status = store.hosts[hostId];
-    return status && status.state === "ok" ? status.harnesses.find((item) => item.id === harness) : undefined;
+    return status && status.state === "ok"
+      ? status.harnesses.find((item) => item.id === harness)
+      : undefined;
   }
 
   /** A harness's title as the host names it, for summaries and notices. */
@@ -1157,18 +1328,23 @@ function makeModelStore(ui, store, parts) {
 
   /** The type is ready when some host answers with a ready harness. */
   function providerSnapshot() {
-    const statuses = HOSTS.map((host) => statusOf(host.id));
-    let next;
-    if (!statuses.length) next = { readiness: "attention", attentionLabel: "No Tailscale host" };
-    else if (statuses.some((status) => status.state === "ok" && status.harnesses.some((item) => item.ready))) next = { readiness: "ready" };
-    else if (statuses.some((status) => status.state === "checking")) next = { readiness: "checking" };
-    else if (statuses.every((status) => status.state === "down")) next = { readiness: "attention", attentionLabel: "Host unreachable" };
-    else next = { readiness: "attention", attentionLabel: "No harness ready on host" };
-    if (store.snapshot && store.snapshot.readiness === next.readiness && store.snapshot.attentionLabel === next.attentionLabel) return store.snapshot;
+    const next = computeProviderSnapshot(HOSTS.map((host) => statusOf(host.id)));
+    if (
+      store.snapshot &&
+      store.snapshot.readiness === next.readiness &&
+      store.snapshot.attentionLabel === next.attentionLabel
+    )
+      return store.snapshot;
     store.snapshot = Object.freeze(next);
     return store.snapshot;
   }
-  return { modelKey, modelsFresh, loadModels, useModels, harnessOn, harnessTitle, providerSnapshot };
+  return {
+    loadModels,
+    useModels,
+    harnessOn,
+    harnessTitle,
+    providerSnapshot,
+  };
 }
 
 // ---- hosts.json, through the hosts helper ---------------------------------
@@ -1176,32 +1352,57 @@ function makeModelStore(ui, store, parts) {
 // the helper. A read or save also replaces HOSTS, which New agent and every
 // runner call use, so a change is in use at once.
 
+/** A host list as the helper reports it. The helper is local, but its
+ * answer is checked as any input, so a broken file cannot break the page. */
+function parseFileHosts(list) {
+  if (!Array.isArray(list) || !list.length || list.length > HOSTS_MAX)
+    throw new HostConfigError(`The hosts helper returned no valid list (1-${HOSTS_MAX} hosts).`, {
+      field: "file",
+    });
+  return Object.freeze(
+    list.map((entry) => {
+      if (!entry || typeof entry.id !== "string" || !HOST_ID.test(entry.id))
+        throw new HostConfigError("The hosts helper returned an invalid host id.", {
+          field: "file",
+        });
+      return Object.freeze({
+        id: entry.id,
+        label: checkHostLabel(entry.label),
+        origin: checkHostOrigin(entry.origin),
+      });
+    }),
+  );
+}
+
+/** Compares host lists by value so unchanged reads keep the current reference and skip redraws. */
+const sameHosts = (a, b) =>
+  JSON.stringify(a.map(({ id, label, origin }) => [id, label, origin])) ===
+  JSON.stringify(b.map(({ id, label, origin }) => [id, label, origin]));
+
+/** The host id of each agent this device has placed. */
+function placedHostIds() {
+  const ids = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (typeof key === "string" && key.startsWith(STORE_PREFIX))
+      ids.push(localStorage.getItem(key));
+  }
+  return ids;
+}
+
 /**
  * hosts.json is the one host list, but the plugin cannot read files. This routes every read and save through the hosts helper and checks each answer, so a broken or hand-edited file shows its reason on the page instead of breaking it.
- * @param {Ui} ui
+ * @param {Ui} _ui
  * @param {PluginStore} store
  * @param {Parts} parts
  * @returns {HostsFileParts}
  */
-function makeHostsFile(ui, store, parts) {
+function makeHostsFile(_ui, store, parts) {
   const { emit, helper } = parts;
   const setHostsFile = (change) => {
     store.hostsFile = Object.freeze({ ...store.hostsFile, ...change });
     emit();
   };
-
-  /** A host list as the helper reports it. The helper is local, but its
-   * answer is checked as any input, so a broken file cannot break the page. */
-  function parseFileHosts(list) {
-    if (!Array.isArray(list) || !list.length || list.length > HOSTS_MAX)
-      throw new HostConfigError(`The hosts helper returned no valid list (1-${HOSTS_MAX} hosts).`, { field: "file" });
-    return Object.freeze(
-      list.map((entry) => {
-        if (!entry || typeof entry.id !== "string" || !HOST_ID.test(entry.id)) throw new HostConfigError("The hosts helper returned an invalid host id.", { field: "file" });
-        return Object.freeze({ id: entry.id, label: checkHostLabel(entry.label), origin: checkHostOrigin(entry.origin) });
-      }),
-    );
-  }
 
   /** The new list for every view; a list equal to the one in use keeps its
    * object, so views do not draw again for nothing. */
@@ -1214,7 +1415,10 @@ function makeHostsFile(ui, store, parts) {
    * to the form or button that asked, and the list stays as it was. */
   async function fileCall(request) {
     if (request.op === "save") {
-      if (store.hostsFile.busy) throw new HostConfigError("A save is still running. Try again in a moment.", { op: request.op });
+      if (store.hostsFile.busy)
+        throw new HostConfigError("A save is still running. Try again in a moment.", {
+          op: request.op,
+        });
       setHostsFile({ busy: true });
     }
     try {
@@ -1225,7 +1429,8 @@ function makeHostsFile(ui, store, parts) {
       setHostsFile({ state: "ready", error: undefined });
       return list;
     } catch (error) {
-      if (!store.disposed && request.op === "read") setHostsFile({ state: "error", error: errorText(error) });
+      if (!store.disposed && request.op === "read")
+        setHostsFile({ state: "error", error: errorText(error) });
       throw error;
     } finally {
       if (!store.disposed && request.op === "save") setHostsFile({ busy: false });
@@ -1234,30 +1439,28 @@ function makeHostsFile(ui, store, parts) {
 
   const readHostsFile = () => fileCall({ op: "read" }).catch(() => undefined);
 
-  const saveHostsFile = (list) => fileCall({ op: "save", hosts: list.map(({ id, label, origin }) => ({ id, label, origin })) });
-
-  const sameHosts = (a, b) => JSON.stringify(a.map(({ id, label, origin }) => [id, label, origin])) === JSON.stringify(b.map(({ id, label, origin }) => [id, label, origin]));
+  const saveHostsFile = (list) =>
+    fileCall({ op: "save", hosts: list.map(({ id, label, origin }) => ({ id, label, origin })) });
 
   /** The file's list, for a change: only after a good read, so a save can
    * never write over hosts the page did not see. */
   function fileHosts() {
-    if (store.hostsFile.state !== "ready") throw new HostConfigError("hosts.json is not loaded. Select Check again.", { field: "file" });
+    if (store.hostsFile.state !== "ready")
+      throw new HostConfigError("hosts.json is not loaded. Select Check again.", { field: "file" });
     return HOSTS;
-  }
-
-  /** The host id of each agent this device has placed. */
-  function placedHostIds() {
-    const ids = [];
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
-      if (typeof key === "string" && key.startsWith(STORE_PREFIX)) ids.push(localStorage.getItem(key));
-    }
-    return ids;
   }
 
   /** How many agents this device has placed on a host. */
   const agentsOn = (hostId) => placedHostIds().filter((id) => id === hostId).length;
-  return { setHostsFile, parseFileHosts, setHostList, fileCall, readHostsFile, saveHostsFile, sameHosts, fileHosts, placedHostIds, agentsOn };
+  return {
+    setHostsFile,
+    setHostList,
+    fileCall,
+    readHostsFile,
+    saveHostsFile,
+    fileHosts,
+    agentsOn,
+  };
 }
 
 // ---- Host setup -----------------------------------------------------------
@@ -1266,49 +1469,62 @@ function makeHostsFile(ui, store, parts) {
 // in the view, so a setup's progress is still shown when the owner opens the
 // page again: the helper runs the setup on, whatever page is open.
 
+/** One progress event as the page keeps it, or undefined for one it does
+ * not know. A link is kept only when it is a Tailscale SSH check. */
+function parseProgress(event) {
+  if (
+    !event ||
+    !SETUP_STEPS.some(([key]) => key === event.step) ||
+    !SETUP_STATES.includes(event.state)
+  )
+    return undefined;
+  const link =
+    typeof event.link === "string" && CHECK_LINK.test(event.link) ? event.link : undefined;
+  return [
+    event.step,
+    Object.freeze({ state: event.state, detail: text(event.detail, DETAIL_MAX), link }),
+  ];
+}
+
+/** What a finished setup reports: the host it added and the steps left
+ * to the owner, each with a command to copy. The host id lets the result
+ * open that host; an id that is not valid gives no button. */
+function parseSetupResult(reply) {
+  const manual = Array.isArray(reply.manual) ? reply.manual.slice(0, MANUAL_MAX) : [];
+  const hostId =
+    typeof reply.host?.id === "string" && HOST_ID.test(reply.host.id) ? reply.host.id : undefined;
+  return Object.freeze({
+    hostId,
+    label: text(reply.host?.label, LABEL_MAX) || "",
+    added: reply.added === true,
+    version: text(reply.version, TITLE_MAX),
+    manual: Object.freeze(
+      manual
+        .filter((entry) => entry && typeof entry.text === "string")
+        .map((entry) =>
+          Object.freeze({
+            text: text(entry.text, DETAIL_MAX),
+            command: text(entry.command, COMMAND_MAX),
+          }),
+        ),
+    ),
+  });
+}
+
 /**
  * A host setup takes minutes and the owner may leave the page. Its run lives in the store, not in a component, so the progress and the result are still there on return.
  * One run at a time, as the store allows.
- * @param {Ui} ui
+ * @param {Ui} _ui
  * @param {PluginStore} store
  * @param {Parts} parts
  * @returns {SetupParts}
  */
-function makeSetup(ui, store, parts) {
-  const { emit, placedHostIds, helper, refresh } = parts;
+function makeSetup(_ui, store, parts) {
+  const { emit, helper, refresh } = parts;
   const setSetupRun = (change) => {
     store.setupRun = Object.freeze({ ...store.setupRun, ...change });
     emit();
   };
-
-  /** One progress event as the page keeps it, or undefined for one it does
-   * not know. A link is kept only when it is a Tailscale SSH check. */
-  function parseProgress(event) {
-    if (!event || !SETUP_STEPS.some(([key]) => key === event.step) || !SETUP_STATES.includes(event.state)) return undefined;
-    const link = typeof event.link === "string" && CHECK_LINK.test(event.link) ? event.link : undefined;
-    return [event.step, Object.freeze({ state: event.state, detail: text(event.detail, DETAIL_MAX), link })];
-  }
-
-  /** What a finished setup reports: the host it added and the steps left
-   * to the owner, each with a command to copy. The host id lets the result
-   * open that host; an id that is not valid gives no button. */
-  function parseSetupResult(reply) {
-    const manual = Array.isArray(reply.manual) ? reply.manual.slice(0, MANUAL_MAX) : [];
-    const hostId = typeof reply.host?.id === "string" && HOST_ID.test(reply.host.id) ? reply.host.id : undefined;
-    return Object.freeze({
-      hostId,
-      label: text(reply.host?.label, LABEL_MAX) || "",
-      added: reply.added === true,
-      version: text(reply.version, TITLE_MAX),
-      manual: Object.freeze(
-        manual
-          .filter((entry) => entry && typeof entry.text === "string")
-          .map((entry) =>
-            Object.freeze({ text: text(entry.text, DETAIL_MAX), command: text(entry.command, COMMAND_MAX) }),
-          ),
-      ),
-    });
-  }
 
   /** The owner key and relay the runner's config gets, from the identity and
    * community open in Desktop; the page shows them for the owner to check. */
@@ -1319,7 +1535,8 @@ function makeSetup(ui, store, parts) {
     } catch {
       snapshot = undefined;
     }
-    const ownerPubkey = typeof snapshot?.viewer === "string" && HEX64.test(snapshot.viewer) ? snapshot.viewer : "";
+    const ownerPubkey =
+      typeof snapshot?.viewer === "string" && HEX64.test(snapshot.viewer) ? snapshot.viewer : "";
     let relay = "";
     try {
       const url = new URL(String(snapshot?.selected ?? ""));
@@ -1333,16 +1550,20 @@ function makeSetup(ui, store, parts) {
   /** Runs one setup through the helper. The password goes into the request
    * and nowhere else: not into the store, a log or an error. */
   async function startSetup({ address, sshUser, sudoPassword, ownerPubkey, relay, label }) {
-    if (store.setupRun.state === "running") throw new HostConfigError("A setup is already running.", { op: "setup" });
+    if (store.setupRun.state === "running")
+      throw new HostConfigError("A setup is already running.", { op: "setup" });
     setSetupRun({ ...SETUP_IDLE, state: "running", label });
     // Ids that agents on this device still name stay taken, so a new host
     // never takes over the agents of a host removed by hand.
-    const reservedIds = [...new Set(placedHostIds().filter((id) => typeof id === "string" && HOST_ID.test(id)))];
+    const reservedIds = [
+      ...new Set(placedHostIds().filter((id) => typeof id === "string" && HOST_ID.test(id))),
+    ];
     const setup = { address, sshUser, sudoPassword, ownerPubkey, relay, reservedIds, label };
     try {
       const reply = await helper.call({ op: "setup", setup }, SETUP_IDLE_MS, (event) => {
         const entry = parseProgress(event);
-        if (entry && !store.disposed) setSetupRun({ steps: Object.freeze({ ...store.setupRun.steps, [entry[0]]: entry[1] }) });
+        if (entry && !store.disposed)
+          setSetupRun({ steps: Object.freeze({ ...store.setupRun.steps, [entry[0]]: entry[1] }) });
       });
       if (store.disposed) return;
       const result = parseSetupResult(reply);
@@ -1361,7 +1582,12 @@ function makeSetup(ui, store, parts) {
   function resetSetup() {
     if (store.setupRun.state !== "running") setSetupRun(SETUP_IDLE);
   }
-  return { setSetupRun, parseProgress, parseSetupResult, communityDefaults, startSetup, resetSetup };
+  return {
+    setSetupRun,
+    communityDefaults,
+    startSetup,
+    resetSetup,
+  };
 }
 
 // ---- Harness sign-in -------------------------------------------------------
@@ -1373,12 +1599,12 @@ function makeSetup(ui, store, parts) {
 /**
  * A harness sign-in waits for the owner and may outlast the page. Its terminal lives in the store, not in a component, so the sign-in survives a page change.
  * One run at a time, as the store allows.
- * @param {Ui} ui
+ * @param {Ui} _ui
  * @param {PluginStore} store
  * @param {Parts} parts
  * @returns {SignInParts}
  */
-function makeSignIn(ui, store, parts) {
+function makeSignIn(_ui, store, parts) {
   const { emit, helper, refresh } = parts;
   const setSigninRun = (change) => {
     store.signinRun = Object.freeze({ ...store.signinRun, ...change });
@@ -1388,16 +1614,31 @@ function makeSignIn(ui, store, parts) {
   /** Runs one sign-in through the helper. The password goes into the
    * request and nowhere else: not into the store, a log or an error. */
   async function startSignIn({ hostId, harness, sshUser, sudoPassword, command }) {
-    if (store.signinRun.state === "running") throw new HostConfigError("A sign-in is already running.", { op: "signin" });
+    if (store.signinRun.state === "running")
+      throw new HostConfigError("A sign-in is already running.", { op: "signin" });
     setSigninRun({ ...SIGNIN_IDLE, state: "running", hostId, harness });
     try {
-      const reply = await helper.call({ op: "signin", signin: { host: hostId, sshUser, sudoPassword, command } }, SIGNIN_IDLE_MS, (event) => {
-        if (store.disposed || !event) return;
-        const link = typeof event.link === "string" && CHECK_LINK.test(event.link) ? event.link : store.signinRun.link;
-        setSigninRun({ output: text(event.output, SIGNIN_OUTPUT_MAX) ?? store.signinRun.output, link });
-      });
+      const reply = await helper.call(
+        { op: "signin", signin: { host: hostId, sshUser, sudoPassword, command } },
+        SIGNIN_IDLE_MS,
+        (event) => {
+          if (store.disposed || !event) return;
+          const link =
+            typeof event.link === "string" && CHECK_LINK.test(event.link)
+              ? event.link
+              : store.signinRun.link;
+          setSigninRun({
+            output: text(event.output, SIGNIN_OUTPUT_MAX) ?? store.signinRun.output,
+            link,
+          });
+        },
+      );
       if (store.disposed) return;
-      setSigninRun({ state: "done", code: Number.isInteger(reply.code) ? reply.code : undefined, output: text(reply.output, SIGNIN_OUTPUT_MAX) ?? store.signinRun.output });
+      setSigninRun({
+        state: "done",
+        code: Number.isInteger(reply.code) ? reply.code : undefined,
+        output: text(reply.output, SIGNIN_OUTPUT_MAX) ?? store.signinRun.output,
+      });
       // A sign-in changes what each harness reports.
       void refresh();
     } catch (error) {
@@ -1407,7 +1648,8 @@ function makeSignIn(ui, store, parts) {
 
   /** One typed line, or the cancel, to the running sign-in. Neither is
    * kept: a line may be a key. */
-  const sendSignInInput = (line) => helper.call({ op: "signin-input", text: line }, REQUEST_TIMEOUT_MS);
+  const sendSignInInput = (line) =>
+    helper.call({ op: "signin-input", text: line }, REQUEST_TIMEOUT_MS);
 
   const cancelSignIn = () => helper.call({ op: "signin-cancel" }, REQUEST_TIMEOUT_MS);
 
@@ -1420,16 +1662,20 @@ function makeSignIn(ui, store, parts) {
 
 /**
  * The rules for a change to hosts.json live here once, so no view re-implements them: an id never changes, because each agent's config names it, and a host that this device's agents still use is not removed.
- * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {Ui} _ui
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {HostEditsParts}
  */
-function makeHostEdits(ui, store, parts) {
+function makeHostEdits(_ui, _store, parts) {
   const { fileHosts, saveHostsFile, agentsOn } = parts;
   function fileHost(list, id) {
     const host = list.find((entry) => entry.id === id);
-    if (!host) throw new HostConfigError("This host is no longer in hosts.json. Select Check again.", { field: "id", id });
+    if (!host)
+      throw new HostConfigError("This host is no longer in hosts.json. Select Check again.", {
+        field: "id",
+        id,
+      });
     return host;
   }
 
@@ -1441,12 +1687,30 @@ function makeHostEdits(ui, store, parts) {
     const clean = { label: checkHostLabel(label), address: checkHostOrigin(origin) };
     const machine = new URL(clean.address).hostname;
     const same = list.find((entry) => new URL(entry.origin).hostname === machine);
-    if (!same && list.length >= HOSTS_MAX) throw new HostConfigError(`hosts.json can hold at most ${HOSTS_MAX} hosts.`, { field: "label" });
-    const named = list.find((entry) => entry !== same && entry.label.toLowerCase() === clean.label.toLowerCase());
-    if (named) throw new HostConfigError(`A host is already named ${named.label}.`, { field: "label" });
-    if (!HEX64.test(ownerPubkey.trim())) throw new HostConfigError("The owner key must be 64 lowercase hex characters.", { field: "ownerPubkey" });
-    if (!relay.trim().startsWith("wss://")) throw new HostConfigError(`The relay must be a wss:// address, for example ${RELAY_EXAMPLE}.`, { field: "relay" });
-    return { ...clean, sshUser: sshUser.trim(), ownerPubkey: ownerPubkey.trim(), relay: relay.trim() };
+    if (!same && list.length >= HOSTS_MAX)
+      throw new HostConfigError(`hosts.json can hold at most ${HOSTS_MAX} hosts.`, {
+        field: "label",
+      });
+    const named = list.find(
+      (entry) => entry !== same && entry.label.toLowerCase() === clean.label.toLowerCase(),
+    );
+    if (named)
+      throw new HostConfigError(`A host is already named ${named.label}.`, { field: "label" });
+    if (!HEX64.test(ownerPubkey.trim()))
+      throw new HostConfigError("The owner key must be 64 lowercase hex characters.", {
+        field: "ownerPubkey",
+      });
+    if (!relay.trim().startsWith("wss://"))
+      throw new HostConfigError(
+        `The relay must be a wss:// address, for example ${RELAY_EXAMPLE}.`,
+        { field: "relay" },
+      );
+    return {
+      ...clean,
+      sshUser: sshUser.trim(),
+      ownerPubkey: ownerPubkey.trim(),
+      relay: relay.trim(),
+    };
   }
 
   /** Keeps the id, which each agent's config names, so agents stay on the
@@ -1454,8 +1718,15 @@ function makeHostEdits(ui, store, parts) {
   async function updateHost(id, { label, origin }) {
     const list = fileHosts();
     fileHost(list, id);
-    const host = Object.freeze({ id, label: checkHostLabel(label), origin: checkHostOrigin(origin) });
-    checkUnique(host, list.filter((entry) => entry.id !== id));
+    const host = Object.freeze({
+      id,
+      label: checkHostLabel(label),
+      origin: checkHostOrigin(origin),
+    });
+    checkUnique(
+      host,
+      list.filter((entry) => entry.id !== id),
+    );
     await saveHostsFile(list.map((entry) => (entry.id === id ? host : entry)));
     return host;
   }
@@ -1466,9 +1737,17 @@ function makeHostEdits(ui, store, parts) {
   async function removeHost(id) {
     const list = fileHosts();
     const host = fileHost(list, id);
-    if (list.length === 1) throw new HostConfigError("hosts.json must keep at least one host. Add another host first.", { field: "id", id });
+    if (list.length === 1)
+      throw new HostConfigError("hosts.json must keep at least one host. Add another host first.", {
+        field: "id",
+        id,
+      });
     const count = agentsOn(id);
-    if (count) throw new HostConfigError(`${count} agent${count === 1 ? " runs" : "s run"} on ${host.label}. Delete them first.`, { field: "id", id });
+    if (count)
+      throw new HostConfigError(
+        `${count} agent${count === 1 ? " runs" : "s run"} on ${host.label}. Delete them first.`,
+        { field: "id", id },
+      );
     await saveHostsFile(list.filter((entry) => entry.id !== id));
   }
   return { fileHost, checkNewHost, updateHost, removeHost };
@@ -1484,15 +1763,24 @@ function makeHostEdits(ui, store, parts) {
 // Desktop's own agents. Keep them in step with those files.
 
 /**
- * Desktop's controls are not importable by a plugin. They are rebuilt from its markup in one place, so every view of this plugin looks like Desktop's own.
+ * Desktop's button and choice-row primitives rebuilt from its markup in one place, so menus, triggers and actions share identical styling without importing Desktop's design system.
  * @param {Ui} ui
- * @param {PluginStore} store
- * @param {Parts} parts
- * @returns {ControlsParts}
+ * @param {PluginStore} _store
+ * @param {Parts} _parts
+ * @returns {BaseControlsParts}
  */
-function makeControls(ui, store, parts) {
-  const { React, h } = ui;
-  function Button({ variant = "subtle", size = "md", shape = "capsule", type = "button", loading = false, disabled, children, ...props }) {
+function makeBaseControls(ui, _store, _parts) {
+  const { h } = ui;
+  function Button({
+    variant = "subtle",
+    size = "md",
+    shape = "capsule",
+    type = "button",
+    loading = false,
+    disabled,
+    children,
+    ...props
+  }) {
     const off = Boolean(disabled || loading);
     return h(
       "button",
@@ -1513,6 +1801,36 @@ function makeControls(ui, store, parts) {
     );
   }
 
+  function ChoiceRow({ label, description, leading }) {
+    return h(
+      "span",
+      { "data-buzz-ui": "", className: "buzz-choice-row" },
+      leading
+        ? h("span", { className: "buzz-choice-row-leading", "aria-hidden": "true" }, leading)
+        : null,
+      h(
+        "span",
+        { className: "buzz-choice-row-content" },
+        h("span", { className: "buzz-choice-row-label" }, label),
+        description ? " " : null,
+        description
+          ? h("span", { className: "buzz-choice-row-description text-body-sm" }, description)
+          : null,
+      ),
+    );
+  }
+  return { Button, ChoiceRow };
+}
+
+/**
+ * Desktop's form and row controls rebuilt from its markup in one place, so every view of this plugin looks like Desktop's own.
+ * @param {Ui} ui
+ * @param {PluginStore} _store
+ * @param {Parts} _parts
+ * @returns {ControlsParts}
+ */
+function makeControls(ui, _store, _parts) {
+  const { React, h } = ui;
   function PreferenceRow({ title, subtitle, trailing }) {
     const id = React.useId();
     return h(
@@ -1522,28 +1840,23 @@ function makeControls(ui, store, parts) {
         "div",
         { className: "buzz-preference-row-content" },
         h("div", { id: `${id}-title`, className: "buzz-preference-row-label" }, title),
-        subtitle ? h("span", { id: `${id}-subtitle`, className: "buzz-preference-row-description" }, subtitle) : null,
+        subtitle
+          ? h(
+              "span",
+              { id: `${id}-subtitle`, className: "buzz-preference-row-description" },
+              subtitle,
+            )
+          : null,
       ),
       trailing == null ? null : h("div", { className: "buzz-preference-row-trailing" }, trailing),
     );
   }
 
   function SettingsGroup({ children }) {
-    return h("div", { "data-buzz-ui": "", className: "buzz-settings-group", "data-layout": "rows" }, children);
-  }
-
-  function ChoiceRow({ label, description, leading }) {
     return h(
-      "span",
-      { "data-buzz-ui": "", className: "buzz-choice-row" },
-      leading ? h("span", { className: "buzz-choice-row-leading", "aria-hidden": "true" }, leading) : null,
-      h(
-        "span",
-        { className: "buzz-choice-row-content" },
-        h("span", { className: "buzz-choice-row-label" }, label),
-        description ? " " : null,
-        description ? h("span", { className: "buzz-choice-row-description text-body-sm" }, description) : null,
-      ),
+      "div",
+      { "data-buzz-ui": "", className: "buzz-settings-group", "data-layout": "rows" },
+      children,
     );
   }
 
@@ -1555,7 +1868,10 @@ function makeControls(ui, store, parts) {
       { "data-buzz-ui": "", className: "buzz-field" },
       h(
         nativeLabel ? "label" : "span",
-        { className: "buzz-field-label", ...(nativeLabel && controlId ? { htmlFor: controlId } : {}) },
+        {
+          className: "buzz-field-label",
+          ...(nativeLabel && controlId ? { htmlFor: controlId } : {}),
+        },
         label,
         optional ? " " : null,
         optional ? h("span", { className: "buzz-field-optional" }, LABELS.optional) : null,
@@ -1568,17 +1884,17 @@ function makeControls(ui, store, parts) {
   function Input(props) {
     return h("input", { ...props, "data-buzz-ui": "", "data-size": "md", className: "buzz-input" });
   }
-  return { Button, PreferenceRow, SettingsGroup, ChoiceRow, Field, Input };
+  return { PreferenceRow, SettingsGroup, Field, Input };
 }
 
 /**
  * New agent and Settings both edit an agent's instructions. One field keeps the two from drifting apart.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {InstructionsParts}
  */
-function makeInstructions(ui, store, parts) {
+function makeInstructions(ui, _store, parts) {
   const { React, h } = ui;
   const { Field } = parts;
   function AgentInstructions({ value, disabled, onChange, creation = false }) {
@@ -1605,14 +1921,64 @@ function makeInstructions(ui, store, parts) {
   return { AgentInstructions };
 }
 
+/** Picks top or bottom flip side and viewport bounds so popups stay visible inside narrow dialogs. */
+function computeFloatingPlace(anchor, node, align) {
+  const box = anchor.current?.getBoundingClientRect();
+  if (!box) return null;
+  const height = node.firstElementChild ? node.firstElementChild.scrollHeight : 0;
+  const below = window.innerHeight - box.bottom - POPUP_OFFSET_PX - POPUP_PADDING_PX;
+  const above = box.top - POPUP_OFFSET_PX - POPUP_PADDING_PX;
+  const side = height > below && above > below ? "top" : "bottom";
+  return {
+    side,
+    top: side === "bottom" ? box.bottom + POPUP_OFFSET_PX : undefined,
+    bottom: side === "top" ? window.innerHeight - box.top + POPUP_OFFSET_PX : undefined,
+    left: align === "end" ? undefined : box.left,
+    right: align === "end" ? window.innerWidth - box.right : undefined,
+    anchorWidth: box.width,
+    availableHeight: Math.max(0, side === "top" ? above : below),
+    availableWidth: Math.max(0, window.innerWidth - 2 * POPUP_PADDING_PX),
+  };
+}
+
+/** Keeps the positioner hidden before measurement, then maps coordinates to Desktop's CSS variables. */
+function floatingStyle(place) {
+  if (!place)
+    return {
+      position: "fixed",
+      visibility: "hidden",
+      margin: 0,
+      padding: 0,
+      border: 0,
+      background: "transparent",
+    };
+  const px = (value) => (value === undefined ? "auto" : `${value}px`);
+  return {
+    position: "fixed",
+    top: px(place.top),
+    bottom: px(place.bottom),
+    left: px(place.left),
+    right: px(place.right),
+    margin: 0,
+    padding: 0,
+    border: 0,
+    background: "transparent",
+    overflow: "visible",
+    "--anchor-width": `${place.anchorWidth}px`,
+    "--available-height": `${place.availableHeight}px`,
+    "--available-width": `${place.availableWidth}px`,
+    "--transform-origin": place.side === "top" ? "center bottom" : "center top",
+  };
+}
+
 /**
  * Every popup list needs the same anchoring beside its trigger, flipping and top-layer placement. One layer shared by Select and the harness menu keeps them identical and small.
  * @param {Ui} ui
- * @param {PluginStore} store
- * @param {Parts} parts
+ * @param {PluginStore} _store
+ * @param {Parts} _parts
  * @returns {FloatingParts}
  */
-function makeFloating(ui, store, parts) {
+function makeFloating(ui, _store, _parts) {
   const { React, h } = ui;
   /** Desktop's anchored popup (Base UI Positioner): fixed beside its trigger,
    * flipped above when there is more room there, and in the top layer when
@@ -1627,28 +1993,16 @@ function makeFloating(ui, store, parts) {
     const [starting, setStarting] = React.useState(true);
     React.useLayoutEffect(() => {
       const node = positioner.current;
-      if (typeof node.showPopover === "function" && !node.matches(":popover-open")) node.showPopover();
+      if (typeof node.showPopover === "function" && !node.matches(":popover-open"))
+        node.showPopover();
       const update = () => {
-        const box = anchor.current && anchor.current.getBoundingClientRect();
-        if (!box) return;
-        const height = node.firstElementChild ? node.firstElementChild.scrollHeight : 0;
-        const below = window.innerHeight - box.bottom - POPUP_OFFSET_PX - POPUP_PADDING_PX;
-        const above = box.top - POPUP_OFFSET_PX - POPUP_PADDING_PX;
-        const side = height > below && above > below ? "top" : "bottom";
-        setPlace({
-          side,
-          top: side === "bottom" ? box.bottom + POPUP_OFFSET_PX : undefined,
-          bottom: side === "top" ? window.innerHeight - box.top + POPUP_OFFSET_PX : undefined,
-          left: align === "end" ? undefined : box.left,
-          right: align === "end" ? window.innerWidth - box.right : undefined,
-          anchorWidth: box.width,
-          availableHeight: Math.max(0, side === "top" ? above : below),
-          availableWidth: Math.max(0, window.innerWidth - 2 * POPUP_PADDING_PX),
-        });
+        const next = computeFloatingPlace(anchor, node, align);
+        if (next) setPlace(next);
       };
       update();
       const outside = (event) => {
-        if (!node.contains(event.target) && !(anchor.current && anchor.current.contains(event.target))) dismiss.current();
+        if (!node.contains(event.target) && !anchor.current?.contains(event.target))
+          dismiss.current();
       };
       window.addEventListener("resize", update);
       window.addEventListener("scroll", update, true);
@@ -1657,7 +2011,8 @@ function makeFloating(ui, store, parts) {
         window.removeEventListener("resize", update);
         window.removeEventListener("scroll", update, true);
         document.removeEventListener("mousedown", outside, true);
-        if (typeof node.hidePopover === "function" && node.matches(":popover-open")) node.hidePopover();
+        if (typeof node.hidePopover === "function" && node.matches(":popover-open"))
+          node.hidePopover();
       };
     }, []);
     // Desktop's entry motion keys off data-starting-style for one frame.
@@ -1669,28 +2024,14 @@ function makeFloating(ui, store, parts) {
       const frame = window.requestAnimationFrame(() => setStarting(false));
       return () => window.cancelAnimationFrame(frame);
     }, []);
-    const px = (value) => (value === undefined ? "auto" : `${value}px`);
-    const style = place
-      ? {
-          position: "fixed",
-          top: px(place.top),
-          bottom: px(place.bottom),
-          left: px(place.left),
-          right: px(place.right),
-          margin: 0,
-          padding: 0,
-          border: 0,
-          background: "transparent",
-          overflow: "visible",
-          "--anchor-width": `${place.anchorWidth}px`,
-          "--available-height": `${place.availableHeight}px`,
-          "--available-width": `${place.availableWidth}px`,
-          "--transform-origin": place.side === "top" ? "center bottom" : "center top",
-        }
-      : { position: "fixed", visibility: "hidden", margin: 0, padding: 0, border: 0, background: "transparent" };
     return h(
       "div",
-      { ref: positioner, className: positionerClass, popover: "manual", style },
+      {
+        ref: positioner,
+        className: positionerClass,
+        popover: "manual",
+        style: floatingStyle(place),
+      },
       h(
         "div",
         {
@@ -1710,11 +2051,11 @@ function makeFloating(ui, store, parts) {
 /**
  * Select and the harness menu must open, move and close under the same keys as Desktop's lists. One hook keeps the two from diverging.
  * @param {Ui} ui
- * @param {PluginStore} store
- * @param {Parts} parts
+ * @param {PluginStore} _store
+ * @param {Parts} _parts
  * @returns {ListPopupParts}
  */
-function makeListPopup(ui, store, parts) {
+function makeListPopup(ui, _store, _parts) {
   const { React } = ui;
   /** Open state, highlight and keys of one Desktop list popup (Select or
    * Menu), as Base UI handles them: arrows, Home and End move, Enter and
@@ -1728,7 +2069,7 @@ function makeListPopup(ui, store, parts) {
     for (let index = 0; index < count; index += 1) if (!isDisabled(index)) enabled.push(index);
     const show = () => {
       if (disabled) return;
-      setActive(enabled.includes(selectedIndex) ? selectedIndex : enabled[0] ?? -1);
+      setActive(enabled.includes(selectedIndex) ? selectedIndex : (enabled[0] ?? -1));
       setOpen(true);
     };
     const close = (refocus) => {
@@ -1774,49 +2115,82 @@ function makeListPopup(ui, store, parts) {
       event.preventDefault();
       show();
     };
-    return { trigger, popup, open, active, setActive, show, close, choose, onPopupKeyDown, onTriggerKeyDown };
+    return {
+      trigger,
+      popup,
+      open,
+      active,
+      setActive,
+      show,
+      close,
+      choose,
+      onPopupKeyDown,
+      onTriggerKeyDown,
+    };
   }
   return { useListPopup };
 }
 
 /**
- * Select's trigger pieces, apart from Select so that its render function stays within the repository's complexity limit (LIZARD_MAX_CCN and LIZARD_MAX_LENGTH in scripts/check).
+ * Select's value label and leading mark, separated from the trigger shell so each piece of Select can change independently.
  * @param {Ui} ui
- * @param {PluginStore} store
- * @param {Parts} parts
- * @returns {SelectTriggerParts}
+ * @param {PluginStore} _store
+ * @param {Parts} _parts
+ * @returns {SelectValueParts}
  */
-function makeSelectTrigger(ui, store, parts) {
-  const { h, glyphs } = ui;
-  const { Button } = parts;
-  /** The trigger's value and its leading mark; apart from Select so the
-   * picker's body stays within the complexity budget. */
-  function selectValue({ base, selected, leading, valueLabel, valueSuffix, valueTitle, placeholder }) {
+function makeSelectValue(ui, _store, _parts) {
+  const { h } = ui;
+  /** The trigger's selected label, suffix and leading mark in Desktop's select markup. */
+  function selectValue({
+    base,
+    selected,
+    leading,
+    valueLabel,
+    valueSuffix,
+    valueTitle,
+    placeholder,
+  }) {
     const empty = !selected && valueLabel === undefined;
     const valueText = h(
       "span",
       {
         className: base === "inline" ? undefined : "buzz-select-value",
-        title: base === "compact" ? valueTitle ?? (selected && selected.label) : undefined,
+        title: base === "compact" ? (valueTitle ?? selected?.label) : undefined,
         "data-placeholder": empty ? "" : undefined,
       },
-      valueLabel ?? (selected ? selected.label : placeholder ?? ""),
+      valueLabel ?? (selected ? selected.label : (placeholder ?? "")),
     );
     return h(
       "span",
       { className: "buzz-select-value-content" },
-      leading ? h("span", { className: "buzz-select-leading", "aria-hidden": "true" }, leading) : null,
+      leading
+        ? h("span", { className: "buzz-select-leading", "aria-hidden": "true" }, leading)
+        : null,
       base === "field"
         ? valueText
         : h(
             "span",
             { className: "buzz-select-value-text" },
             valueText,
-            base === "compact" && valueSuffix ? h("span", { className: "buzz-select-value-suffix" }, valueSuffix) : null,
+            base === "compact" && valueSuffix
+              ? h("span", { className: "buzz-select-value-suffix" }, valueSuffix)
+              : null,
           ),
     );
   }
+  return { selectValue };
+}
 
+/**
+ * Select's trigger button, matching Desktop's field input or pill button while sharing combobox wiring across all variants.
+ * @param {Ui} ui
+ * @param {PluginStore} _store
+ * @param {Parts} parts
+ * @returns {SelectTriggerParts}
+ */
+function makeSelectTrigger(ui, _store, parts) {
+  const { h, glyphs } = ui;
+  const { Button } = parts;
   /** The trigger: a form-field button in a field, Desktop's Button
    * elsewhere, with the same combobox wiring in both. */
   function selectTrigger({ base, variant, label, id, list, disabled, valueContent }) {
@@ -1835,9 +2209,23 @@ function makeSelectTrigger(ui, store, parts) {
     return base === "field"
       ? h(
           "button",
-          { ...triggerProps, type: "button", "aria-labelledby": `${id}-label`, "data-buzz-ui": "", className: "buzz-input buzz-select-trigger" },
+          {
+            ...triggerProps,
+            type: "button",
+            "aria-labelledby": `${id}-label`,
+            "data-buzz-ui": "",
+            className: "buzz-input buzz-select-trigger",
+          },
           valueContent,
-          h("span", { "aria-hidden": "true" }, h(glyphs.caret, { size: FIELD_CHEVRON_SIZE, className: "buzz-dropdown-chevron", "aria-hidden": "true" })),
+          h(
+            "span",
+            { "aria-hidden": "true" },
+            h(glyphs.caret, {
+              size: FIELD_CHEVRON_SIZE,
+              className: "buzz-dropdown-chevron",
+              "aria-hidden": "true",
+            }),
+          ),
         )
       : h(
           Button,
@@ -1849,20 +2237,28 @@ function makeSelectTrigger(ui, store, parts) {
             size: base === "compact" ? "sm" : "md",
           },
           valueContent,
-          h("span", { "aria-hidden": "true" }, h(glyphs.caret, { size: CHEVRON_SIZE, className: "buzz-dropdown-chevron", "aria-hidden": "true" })),
+          h(
+            "span",
+            { "aria-hidden": "true" },
+            h(glyphs.caret, {
+              size: CHEVRON_SIZE,
+              className: "buzz-dropdown-chevron",
+              "aria-hidden": "true",
+            }),
+          ),
         );
   }
-  return { selectValue, selectTrigger };
+  return { selectTrigger };
 }
 
 /**
- * Select's open list and option rows, apart from Select for the same complexity limit as the trigger parts.
+ * Select's open list and option rows, separated from the trigger so popup markup evolves independently.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {SelectListParts}
  */
-function makeSelectList(ui, store, parts) {
+function makeSelectList(ui, _store, parts) {
   const { h, glyphs } = ui;
   const { Floating } = parts;
   /** One option row as Desktop draws it: mark, label, description and
@@ -1889,13 +2285,22 @@ function makeSelectList(ui, store, parts) {
       h(
         "span",
         { className: "buzz-select-option-main" },
-        option.leading ? h("span", { className: "buzz-select-leading", "aria-hidden": "true" }, option.leading) : null,
+        option.leading
+          ? h("span", { className: "buzz-select-leading", "aria-hidden": "true" }, option.leading)
+          : null,
         h(
           "span",
           { className: "buzz-select-option-content" },
           h("div", null, option.label),
           option.description
-            ? h("span", { id: `${id}-description-${index}`, className: "buzz-select-option-description text-body-sm text-subtle" }, option.description)
+            ? h(
+                "span",
+                {
+                  id: `${id}-description-${index}`,
+                  className: "buzz-select-option-description text-body-sm text-subtle",
+                },
+                option.description,
+              )
             : null,
         ),
       ),
@@ -1903,7 +2308,11 @@ function makeSelectList(ui, store, parts) {
       base === "compact" || chosen
         ? h(
             "span",
-            { className: "buzz-select-indicator", "data-selected": chosen ? "" : undefined, "aria-hidden": "true" },
+            {
+              className: "buzz-select-indicator",
+              "data-selected": chosen ? "" : undefined,
+              "aria-hidden": "true",
+            },
             h(glyphs.check, { size: CHECK_SIZE, "aria-hidden": "true" }),
           )
         : null,
@@ -1939,7 +2348,9 @@ function makeSelectList(ui, store, parts) {
             h(
               "div",
               { role: "group" },
-              options.map((option, index) => selectOption({ option, index, id, value, base, list })),
+              options.map((option, index) =>
+                selectOption({ option, index, id, value, base, list }),
+              ),
             ),
           ),
         )
@@ -1951,17 +2362,31 @@ function makeSelectList(ui, store, parts) {
 /**
  * The picker that most forms use, in the three shapes Desktop gives it. It is assembled here from the trigger and list parts so that callers see one component with Desktop's props.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {SelectParts}
  */
-function makeSelect(ui, store, parts) {
+function makeSelect(ui, _store, parts) {
   const { React, h } = ui;
   const { useListPopup, selectValue, selectTrigger, selectPopup, PreferenceRow, Field } = parts;
   /** Desktop's Select. Options are `{value, label, description?, leading?,
    * disabled?}`. `preference` is the settings row, `compact` the dialog
    * pill, `field` the labelled form field. */
-  function Select({ label, value, options, onValueChange, variant = "compact", disabled = false, description, valueLabel, valueSuffix, valueTitle, leading, align = "start", placeholder }) {
+  function Select({
+    label,
+    value,
+    options,
+    onValueChange,
+    variant = "compact",
+    disabled = false,
+    description,
+    valueLabel,
+    valueSuffix,
+    valueTitle,
+    leading,
+    align = "start",
+    placeholder,
+  }) {
     const base = variant === "preference" ? "compact" : variant;
     const id = React.useId();
     const selectedIndex = options.findIndex((option) => option.value === value);
@@ -1975,19 +2400,43 @@ function makeSelect(ui, store, parts) {
         if (options[index].value !== value) onValueChange(options[index].value);
       },
     });
-    const valueContent = selectValue({ base, selected, leading, valueLabel, valueSuffix, valueTitle, placeholder });
+    const valueContent = selectValue({
+      base,
+      selected,
+      leading,
+      valueLabel,
+      valueSuffix,
+      valueTitle,
+      placeholder,
+    });
     const trigger = selectTrigger({ base, variant, label, id, list, disabled, valueContent });
     const popup = selectPopup({ base, label, id, list, align, options, value });
     const control = h(
       "div",
-      { "data-buzz-ui": "", className: "buzz-select text-body", "data-variant": base, "data-appearance": "outlined" },
-      base === "field" ? null : h("div", { id: `${id}-label`, className: base === "compact" ? "sr-only" : "text-primary" }, label),
+      {
+        "data-buzz-ui": "",
+        className: "buzz-select text-body",
+        "data-variant": base,
+        "data-appearance": "outlined",
+      },
+      base === "field"
+        ? null
+        : h(
+            "div",
+            { id: `${id}-label`, className: base === "compact" ? "sr-only" : "text-primary" },
+            label,
+          ),
       trigger,
       popup,
     );
-    if (variant === "preference") return h(PreferenceRow, { title: label, subtitle: description, trailing: control });
+    if (variant === "preference")
+      return h(PreferenceRow, { title: label, subtitle: description, trailing: control });
     if (variant === "field")
-      return h(Field, { label: h("span", { id: `${id}-label` }, label), description, nativeLabel: false }, control);
+      return h(
+        Field,
+        { label: h("span", { id: `${id}-label` }, label), description, nativeLabel: false },
+        control,
+      );
     return control;
   }
   return { Select };
@@ -2006,12 +2455,17 @@ function makeHarnessSelect(ui, store, parts) {
   const { h, icons } = ui;
   const { useStore, Select } = parts;
   /** A harness mark for the host's harness id, at Desktop's size. */
-  const harnessIcon = (id) => (icons[id] ? h(icons[id], { size: HARNESS_ICON_SIZE, "aria-hidden": "true" }) : null);
+  const harnessIcon = (id) =>
+    icons[id] ? h(icons[id], { size: HARNESS_ICON_SIZE, "aria-hidden": "true" }) : null;
 
   /** Desktop's model-vendor logo for a model, when this plugin has the mark. */
   function modelLogo(text) {
     const name = text.toLowerCase();
-    const Icon = CLAUDE_MODEL.test(name) ? icons["claude-code"] : OPENAI_MODEL.test(name) ? icons.codex : null;
+    const Icon = CLAUDE_MODEL.test(name)
+      ? icons["claude-code"]
+      : OPENAI_MODEL.test(name)
+        ? icons.codex
+        : null;
     return Icon ? h(Icon, { size: HARNESS_ICON_SIZE, "aria-hidden": "true" }) : null;
   }
 
@@ -2028,7 +2482,12 @@ function makeHarnessSelect(ui, store, parts) {
       description: item.ready ? undefined : item.message || "Not ready on this host",
     }));
     if (!list.some((item) => item.id === value))
-      items.unshift({ id: value, title: value, disabled: false, description: status.state === "ok" ? "Not offered on this host" : undefined });
+      items.unshift({
+        id: value,
+        title: value,
+        disabled: false,
+        description: status.state === "ok" ? "Not offered on this host" : undefined,
+      });
     return items;
   }
 
@@ -2037,7 +2496,11 @@ function makeHarnessSelect(ui, store, parts) {
   function HarnessSelect({ hostId, value, disabled, onChange }) {
     const status = useStore(() => store.hosts[hostId]);
     if (status.state === "checking")
-      return h("span", { role: "status", className: "text-body-sm text-secondary" }, "Checking harnesses…");
+      return h(
+        "span",
+        { role: "status", className: "text-body-sm text-secondary" },
+        "Checking harnesses…",
+      );
     const items = harnessChoices(hostId, value);
     // Kept out of the object literal below. lizard 1.24.3 reads a `<`
     // comparison in an object property value as a generic type opener and
@@ -2052,11 +2515,66 @@ function makeHarnessSelect(ui, store, parts) {
       value,
       leading: harnessIcon(value),
       disabled: disabled || nothingToPick,
-      options: items.map((item) => ({ value: item.id, label: item.title, description: item.description, disabled: item.disabled, leading: harnessIcon(item.id) })),
+      options: items.map((item) => ({
+        value: item.id,
+        label: item.title,
+        description: item.description,
+        disabled: item.disabled,
+        leading: harnessIcon(item.id),
+      })),
       onValueChange: onChange,
     });
   }
   return { harnessIcon, modelLogo, harnessChoices, HarnessSelect };
+}
+
+/**
+ * Radio item list for the Settings harness menu, reading ChoiceRow and harness icons directly from shared parts.
+ * @param {Ui} ui
+ * @param {PluginStore} _store
+ * @param {Parts} parts
+ * @returns {HarnessMenuItemsParts}
+ */
+function makeHarnessMenuItems(ui, _store, parts) {
+  const { h } = ui;
+  const { ChoiceRow, harnessIcon } = parts;
+  /** Menuitemradio group matching Desktop's harness dropdown rows. */
+  function HarnessMenuItems({ id, items, value, list }) {
+    return h(
+      "div",
+      { role: "group" },
+      items.map((item, index) =>
+        h(
+          "div",
+          {
+            key: item.id,
+            id: `${id}-item-${index}`,
+            role: "menuitemradio",
+            tabIndex: -1,
+            "aria-checked": item.id === value,
+            "aria-disabled": item.disabled || undefined,
+            className: "buzz-menu-item",
+            "data-selection": "highlight",
+            "data-checked": item.id === value ? "" : undefined,
+            "data-highlighted": index === list.active ? "" : undefined,
+            "data-disabled": item.disabled ? "" : undefined,
+            onMouseEnter: () => !item.disabled && list.setActive(index),
+            onClick: () => list.choose(index),
+          },
+          h(
+            "span",
+            { className: "buzz-menu-choice-label" },
+            h(ChoiceRow, {
+              label: item.title,
+              description: item.description,
+              leading: harnessIcon(item.id),
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+  return { HarnessMenuItems };
 }
 
 /**
@@ -2068,14 +2586,23 @@ function makeHarnessSelect(ui, store, parts) {
  */
 function makeHarnessMenu(ui, store, parts) {
   const { React, h, glyphs } = ui;
-  const { useStore, harnessChoices, useListPopup, harnessIcon, Button, Floating, ChoiceRow, PreferenceRow } = parts;
+  const {
+    useStore,
+    harnessChoices,
+    useListPopup,
+    harnessIcon,
+    Button,
+    Floating,
+    HarnessMenuItems,
+    PreferenceRow,
+  } = parts;
   /** The profile Settings harness row: Desktop's harness menu (the
    * AgentSettingsHost TypeField pill), listing the host's harnesses. */
   function HarnessMenu({ hostId, value, disabled, onChange }) {
     const status = useStore(() => store.hosts[hostId]);
     const items = harnessChoices(hostId, value);
     const selectedIndex = items.findIndex((item) => item.id === value);
-    const title = (items[selectedIndex] && items[selectedIndex].title) || value;
+    const title = items[selectedIndex]?.title || value;
     const id = React.useId();
     const list = useListPopup({
       count: items.length,
@@ -2086,7 +2613,12 @@ function makeHarnessMenu(ui, store, parts) {
         if (items[index].id !== value) onChange(items[index].id);
       },
     });
-    const current = h("span", { className: "flex min-w-0 items-center gap-2" }, harnessIcon(value), title);
+    const current = h(
+      "span",
+      { className: "flex min-w-0 items-center gap-2" },
+      harnessIcon(value),
+      title,
+    );
     const menu =
       status.state === "ok" && items.length > 1
         ? h(
@@ -2124,38 +2656,15 @@ function makeHarnessMenu(ui, store, parts) {
                       id: `${id}-menu`,
                       role: "menu",
                       tabIndex: -1,
-                      "aria-activedescendant": list.active >= 0 ? `${id}-item-${list.active}` : undefined,
+                      "aria-activedescendant":
+                        list.active >= 0 ? `${id}-item-${list.active}` : undefined,
                       "data-buzz-ui": "",
                       "data-size": "default",
                       className: "buzz-menu-popup text-body-sm",
                       onKeyDown: list.onPopupKeyDown,
                     },
                   },
-                  h(
-                    "div",
-                    { role: "group" },
-                    items.map((item, index) =>
-                      h(
-                        "div",
-                        {
-                          key: item.id,
-                          id: `${id}-item-${index}`,
-                          role: "menuitemradio",
-                          tabIndex: -1,
-                          "aria-checked": item.id === value,
-                          "aria-disabled": item.disabled || undefined,
-                          className: "buzz-menu-item",
-                          "data-selection": "highlight",
-                          "data-checked": item.id === value ? "" : undefined,
-                          "data-highlighted": index === list.active ? "" : undefined,
-                          "data-disabled": item.disabled ? "" : undefined,
-                          onMouseEnter: () => !item.disabled && list.setActive(index),
-                          onClick: () => list.choose(index),
-                        },
-                        h("span", { className: "buzz-menu-choice-label" }, h(ChoiceRow, { label: item.title, description: item.description, leading: harnessIcon(item.id) })),
-                      ),
-                    ),
-                  ),
+                  h(HarnessMenuItems, { id, items, value, list }),
                 )
               : null,
           )
@@ -2168,11 +2677,11 @@ function makeHarnessMenu(ui, store, parts) {
 /**
  * Models belong to one host and one harness, and Desktop adds a custom model id. New agent and Settings both need this picker, so it is shared.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {ModelSelectParts}
  */
-function makeModelSelect(ui, store, parts) {
+function makeModelSelect(ui, _store, parts) {
   const { React, h } = ui;
   const { useModels, modelLogo, Select, Field, Input, Button } = parts;
   /** Desktop's ModelPicker (list form): the host's default first, marked
@@ -2192,7 +2701,11 @@ function makeModelSelect(ui, store, parts) {
       value: selected.id,
       valueLabel: loading ? LABELS.loadingModels : selected.label,
       valueSuffix: !loading && inherited ? LABELS.defaultSuffix : undefined,
-      valueTitle: loading ? LABELS.loadingModels : inherited ? `${selected.label}${LABELS.defaultSuffix}` : selected.label,
+      valueTitle: loading
+        ? LABELS.loadingModels
+        : inherited
+          ? `${selected.label}${LABELS.defaultSuffix}`
+          : selected.label,
       leading: modelLogo(`${selected.id} ${selected.label}`),
       disabled: disabled || loading,
       options: choices.map((model, index) => ({
@@ -2203,14 +2716,20 @@ function makeModelSelect(ui, store, parts) {
         leading: anyLogo ? logos[index] || h(React.Fragment) : undefined,
       })),
       onValueChange: (next) => {
-        if (next === CUSTOM_MODEL) setCustom(known.some((model) => model.id === value) || !value ? "" : value);
+        if (next === CUSTOM_MODEL)
+          setCustom(known.some((model) => model.id === value) || !value ? "" : value);
         else onChange(next);
       },
     });
     if (custom === null) return select;
     // Desktop asks for a custom id in a small dialog; a plugin has no dialog
     // of Desktop's, so the same field opens under the row instead.
-    return h(React.Fragment, null, select, ...customModelField({ custom, setCustom, inputId, onChange }));
+    return h(
+      React.Fragment,
+      null,
+      select,
+      ...customModelField({ custom, setCustom, inputId, onChange }),
+    );
   }
 
   /** The custom model id field and its buttons under ModelSelect's row; a
@@ -2246,11 +2765,26 @@ function makeModelSelect(ui, store, parts) {
         "div",
         { className: "flex items-center gap-2" },
         h(Button, { onClick: () => setCustom(null) }, LABELS.cancel),
-        h(Button, { variant: "prominent", disabled: !custom.trim(), onClick: use }, LABELS.useModel),
+        h(
+          Button,
+          { variant: "prominent", disabled: !custom.trim(), onClick: use },
+          LABELS.useModel,
+        ),
       ),
     ];
   }
   return { ModelSelect, customModelField };
+}
+
+/** Drops duplicate effort ids across models while preserving host order for the fallback picker list. */
+const dedupe = (efforts) =>
+  efforts.filter((level, index) => efforts.findIndex((item) => item.id === level.id) === index);
+
+/** The levels of the model a run uses; with no model match, any level some
+ * listed model has. */
+function effortsFor(list, model) {
+  const used = list.models.find((item) => item.id === (model || list.current));
+  return used ? used.efforts : dedupe(list.models.flatMap((item) => item.efforts));
 }
 
 /**
@@ -2262,15 +2796,7 @@ function makeModelSelect(ui, store, parts) {
  */
 function makeEffort(ui, store, parts) {
   const { h, icons } = ui;
-  const { useModels, Select, modelKey, harnessOn } = parts;
-  const dedupe = (efforts) => efforts.filter((level, index) => efforts.findIndex((item) => item.id === level.id) === index);
-
-  /** The levels of the model a run uses; with no model match, any level some
-   * listed model has. */
-  function effortsFor(list, model) {
-    const used = list.models.find((item) => item.id === (model || list.current));
-    return used ? used.efforts : dedupe(list.models.flatMap((item) => item.efforts));
-  }
+  const { useModels, Select, harnessOn } = parts;
 
   /** Desktop's Thinking row: Automatic (the default), then the levels of the
    * model the run uses; a saved level that model does not list is kept,
@@ -2281,7 +2807,13 @@ function makeEffort(ui, store, parts) {
     const options = [
       { value: "", label: `${LABELS.automatic}${LABELS.defaultSuffix}` },
       ...(value && !efforts.some((level) => level.id === value)
-        ? [{ value, label: list.state === "ok" && list.models.length ? `${value}${LABELS.unavailable}` : value }]
+        ? [
+            {
+              value,
+              label:
+                list.state === "ok" && list.models.length ? `${value}${LABELS.unavailable}` : value,
+            },
+          ]
         : []),
       ...efforts.map((level) => ({ value: level.id, label: level.label })),
     ];
@@ -2313,7 +2845,11 @@ function makeEffort(ui, store, parts) {
     if (patch.host !== undefined && patch.host !== config.host)
       return cleanConfig({ ...config, host: patch.host, model: "", effort: "" });
     if (patch.model !== undefined)
-      return cleanConfig({ ...config, model: patch.model, effort: keptEffort(config.host, config.harness, patch.model, config.effort) });
+      return cleanConfig({
+        ...config,
+        model: patch.model,
+        effort: keptEffort(config.host, config.harness, patch.model, config.effort),
+      });
     return cleanConfig({ ...config, ...patch });
   }
 
@@ -2329,7 +2865,12 @@ function makeEffort(ui, store, parts) {
 
   /** "Where it runs", shown apart from the harness: the type and the host. */
   function runsOn(host) {
-    return h("span", { className: "flex min-w-0 items-center gap-2" }, h(icons.host, { size: HARNESS_ICON_SIZE, "aria-hidden": "true" }), `${TYPE_TITLE} · ${host.label}`);
+    return h(
+      "span",
+      { className: "flex min-w-0 items-center gap-2" },
+      h(icons.host, { size: HARNESS_ICON_SIZE, "aria-hidden": "true" }),
+      `${TYPE_TITLE} · ${host.label}`,
+    );
   }
 
   /** A harness's readiness on one host, in the owner's words. */
@@ -2342,7 +2883,14 @@ function makeEffort(ui, store, parts) {
     if (entry.ready) return ["Ready", entry.version, entry.account].filter(Boolean).join(" · ");
     return entry.message || "Not ready.";
   }
-  return { dedupe, effortsFor, EffortSelect, keptEffort, pick, harnessProblem, runsOn, readinessLine };
+  return {
+    EffortSelect,
+    keptEffort,
+    pick,
+    harnessProblem,
+    runsOn,
+    readinessLine,
+  };
 }
 
 // ---- The hosted agent type ------------------------------------------------
@@ -2356,7 +2904,19 @@ function makeEffort(ui, store, parts) {
  */
 function makeCreate(ui, store, parts) {
   const { React, h } = ui;
-  const { useStore, pick, harnessProblem, harnessOn, useModels, HarnessSelect, ModelSelect, Button, loadModels, Select, AgentInstructions } = parts;
+  const {
+    useStore,
+    pick,
+    harnessProblem,
+    harnessOn,
+    useModels,
+    HarnessSelect,
+    ModelSelect,
+    Button,
+    loadModels,
+    Select,
+    AgentInstructions,
+  } = parts;
   /** New agent dialog, Model row: the harness pill and the model pill, laid
    * out as Desktop's CreateModelChoices. Desktop's own Harness row above
    * shows the type ("Tailscale host (hosted)"), which is where it runs.
@@ -2376,7 +2936,12 @@ function makeCreate(ui, store, parts) {
       h(
         "div",
         { className: "flex max-w-full flex-wrap items-center justify-end gap-2" },
-        h(HarnessSelect, { hostId: config.host, value: config.harness, disabled: props.disabled, onChange: (harness) => set({ harness }) }),
+        h(HarnessSelect, {
+          hostId: config.host,
+          value: config.harness,
+          disabled: props.disabled,
+          onChange: (harness) => set({ harness }),
+        }),
         ready
           ? h(ModelSelect, {
               key: config.harness,
@@ -2388,14 +2953,28 @@ function makeCreate(ui, store, parts) {
               onChange: (model) => set({ model }),
             })
           : null,
-        failed ? h(Button, { size: "sm", disabled: props.disabled, onClick: () => loadModels(config.host, config.harness, true) }, LABELS.tryAgain) : null,
+        failed
+          ? h(
+              Button,
+              {
+                size: "sm",
+                disabled: props.disabled,
+                onClick: () => loadModels(config.host, config.harness, true),
+              },
+              LABELS.tryAgain,
+            )
+          : null,
       ),
       problem || failed
         ? h(
             "div",
             { className: "grid gap-1", style: MESSAGE_BLOCK_STYLE },
-            problem ? h("span", { role: "alert", className: "text-body-sm text-danger" }, problem) : null,
-            failed ? h("span", { role: "alert", className: "text-body-sm text-danger" }, list.error) : null,
+            problem
+              ? h("span", { role: "alert", className: "text-body-sm text-danger" }, problem)
+              : null,
+            failed
+              ? h("span", { role: "alert", className: "text-body-sm text-danger" }, list.error)
+              : null,
           )
         : null,
     );
@@ -2410,7 +2989,12 @@ function makeCreate(ui, store, parts) {
     const file = useStore(() => store.hostsFile);
     const config = cleanConfig(props.config);
     const set = (patch) => props.onChange(pick(config, patch));
-    if (!list.length) return h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, file.error || LABELS.noHosts);
+    if (!list.length)
+      return h(
+        "p",
+        { role: "alert", className: "m-0 text-body-sm text-danger" },
+        file.error || LABELS.noHosts,
+      );
     const host = hostById(config.host);
     return h(
       "div",
@@ -2423,8 +3007,17 @@ function makeCreate(ui, store, parts) {
         options: list.map((entry) => ({ value: entry.id, label: entry.label })),
         onValueChange: (id) => set({ host: id }),
       }),
-      h("p", { className: "m-0 text-body-sm text-secondary" }, `Runs on ${host.label}. The host keeps its key and runs it, whether or not this app is open.`),
-      h(AgentInstructions, { creation: true, value: config.instructions, disabled: props.disabled, onChange: (instructions) => set({ instructions }) }),
+      h(
+        "p",
+        { className: "m-0 text-body-sm text-secondary" },
+        `Runs on ${host.label}. The host keeps its key and runs it, whether or not this app is open.`,
+      ),
+      h(AgentInstructions, {
+        creation: true,
+        value: config.instructions,
+        disabled: props.disabled,
+        onChange: (instructions) => set({ instructions }),
+      }),
     );
   }
   return { CreateModel, Create };
@@ -2433,13 +3026,23 @@ function makeCreate(ui, store, parts) {
 /**
  * The load hook, identity group and save button of Settings, apart from Settings so that its form stays within the repository's complexity limit.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {SettingsPartsParts}
  */
-function makeSettingsParts(ui, store, parts) {
+function makeSettingsParts(ui, _store, parts) {
   const { React, h } = ui;
-  const { locate, call, SettingsGroup, PreferenceRow, runsOn, HarnessMenu, ModelSelect, EffortSelect, Button } = parts;
+  const {
+    locate,
+    call,
+    SettingsGroup,
+    PreferenceRow,
+    runsOn,
+    HarnessMenu,
+    ModelSelect,
+    EffortSelect,
+    Button,
+  } = parts;
   /** Loads the agent's config from the host that holds it; a hook of its
    * own so Settings stays within the complexity budget. The `live` flag
    * drops an answer that comes after the tab closed. */
@@ -2452,8 +3055,8 @@ function makeSettingsParts(ui, store, parts) {
           if (!host) throw new RunnerError("No host knows this agent.", { op: "settings" });
           const record = await call(host, "GET", `/agents/${pubkey}`);
           if (!live) return;
-          const loaded = cleanConfig({ ...(record && record.config), host: host.id });
-          setState({ status: "ready", host, workspace: text(record && record.workspace, TEXT_MAX) || "" });
+          const loaded = cleanConfig({ ...record?.config, host: host.id });
+          setState({ status: "ready", host, workspace: text(record?.workspace, TEXT_MAX) || "" });
           setDraft(loaded);
           setSaved(loaded);
         } catch (error) {
@@ -2473,12 +3076,29 @@ function makeSettingsParts(ui, store, parts) {
       SettingsGroup,
       null,
       h(PreferenceRow, { title: LABELS.runsOn, trailing: runsOn(state.host) }),
-      h(HarnessMenu, { hostId: state.host.id, value: draft.harness, disabled: Boolean(state.saving), onChange: (harness) => set({ harness }) }),
+      h(HarnessMenu, {
+        hostId: state.host.id,
+        value: draft.harness,
+        disabled: Boolean(state.saving),
+        onChange: (harness) => set({ harness }),
+      }),
       ready
-        ? h(ModelSelect, { key: draft.harness, hostId: state.host.id, harness: draft.harness, value: draft.model || "", onChange: (model) => set({ model }) })
+        ? h(ModelSelect, {
+            key: draft.harness,
+            hostId: state.host.id,
+            harness: draft.harness,
+            value: draft.model || "",
+            onChange: (model) => set({ model }),
+          })
         : null,
       ready
-        ? h(EffortSelect, { hostId: state.host.id, harness: draft.harness, model: draft.model, value: draft.effort || "", onChange: (effort) => set({ effort }) })
+        ? h(EffortSelect, {
+            hostId: state.host.id,
+            harness: draft.harness,
+            model: draft.model,
+            value: draft.effort || "",
+            onChange: (effort) => set({ effort }),
+          })
         : null,
     );
   }
@@ -2487,9 +3107,92 @@ function makeSettingsParts(ui, store, parts) {
    * helper so Settings stays within the complexity budget. */
   function saveButton({ form, dirty, saving }) {
     if (!dirty && !saving) return null;
-    return h("div", null, h(Button, { type: "submit", form, variant: "prominent", loading: Boolean(saving), disabled: !dirty }, saving ? LABELS.saving : LABELS.save));
+    return h(
+      "div",
+      null,
+      h(
+        Button,
+        { type: "submit", form, variant: "prominent", loading: Boolean(saving), disabled: !dirty },
+        saving ? LABELS.saving : LABELS.save,
+      ),
+    );
   }
   return { useSettingsLoad, settingsIdentity, saveButton };
+}
+
+/** Renders the runtime workspace and session scope fields for the Settings tab. */
+function renderSettingsRuntime({ h, Field, Input, Select, workspaceId, workspace, scope, set }) {
+  return [
+    h(
+      Field,
+      {
+        label: LABELS.workspace,
+        controlId: workspaceId,
+        description: "The folder the agent works in on the host. The host sets it.",
+      },
+      h(Input, { id: workspaceId, value: workspace, readOnly: true }),
+    ),
+    h(Select, {
+      label: LABELS.sessions,
+      variant: "preference",
+      value: scope,
+      options: SCOPE_OPTIONS,
+      onValueChange: (nextScope) => set({ scope: nextScope }),
+    }),
+  ];
+}
+
+/** Renders the Settings form body once the agent config has loaded. */
+function renderSettingsForm(props) {
+  const {
+    h,
+    AgentInstructions,
+    saveButton,
+    form,
+    state,
+    draft,
+    identity,
+    runtime,
+    problem,
+    identityGroup,
+    runtimeFields,
+    dirty,
+    settingsContent,
+    set,
+    save,
+  } = props;
+  return h(
+    "form",
+    {
+      id: form,
+      className: "grid gap-4 [container-type:inline-size]",
+      onSubmit: (event) => {
+        event.preventDefault();
+        void save();
+      },
+    },
+    state.error
+      ? h("p", { role: "alert", tabIndex: -1, className: "buzz-field-error" }, state.error)
+      : null,
+    identityGroup,
+    identity && problem
+      ? h("p", { role: "alert", className: "m-0 mt-1 text-body-sm text-danger" }, problem)
+      : null,
+    identity
+      ? h(AgentInstructions, {
+          value: draft.instructions,
+          disabled: false,
+          onChange: (instructions) => set({ instructions }),
+        })
+      : null,
+    ...runtimeFields,
+    // Desktop shows Save only while there is something to save.
+    saveButton({ form, dirty, saving: state.saving }),
+    state.notice
+      ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, state.notice)
+      : null,
+    runtime ? settingsContent || null : null,
+  );
 }
 
 /**
@@ -2501,7 +3204,21 @@ function makeSettingsParts(ui, store, parts) {
  */
 function makeSettings(ui, store, parts) {
   const { React, h } = ui;
-  const { useStore, useSettingsLoad, call, harnessTitle, harnessProblem, harnessOn, pick, settingsIdentity, AgentInstructions, Field, Input, Select, saveButton } = parts;
+  const {
+    useStore,
+    useSettingsLoad,
+    call,
+    harnessTitle,
+    harnessProblem,
+    harnessOn,
+    pick,
+    settingsIdentity,
+    AgentInstructions,
+    Field,
+    Input,
+    Select,
+    saveButton,
+  } = parts;
   /** Settings tab, split as Desktop's. Identity: where it runs, harness,
    * model, thinking and instructions. Runtime: workspace and sessions. It
    * saves to the runner, which restarts the agent on a new harness. */
@@ -2515,8 +3232,14 @@ function makeSettings(ui, store, parts) {
     useStore(() => store.hosts);
     useSettingsLoad(agent.pubkey, { setState, setDraft, setSaved });
 
-    if (state.status === "loading") return h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, "Loading from host…");
-    if (state.status === "error") return h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, state.message);
+    if (state.status === "loading")
+      return h(
+        "p",
+        { role: "status", className: "m-0 text-body-sm text-secondary" },
+        "Loading from host…",
+      );
+    if (state.status === "error")
+      return h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, state.message);
 
     const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
     const save = async () => {
@@ -2526,7 +3249,9 @@ function makeSettings(ui, store, parts) {
         await call(state.host, "PUT", `/agents/${agent.pubkey}/config`, runtimeConfig(draft));
         setSaved(draft);
         // One message, named before setState so the sentence reads on its own.
-        const notice = moved ? `Saved. The agent restarted on ${harnessTitle(state.host.id, draft.harness)}.` : "Saved. New sessions use it.";
+        const notice = moved
+          ? `Saved. The agent restarted on ${harnessTitle(state.host.id, draft.harness)}.`
+          : "Saved. New sessions use it.";
         setState({ ...state, saving: false, notice });
       } catch (error) {
         setState({ ...state, saving: false, error: errorText(error) });
@@ -2536,46 +3261,39 @@ function makeSettings(ui, store, parts) {
     const runtime = settingsSection !== "identity";
     const problem = harnessProblem(state.host.id, draft.harness);
     const ready = Boolean(harnessOn(state.host.id, draft.harness)?.ready);
-    const set = (patch) => setDraft(pick(draft, patch));
-    // Hoisted: lizard 1.24.3 drops a later nested function (seen as `onChange`
-    // missing from its list) when a `cond ? call({ ... }) : null` argument sits
-    // among h("form", ...)'s arguments. No upstream issue found.
-    const identityGroup = identity ? settingsIdentity({ state, draft, ready, set }) : null;
-    return h(
-      "form",
-      {
-        id: form,
-        className: "grid gap-4 [container-type:inline-size]",
-        onSubmit: (event) => {
-          event.preventDefault();
-          void save();
-        },
-      },
-      state.error ? h("p", { role: "alert", tabIndex: -1, className: "buzz-field-error" }, state.error) : null,
+    const patchDraft = (patch) => setDraft(pick(draft, patch));
+    const identityGroup = identity
+      ? settingsIdentity({ state, draft, ready, set: patchDraft })
+      : null;
+    const runtimeFields = runtime
+      ? renderSettingsRuntime({
+          h,
+          Field,
+          Input,
+          Select,
+          workspaceId,
+          workspace: state.workspace,
+          scope: draft.scope,
+          set: patchDraft,
+        })
+      : [];
+    return renderSettingsForm({
+      h,
+      AgentInstructions,
+      saveButton,
+      form,
+      state,
+      draft,
+      identity,
+      runtime,
+      problem,
       identityGroup,
-      identity && problem ? h("p", { role: "alert", className: "m-0 mt-1 text-body-sm text-danger" }, problem) : null,
-      identity ? h(AgentInstructions, { value: draft.instructions, disabled: false, onChange: (instructions) => set({ instructions }) }) : null,
-      runtime
-        ? h(
-            Field,
-            { label: LABELS.workspace, controlId: workspaceId, description: "The folder the agent works in on the host. The host sets it." },
-            h(Input, { id: workspaceId, value: state.workspace, readOnly: true }),
-          )
-        : null,
-      runtime
-        ? h(Select, {
-            label: LABELS.sessions,
-            variant: "preference",
-            value: draft.scope,
-            options: SCOPE_OPTIONS,
-            onValueChange: (scope) => set({ scope }),
-          })
-        : null,
-      // Desktop shows Save only while there is something to save.
-      saveButton({ form, dirty, saving: state.saving }),
-      state.notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, state.notice) : null,
-      runtime ? settingsContent || null : null,
-    );
+      runtimeFields,
+      dirty,
+      settingsContent,
+      set: patchDraft,
+      save,
+    });
   }
   return { Settings };
 }
@@ -2589,7 +3307,16 @@ function makeSettings(ui, store, parts) {
  */
 function makeProviderViews(ui, store, parts) {
   const { React, h } = ui;
-  const { useStore, statusOf, SettingsGroup, PreferenceRow, harnessIcon, readinessLine, Button, refresh } = parts;
+  const {
+    useStore,
+    statusOf,
+    SettingsGroup,
+    PreferenceRow,
+    harnessIcon,
+    readinessLine,
+    Button,
+    refresh,
+  } = parts;
   /** The provider dialog: each host and every harness on it, and a recheck. */
   function DialogBody({ onClose }) {
     useStore(() => store.hosts);
@@ -2598,7 +3325,13 @@ function makeProviderViews(ui, store, parts) {
     return h(
       "div",
       { className: "grid gap-4" },
-      list.length ? null : h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, store.hostsFile.error || LABELS.noHosts),
+      list.length
+        ? null
+        : h(
+            "p",
+            { role: "alert", className: "m-0 text-body-sm text-danger" },
+            store.hostsFile.error || LABELS.noHosts,
+          ),
       list.map((host) => {
         const status = statusOf(host.id);
         return h(
@@ -2614,7 +3347,12 @@ function makeProviderViews(ui, store, parts) {
                     "div",
                     { key: harness.id },
                     h(PreferenceRow, {
-                      title: h("span", { className: "flex min-w-0 items-center gap-2" }, harnessIcon(harness.id), harness.title),
+                      title: h(
+                        "span",
+                        { className: "flex min-w-0 items-center gap-2" },
+                        harnessIcon(harness.id),
+                        harness.title,
+                      ),
                       subtitle: readinessLine(host, harness),
                     }),
                   ),
@@ -2622,7 +3360,10 @@ function makeProviderViews(ui, store, parts) {
               )
             : h(
                 "p",
-                { role: status.state === "down" ? "alert" : "status", className: `m-0 text-body-sm ${status.state === "down" ? "text-danger" : "text-secondary"}` },
+                {
+                  role: status.state === "down" ? "alert" : "status",
+                  className: `m-0 text-body-sm ${status.state === "down" ? "text-danger" : "text-secondary"}`,
+                },
                 status.state === "down" ? status.error : "Checking…",
               ),
         );
@@ -2664,14 +3405,38 @@ function makeProviderViews(ui, store, parts) {
 
 // ---- The Hosts page and the Settings card ---------------------------------
 
+/** Renders Desktop's section header markup outside makeHostForm. */
+function renderContentHeader(h, { title, subtitle, actions, level = 2, inline = false }) {
+  return h(
+    "div",
+    { "data-buzz-ui": "", className: "buzz-content-header", "data-inline": inline || undefined },
+    h(
+      "div",
+      { className: "buzz-content-header-copy" },
+      h(`h${level}`, { className: "buzz-content-header-title" }, title),
+      subtitle ? h("p", { className: "buzz-content-header-subtitle" }, subtitle) : null,
+    ),
+    actions ? h("div", { className: "buzz-content-header-actions" }, actions) : null,
+  );
+}
+
+/** Renders the colored status dot paired with visible status copy. */
+function renderStateDot(h, { tone }) {
+  return h("span", {
+    "aria-hidden": "true",
+    "data-tone": tone,
+    style: { ...DOT_STYLE, background: TONE_COLORS[tone] },
+  });
+}
+
 /**
  * The edit form and the headers and marks that every Hosts page view draws. They are built before those views so that each reads them from one place.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {HostFormParts}
  */
-function makeHostForm(ui, store, parts) {
+function makeHostForm(ui, _store, parts) {
   const { React, h } = ui;
   const { updateHost, Field, Input, Button } = parts;
   /** Edit form for one listed host: a plain save of hosts.json, with no
@@ -2706,12 +3471,27 @@ function makeHostForm(ui, store, parts) {
       { "aria-label": `Edit ${host.label}`, className: "grid gap-3", onSubmit: submit },
       h(
         Field,
-        { label: "Name", controlId: labelId, description: "Shown in New agent and in each agent's settings." },
-        h(Input, { id: labelId, value: label, maxLength: LABEL_MAX, autoComplete: "off", spellCheck: false, onChange: typed(setLabel) }),
+        {
+          label: "Name",
+          controlId: labelId,
+          description: "Shown in New agent and in each agent's settings.",
+        },
+        h(Input, {
+          id: labelId,
+          value: label,
+          maxLength: LABEL_MAX,
+          autoComplete: "off",
+          spellCheck: false,
+          onChange: typed(setLabel),
+        }),
       ),
       h(
         Field,
-        { label: "Address", controlId: originId, description: `The machine's https:// address on your tailnet, with no path. Example: ${ORIGIN_EXAMPLE}` },
+        {
+          label: "Address",
+          controlId: originId,
+          description: `The machine's https:// address on your tailnet, with no path. Example: ${ORIGIN_EXAMPLE}`,
+        },
         h(Input, {
           id: originId,
           value: origin,
@@ -2728,7 +3508,11 @@ function makeHostForm(ui, store, parts) {
       h(
         "div",
         { className: "flex items-center gap-2" },
-        h(Button, { type: "submit", variant: "prominent", loading: saving, disabled: disabled && !saving }, LABELS.save),
+        h(
+          Button,
+          { type: "submit", variant: "prominent", loading: saving, disabled: disabled && !saving },
+          LABELS.save,
+        ),
         h(Button, { onClick: onCancel, disabled: saving }, LABELS.cancel),
       ),
     );
@@ -2736,24 +3520,14 @@ function makeHostForm(ui, store, parts) {
 
   /** Desktop's content header (shared/design-system/ui/Header.tsx): one
    * heading shape for every part of the page, so the parts read as sections. */
-  function ContentHeader({ title, subtitle, actions, level = 2, inline = false }) {
-    return h(
-      "div",
-      { "data-buzz-ui": "", className: "buzz-content-header", "data-inline": inline || undefined },
-      h(
-        "div",
-        { className: "buzz-content-header-copy" },
-        h(`h${level}`, { className: "buzz-content-header-title" }, title),
-        subtitle ? h("p", { className: "buzz-content-header-subtitle" }, subtitle) : null,
-      ),
-      actions ? h("div", { className: "buzz-content-header-actions" }, actions) : null,
-    );
+  function ContentHeader(props) {
+    return renderContentHeader(h, props);
   }
 
   /** A state a reader takes in at a glance. The word beside it carries the
    * meaning, so the color is never the only signal. */
-  function StateDot({ tone }) {
-    return h("span", { "aria-hidden": "true", "data-tone": tone, style: { ...DOT_STYLE, background: TONE_COLORS[tone] } });
+  function StateDot(props) {
+    return renderStateDot(h, props);
   }
   return { HostForm, ContentHeader, StateDot };
 }
@@ -2761,18 +3535,33 @@ function makeHostForm(ui, store, parts) {
 /**
  * A setup shows each step's state and what is left to the owner. These parts draw only that, so the progress view stays a layout of them.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {SetupStepsParts}
  */
-function makeSetupSteps(ui, store, parts) {
+function makeSetupSteps(ui, _store, parts) {
   const { h, glyphs } = ui;
   const { StateDot, useStore, Button } = parts;
   /** The mark of one setup step: pending, running, waiting, done or failed. */
   function StepMark({ state }) {
-    if (state === "done") return h(glyphs.check, { size: STEP_MARK_SIZE, "aria-hidden": "true", style: { color: TONE_COLORS.good } });
-    if (state === "failed") return h(glyphs.cross, { size: STEP_MARK_SIZE, "aria-hidden": "true", style: { color: TONE_COLORS.bad } });
-    if (state === "running") return h(glyphs.spinner, { size: STEP_MARK_SIZE, "aria-hidden": "true", className: "motion-safe:animate-spin" });
+    if (state === "done")
+      return h(glyphs.check, {
+        size: STEP_MARK_SIZE,
+        "aria-hidden": "true",
+        style: { color: TONE_COLORS.good },
+      });
+    if (state === "failed")
+      return h(glyphs.cross, {
+        size: STEP_MARK_SIZE,
+        "aria-hidden": "true",
+        style: { color: TONE_COLORS.bad },
+      });
+    if (state === "running")
+      return h(glyphs.spinner, {
+        size: STEP_MARK_SIZE,
+        "aria-hidden": "true",
+        className: "motion-safe:animate-spin",
+      });
     return h(StateDot, { tone: state === "waiting" ? "wait" : "off" });
   }
 
@@ -2792,7 +3581,11 @@ function makeSetupSteps(ui, store, parts) {
   function SetupSteps({ run }) {
     return h(
       "ol",
-      { "aria-label": "Setup steps", "aria-live": "polite", className: "m-0 grid gap-3 list-none p-0 text-body-sm" },
+      {
+        "aria-label": "Setup steps",
+        "aria-live": "polite",
+        className: "m-0 grid gap-3 list-none p-0 text-body-sm",
+      },
       SETUP_STEPS.map(([key, words]) => {
         const step = run.steps[key];
         const state = step ? step.state : "pending";
@@ -2804,8 +3597,12 @@ function makeSetupSteps(ui, store, parts) {
             "span",
             { className: state === "pending" ? "text-secondary" : undefined, style: GROW_STYLE },
             h("span", { className: state === "failed" ? "text-danger" : undefined }, words),
-            STEP_WORDS[state] ? h("span", { className: "text-secondary" }, ` · ${STEP_WORDS[state]}`) : null,
-            step?.detail ? h("span", { className: "block text-secondary whitespace-pre-wrap" }, step.detail) : null,
+            STEP_WORDS[state]
+              ? h("span", { className: "text-secondary" }, ` · ${STEP_WORDS[state]}`)
+              : null,
+            step?.detail
+              ? h("span", { className: "block text-secondary whitespace-pre-wrap" }, step.detail)
+              : null,
             step?.link ? h(ApproveLink, { link: step.link }) : null,
           ),
         );
@@ -2824,7 +3621,11 @@ function makeSetupSteps(ui, store, parts) {
     return h(
       "div",
       { "aria-label": "Still to do", role: "group", className: "grid gap-3 text-body-sm" },
-      h("p", { role: "status", className: "m-0" }, `${result.added ? "Added" : "Already listed:"} ${result.label}${result.version ? ` (buzz-runner ${result.version})` : ""}. New agent can use it now.`),
+      h(
+        "p",
+        { role: "status", className: "m-0" },
+        `${result.added ? "Added" : "Already listed:"} ${result.label}${result.version ? ` (buzz-runner ${result.version})` : ""}. New agent can use it now.`,
+      ),
       h("h3", { className: "text-label-sm" }, "Next"),
       h(
         "ol",
@@ -2839,7 +3640,15 @@ function makeSetupSteps(ui, store, parts) {
                   "span",
                   { className: "flex items-center gap-2" },
                   h("code", { className: "select-all" }, entry.command),
-                  h(Button, { size: "sm", onClick: () => void navigator.clipboard?.writeText(entry.command).catch(() => undefined) }, "Copy"),
+                  h(
+                    Button,
+                    {
+                      size: "sm",
+                      onClick: () =>
+                        void navigator.clipboard?.writeText(entry.command).catch(() => undefined),
+                    },
+                    "Copy",
+                  ),
                 )
               : null,
           ),
@@ -2848,7 +3657,17 @@ function makeSetupSteps(ui, store, parts) {
       h(
         "div",
         { className: "flex items-center gap-2" },
-        listed ? h(Button, { variant: "prominent", "aria-label": `Sign in on ${result.label}`, onClick: () => onOpenHost(result.hostId) }, "Sign in to the harnesses") : null,
+        listed
+          ? h(
+              Button,
+              {
+                variant: "prominent",
+                "aria-label": `Sign in on ${result.label}`,
+                onClick: () => onOpenHost(result.hostId),
+              },
+              "Sign in to the harnesses",
+            )
+          : null,
         h(Button, { onClick: onAddAnother }, "Add another host"),
       ),
     );
@@ -2859,11 +3678,11 @@ function makeSetupSteps(ui, store, parts) {
 /**
  * The setup's heading and progress line, apart from the steps because they also summarise a setup that has ended.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {SetupProgressParts}
  */
-function makeSetupProgress(ui, store, parts) {
+function makeSetupProgress(ui, _store, parts) {
   const { h } = ui;
   const { ContentHeader, SetupSteps, Button, resetSetup, SetupResult } = parts;
   /** The setup's heading: what it does now, or how it ended. */
@@ -2897,10 +3716,80 @@ function makeSetupProgress(ui, store, parts) {
             h("div", null, h(Button, { onClick: resetSetup }, "Back to the form")),
           )
         : null,
-      run.state === "done" && run.result ? h(SetupResult, { result: run.result, onOpenHost, onAddAnother: resetSetup }) : null,
+      run.state === "done" && run.result
+        ? h(SetupResult, { result: run.result, onOpenHost, onAddAnother: resetSetup })
+        : null,
     );
   }
   return { setupTitle, setupProgressLine, SetupProgress };
+}
+
+/** Renders the Machine, Access, and Identity fieldsets for the Add a host form. */
+function renderAddHostSections({ h, Field, Input, ids, values, defaults, typed }) {
+  const field = (id, key, name, description, input = {}) =>
+    h(
+      Field,
+      { label: name, controlId: id, description },
+      h(Input, {
+        id,
+        value: values[key],
+        autoComplete: "off",
+        autoCapitalize: "none",
+        spellCheck: false,
+        onChange: typed(key),
+        ...input,
+      }),
+    );
+  return [
+    h(
+      "fieldset",
+      { className: "grid gap-3", style: FIELDSET_STYLE },
+      h("legend", { className: "text-label-sm", style: LEGEND_STYLE }, "Machine"),
+      field(ids.label, "label", "Name", "Shown in New agent and in each agent's settings.", {
+        maxLength: LABEL_MAX,
+      }),
+      field(
+        ids.origin,
+        "origin",
+        "Address",
+        "The machine's https:// MagicDNS name, with no port.",
+        { maxLength: ORIGIN_MAX, inputMode: "url", placeholder: ORIGIN_EXAMPLE },
+      ),
+    ),
+    h(
+      "fieldset",
+      { className: "grid gap-3", style: FIELDSET_STYLE },
+      h("legend", { className: "text-label-sm", style: LEGEND_STYLE }, "Access"),
+      field(ids.user, "sshUser", "SSH login", LABELS.sshLoginHelp, { maxLength: SSH_USER_MAX }),
+      field(ids.password, "password", "sudo password", LABELS.sudoHelp, {
+        type: "password",
+        maxLength: PASSWORD_MAX,
+      }),
+    ),
+    h(
+      "details",
+      { open: !defaults.ownerPubkey || !defaults.relay || undefined, className: "grid gap-3" },
+      h("summary", { className: "text-label-sm" }, "Identity and relay"),
+      h(
+        "div",
+        { className: "grid gap-3", style: DISCLOSED_STYLE },
+        field(
+          ids.owner,
+          "ownerPubkey",
+          "Owner key",
+          "Your key in hex. Only you can make agents on this runner.",
+          { maxLength: 64 },
+        ),
+        field(
+          ids.relay,
+          "relay",
+          "Relay",
+          `The relay the agents connect to. Example: ${RELAY_EXAMPLE}`,
+          { maxLength: RELAY_MAX, inputMode: "url" },
+        ),
+      ),
+    ),
+  ];
 }
 
 /**
@@ -2912,14 +3801,38 @@ function makeSetupProgress(ui, store, parts) {
  */
 function makeAddHost(ui, store, parts) {
   const { React, h } = ui;
-  const { communityDefaults, checkNewHost, startSetup, Field, Input, ContentHeader, Button, useStore, SetupProgress } = parts;
+  const {
+    communityDefaults,
+    checkNewHost,
+    startSetup,
+    Field,
+    Input,
+    ContentHeader,
+    Button,
+    useStore,
+    SetupProgress,
+  } = parts;
   /** Add a host, the form. The fields that most owners never change start
    * closed, and open when one of them is empty: a setup cannot run then. */
   function AddHostForm({ active, disabled }) {
     const defaults = React.useMemo(communityDefaults, []);
-    const [values, setValues] = React.useState({ label: "", origin: "", sshUser: "", ...defaults, ...store.setupForm, password: "" });
+    const [values, setValues] = React.useState({
+      label: "",
+      origin: "",
+      sshUser: "",
+      ...defaults,
+      ...store.setupForm,
+      password: "",
+    });
     const [error, setError] = React.useState("");
-    const ids = { label: React.useId(), origin: React.useId(), user: React.useId(), password: React.useId(), owner: React.useId(), relay: React.useId() };
+    const ids = {
+      label: React.useId(),
+      origin: React.useId(),
+      user: React.useId(),
+      password: React.useId(),
+      owner: React.useId(),
+      relay: React.useId(),
+    };
     const typed = (key) => (event) => {
       const { value } = event.target;
       setValues((now) => ({ ...now, [key]: value }));
@@ -2940,44 +3853,20 @@ function makeAddHost(ui, store, parts) {
       setValues((now) => ({ ...now, password: "" }));
       setError("");
       // A failed setup comes back to these values, with no password.
-      store.setupForm = Object.freeze({ label: values.label, origin: values.origin, sshUser: values.sshUser, ownerPubkey: values.ownerPubkey, relay: values.relay });
+      store.setupForm = Object.freeze({
+        label: values.label,
+        origin: values.origin,
+        sshUser: values.sshUser,
+        ownerPubkey: values.ownerPubkey,
+        relay: values.relay,
+      });
       void startSetup({ ...setup, sudoPassword });
     };
-    const field = (id, key, name, description, input = {}) =>
-      h(
-        Field,
-        { label: name, controlId: id, description },
-        h(Input, { id, value: values[key], autoComplete: "off", autoCapitalize: "none", spellCheck: false, onChange: typed(key), ...input }),
-      );
     return h(
       "form",
       { "aria-label": "Add a host", className: "grid gap-5", style: CARD_STYLE, onSubmit: submit },
       h(ContentHeader, { title: "Add a host", subtitle: `${LABELS.addIntro} ${LABELS.addNeeds}` }),
-      h(
-        "fieldset",
-        { className: "grid gap-3", style: FIELDSET_STYLE },
-        h("legend", { className: "text-label-sm", style: LEGEND_STYLE }, "Machine"),
-        field(ids.label, "label", "Name", "Shown in New agent and in each agent's settings.", { maxLength: LABEL_MAX }),
-        field(ids.origin, "origin", "Address", "The machine's https:// MagicDNS name, with no port.", { maxLength: ORIGIN_MAX, inputMode: "url", placeholder: ORIGIN_EXAMPLE }),
-      ),
-      h(
-        "fieldset",
-        { className: "grid gap-3", style: FIELDSET_STYLE },
-        h("legend", { className: "text-label-sm", style: LEGEND_STYLE }, "Access"),
-        field(ids.user, "sshUser", "SSH login", LABELS.sshLoginHelp, { maxLength: SSH_USER_MAX }),
-        field(ids.password, "password", "sudo password", LABELS.sudoHelp, { type: "password", maxLength: PASSWORD_MAX }),
-      ),
-      h(
-        "details",
-        { open: !defaults.ownerPubkey || !defaults.relay || undefined, className: "grid gap-3" },
-        h("summary", { className: "text-label-sm" }, "Identity and relay"),
-        h(
-          "div",
-          { className: "grid gap-3", style: DISCLOSED_STYLE },
-          field(ids.owner, "ownerPubkey", "Owner key", "Your key in hex. Only you can make agents on this runner.", { maxLength: 64 }),
-          field(ids.relay, "relay", "Relay", `The relay the agents connect to. Example: ${RELAY_EXAMPLE}`, { maxLength: RELAY_MAX, inputMode: "url" }),
-        ),
-      ),
+      ...renderAddHostSections({ h, Field, Input, ids, values, defaults, typed }),
       error ? h("p", { role: "alert", className: "buzz-field-error" }, error) : null,
       h("div", null, h(Button, { type: "submit", variant: "prominent", disabled }, "Add host")),
     );
@@ -2986,9 +3875,70 @@ function makeAddHost(ui, store, parts) {
   /** Add a host: the form, or the setup once there is one. */
   function AddHostView({ active, disabled, onOpenHost }) {
     const run = useStore(() => store.setupRun);
-    return run.state === "idle" ? h(AddHostForm, { active, disabled }) : h(SetupProgress, { run, onOpenHost });
+    return run.state === "idle"
+      ? h(AddHostForm, { active, disabled })
+      : h(SetupProgress, { run, onOpenHost });
   }
   return { AddHostForm, AddHostView };
+}
+
+/** Renders Desktop's radio card markup using a native radio input. */
+function renderRadioCard(h, { name, label, description, checked, disabled, onSelect }) {
+  return h(
+    "label",
+    { className: "buzz-choice", "data-variant": "card", "data-size": "md" },
+    h("input", {
+      type: "radio",
+      className: "sr-only",
+      name,
+      checked,
+      disabled,
+      onChange: onSelect,
+    }),
+    h(
+      "span",
+      {
+        "aria-hidden": "true",
+        "data-buzz-ui": "",
+        className: "buzz-radio",
+        "data-variant": "card",
+        "data-size": "md",
+        "data-checked": checked ? "" : undefined,
+        "data-unchecked": checked ? undefined : "",
+      },
+      checked ? h("span", { className: "buzz-radio-indicator" }) : null,
+    ),
+    h(
+      "span",
+      null,
+      h("span", { className: "buzz-choice-label" }, label),
+      description ? h("span", { className: "buzz-choice-description" }, description) : null,
+    ),
+  );
+}
+
+/** Renders the harness sign-in method radio group when a harness offers choices. */
+function renderSignInMethods({ h, RadioCard, harness, ids, values, setValues }) {
+  if (!harness) return null;
+  return h(
+    "div",
+    {
+      role: "radiogroup",
+      "aria-label": "How to sign in",
+      "data-buzz-ui": "",
+      className: "buzz-radio-group",
+    },
+    harness.methods.map(([value, label, description]) =>
+      h(RadioCard, {
+        key: value,
+        name: ids.methods,
+        label,
+        description,
+        checked: values.command === value,
+        onSelect: () => setValues((now) => ({ ...now, command: value })),
+      }),
+    ),
+  );
 }
 
 /**
@@ -3004,29 +3954,18 @@ function makeSignInStart(ui, store, parts) {
   /** One choice of a group, drawn as Desktop's Radio card. A native input
    * keeps the keyboard and the form's own behavior; the plugin cannot use
    * Desktop's Base UI component. */
-  function RadioCard({ name, label, description, checked, disabled, onSelect }) {
-    return h(
-      "label",
-      { className: "buzz-choice", "data-variant": "card", "data-size": "md" },
-      h("input", { type: "radio", className: "sr-only", name, checked, disabled, onChange: onSelect }),
-      h(
-        "span",
-        { "aria-hidden": "true", "data-buzz-ui": "", className: "buzz-radio", "data-variant": "card", "data-size": "md", "data-checked": checked ? "" : undefined, "data-unchecked": checked ? undefined : "" },
-        checked ? h("span", { className: "buzz-radio-indicator" }) : null,
-      ),
-      h(
-        "span",
-        null,
-        h("span", { className: "buzz-choice-label" }, label),
-        description ? h("span", { className: "buzz-choice-description" }, description) : null,
-      ),
-    );
+  function RadioCard(props) {
+    return renderRadioCard(h, props);
   }
 
   /** The sign-in form: how to sign in, and how to reach root on the host. */
   function SignInStart({ host, signing, active, blocked, onClose }) {
     const harness = SIGNIN_HARNESSES.find((entry) => entry.id === signing.harness);
-    const [values, setValues] = React.useState({ sshUser: store.sshLogins.get(host.id) ?? "", password: "", command: harness ? harness.methods[0][0] : SIGNIN_STATUS });
+    const [values, setValues] = React.useState({
+      sshUser: store.sshLogins.get(host.id) ?? "",
+      password: "",
+      command: harness ? harness.methods[0][0] : SIGNIN_STATUS,
+    });
     const ids = { user: React.useId(), password: React.useId(), methods: React.useId() };
     const typed = (key) => (event) => {
       const { value } = event.target;
@@ -3040,31 +3979,50 @@ function makeSignInStart(ui, store, parts) {
       setValues((now) => ({ ...now, password: "" }));
       const sshUser = values.sshUser.trim();
       store.sshLogins.set(host.id, sshUser);
-      void startSignIn({ hostId: host.id, harness: signing.harness, sshUser, sudoPassword, command: values.command });
+      void startSignIn({
+        hostId: host.id,
+        harness: signing.harness,
+        sshUser,
+        sudoPassword,
+        command: values.command,
+      });
     };
     return h(
       "form",
       { "aria-label": "Start a sign-in", className: "grid gap-4", onSubmit: start },
-      harness
-        ? h(
-            "div",
-            { role: "radiogroup", "aria-label": "How to sign in", "data-buzz-ui": "", className: "buzz-radio-group" },
-            harness.methods.map(([value, label, description]) =>
-              h(RadioCard, { key: value, name: ids.methods, label, description, checked: values.command === value, onSelect: () => setValues((now) => ({ ...now, command: value })) }),
-            ),
-          )
-        : null,
+      renderSignInMethods({ h, RadioCard, harness, ids, values, setValues }),
       h(
         Field,
         { label: "SSH login", controlId: ids.user, description: LABELS.sshLoginHelp },
-        h(Input, { id: ids.user, value: values.sshUser, maxLength: SSH_USER_MAX, autoComplete: "off", autoCapitalize: "none", spellCheck: false, onChange: typed("sshUser") }),
+        h(Input, {
+          id: ids.user,
+          value: values.sshUser,
+          maxLength: SSH_USER_MAX,
+          autoComplete: "off",
+          autoCapitalize: "none",
+          spellCheck: false,
+          onChange: typed("sshUser"),
+        }),
       ),
       h(
         Field,
         { label: "sudo password", controlId: ids.password, description: SIGNIN_PASSWORD_HELP },
-        h(Input, { id: ids.password, type: "password", value: values.password, maxLength: PASSWORD_MAX, autoComplete: "off", onChange: typed("password") }),
+        h(Input, {
+          id: ids.password,
+          type: "password",
+          value: values.password,
+          maxLength: PASSWORD_MAX,
+          autoComplete: "off",
+          onChange: typed("password"),
+        }),
       ),
-      blocked ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, "A sign-in runs on another host. Finish it first.") : null,
+      blocked
+        ? h(
+            "p",
+            { role: "status", className: "m-0 text-body-sm text-secondary" },
+            "A sign-in runs on another host. Finish it first.",
+          )
+        : null,
       h(
         "div",
         { className: "flex items-center gap-2" },
@@ -3076,6 +4034,99 @@ function makeSignInStart(ui, store, parts) {
   return { RadioCard, SignInStart };
 }
 
+/** Renders the terminal completion status or failure alert for a sign-in run. */
+function renderSignInEnd(h, run) {
+  if (run.state === "failed")
+    return h("p", { role: "alert", className: "buzz-field-error" }, run.error);
+  if (run.state !== "done") return null;
+  return h(
+    "p",
+    { role: "status", className: "m-0 text-body-sm" },
+    run.code === 0 ? "The sign-in ended." : `The sign-in ended with exit ${run.code}.`,
+  );
+}
+
+/** Renders the status, approval link, log output, answer form, and finish actions for a sign-in terminal. */
+function renderSignInTerminalBody({
+  h,
+  ApproveLink,
+  Button,
+  SignInAnswer,
+  run,
+  active,
+  error,
+  setError,
+  cancel,
+  again,
+  onClose,
+}) {
+  const running = run.state === "running";
+  return h(
+    "div",
+    { className: "grid gap-3" },
+    running
+      ? h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.signInSteps)
+      : renderSignInEnd(h, run),
+    run.link ? h(ApproveLink, { link: run.link }) : null,
+    run.output
+      ? h(
+          "pre",
+          {
+            role: "log",
+            "aria-label": "Terminal on the host",
+            className:
+              "m-0 max-h-80 overflow-auto whitespace-pre-wrap break-all text-body-sm select-text",
+            style: TERMINAL_STYLE,
+          },
+          run.output,
+        )
+      : null,
+    running ? h(SignInAnswer, { active, onError: setError, onCancel: cancel }) : null,
+    error ? h("p", { role: "alert", className: "buzz-field-error" }, error) : null,
+    running
+      ? null
+      : h(
+          "div",
+          { className: "flex items-center gap-2" },
+          h(Button, { variant: "prominent", onClick: onClose }, "Done"),
+          h(Button, { onClick: again }, "Try again"),
+        ),
+  );
+}
+
+/** Renders the masked terminal input form used to answer a running sign-in prompt. */
+function renderSignInAnswerForm({ h, Field, Input, Button, id, line, setLine, send, onCancel }) {
+  return h(
+    "form",
+    { "aria-label": "Answer the terminal", className: "grid gap-2", onSubmit: send },
+    h(
+      Field,
+      {
+        label: "Answer",
+        controlId: id,
+        description:
+          "A key, a pasted code, or a menu number. It is hidden as you type, goes only to the terminal, and is not saved.",
+      },
+      h(Input, {
+        id,
+        type: "password",
+        value: line,
+        maxLength: SIGNIN_INPUT_MAX,
+        autoComplete: "off",
+        autoCapitalize: "none",
+        spellCheck: false,
+        onChange: (event) => setLine(event.target.value),
+      }),
+    ),
+    h(
+      "div",
+      { className: "flex items-center gap-2" },
+      h(Button, { type: "submit", variant: "prominent" }, "Send"),
+      h(Button, { onClick: onCancel }, "Cancel"),
+    ),
+  );
+}
+
 /**
  * The running sign-in needs a terminal and an answer field, because the host's login may ask the owner a question. Apart from the start form because it renders from the store's run, not from form state.
  * @param {Ui} ui
@@ -3085,7 +4136,18 @@ function makeSignInStart(ui, store, parts) {
  */
 function makeSignInTerminal(ui, store, parts) {
   const { React, h } = ui;
-  const { sendSignInInput, Field, Input, Button, cancelSignIn, resetSignIn, ApproveLink, useStore, ContentHeader, SignInStart } = parts;
+  const {
+    sendSignInInput,
+    Field,
+    Input,
+    Button,
+    cancelSignIn,
+    resetSignIn,
+    ApproveLink,
+    useStore,
+    ContentHeader,
+    SignInStart,
+  } = parts;
   /** One typed line to the running sign-in's terminal. */
   function SignInAnswer({ active, onError, onCancel }) {
     const [line, setLine] = React.useState("");
@@ -3098,35 +4160,18 @@ function makeSignInTerminal(ui, store, parts) {
       setLine("");
       sendSignInInput(typed).catch((cause) => onError(errorText(cause)));
     };
-    return h(
-      "form",
-      { "aria-label": "Answer the terminal", className: "grid gap-2", onSubmit: send },
-      h(
-        Field,
-        { label: "Answer", controlId: id, description: "A key, a pasted code, or a menu number. It is hidden as you type, goes only to the terminal, and is not saved." },
-        h(Input, { id, type: "password", value: line, maxLength: SIGNIN_INPUT_MAX, autoComplete: "off", autoCapitalize: "none", spellCheck: false, onChange: (event) => setLine(event.target.value) }),
-      ),
-      h(
-        "div",
-        { className: "flex items-center gap-2" },
-        h(Button, { type: "submit", variant: "prominent" }, "Send"),
-        h(Button, { onClick: onCancel }, "Cancel"),
-      ),
-    );
+    return renderSignInAnswerForm({ h, Field, Input, Button, id, line, setLine, send, onCancel });
   }
 
   /** How the sign-in on this host ended, in the words the page shows. */
   function signInEnd(run) {
-    if (run.state === "failed") return h("p", { role: "alert", className: "buzz-field-error" }, run.error);
-    if (run.state !== "done") return null;
-    return h("p", { role: "status", className: "m-0 text-body-sm" }, run.code === 0 ? "The sign-in ended." : `The sign-in ended with exit ${run.code}.`);
+    return renderSignInEnd(h, run);
   }
 
   /** A running or ended sign-in: what to do now, then the machine's terminal,
    * so the owner signs in without a shell on the machine. */
   function SignInTerminal({ run, active, onClose }) {
     const [error, setError] = React.useState("");
-    const running = run.state === "running";
     // A cancel that comes just after the end finds no sign-in; the end
     // already shows, so there is nothing more to say.
     const cancel = () => void cancelSignIn().catch(() => undefined);
@@ -3134,23 +4179,19 @@ function makeSignInTerminal(ui, store, parts) {
       resetSignIn();
       setError("");
     };
-    return h(
-      "div",
-      { className: "grid gap-3" },
-      running ? h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.signInSteps) : signInEnd(run),
-      run.link ? h(ApproveLink, { link: run.link }) : null,
-      run.output ? h("pre", { role: "log", "aria-label": "Terminal on the host", className: "m-0 max-h-80 overflow-auto whitespace-pre-wrap break-all text-body-sm select-text", style: TERMINAL_STYLE }, run.output) : null,
-      running ? h(SignInAnswer, { active, onError: setError, onCancel: cancel }) : null,
-      error ? h("p", { role: "alert", className: "buzz-field-error" }, error) : null,
-      running
-        ? null
-        : h(
-            "div",
-            { className: "flex items-center gap-2" },
-            h(Button, { variant: "prominent", onClick: onClose }, "Done"),
-            h(Button, { onClick: again }, "Try again"),
-          ),
-    );
+    return renderSignInTerminalBody({
+      h,
+      ApproveLink,
+      Button,
+      SignInAnswer,
+      run,
+      active,
+      error,
+      setError,
+      cancel,
+      again,
+      onClose,
+    });
   }
 
   /** One sign-in on one host: `buzz-login` on the machine, as the harness
@@ -3167,51 +4208,73 @@ function makeSignInTerminal(ui, store, parts) {
     return h(
       "section",
       { "aria-label": `Sign in on ${host.label}`, className: "grid gap-4", style: CARD_STYLE },
-      h(ContentHeader, { level: 3, inline: true, title: harness ? `Sign in to ${harness.title} on ${host.label}` : `Show what is signed in on ${host.label}`, subtitle: mine ? undefined : LABELS.signInIntro }),
-      mine ? h(SignInTerminal, { run, active, onClose: close }) : h(SignInStart, { host, signing, active, blocked: run.state === "running", onClose: close }),
+      h(ContentHeader, {
+        level: 3,
+        inline: true,
+        title: harness
+          ? `Sign in to ${harness.title} on ${host.label}`
+          : `Show what is signed in on ${host.label}`,
+        subtitle: mine ? undefined : LABELS.signInIntro,
+      }),
+      mine
+        ? h(SignInTerminal, { run, active, onClose: close })
+        : h(SignInStart, {
+            host,
+            signing,
+            active,
+            blocked: run.state === "running",
+            onClose: close,
+          }),
     );
   }
   return { SignInAnswer, signInEnd, SignInTerminal, SignInPanel };
 }
 
+/** Formats one harness's status copy from host status and harness entry. */
+function formatHarnessLine(status, entry) {
+  if (status.state === "checking") return "Checking…";
+  if (status.state === "down") return "The host does not answer. You can still try to sign in.";
+  if (!entry) return "Not offered on this host.";
+  if (entry.ready) return ["Ready", entry.version, entry.account].filter(Boolean).join(" · ");
+  return entry.message || "Not ready.";
+}
+
+/** Formats one host's summary line for the Hosts list. */
+function formatHostLine(status) {
+  if (status.state === "checking") return "Checking…";
+  if (status.state === "down") return "Not reachable";
+  const ready = status.harnesses.filter((entry) => entry.ready).length;
+  return `Reachable · ${ready} of ${status.harnesses.length} ready`;
+}
+
+/** Maps a host's reachability and readiness status to its status-dot tone. */
+function formatHostTone(status) {
+  if (status.state === "checking") return "off";
+  if (status.state === "down") return "bad";
+  return status.harnesses.some((entry) => entry.ready) ? "good" : "wait";
+}
+
 /**
  * The Hosts page must show at a glance which host or harness needs work. The wording and tone rules for that live here, so the list and the detail agree.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {HarnessRowsParts}
  */
-function makeHarnessRows(ui, store, parts) {
+function makeHarnessRows(ui, _store, parts) {
   const { h } = ui;
-  const { statusOf, harnessOn, Button, PreferenceRow, harnessIcon, ContentHeader, SettingsGroup } = parts;
+  const { statusOf, harnessOn, Button, PreferenceRow, harnessIcon, ContentHeader, SettingsGroup } =
+    parts;
   /** What one harness can do on this host, in words. */
-  function harnessLine(host, harness) {
-    const status = statusOf(host.id);
-    if (status.state === "checking") return "Checking…";
-    if (status.state === "down") return "The host does not answer. You can still try to sign in.";
-    const entry = harnessOn(host.id, harness.id);
-    if (!entry) return "Not offered on this host.";
-    if (entry.ready) return ["Ready", entry.version, entry.account].filter(Boolean).join(" · ");
-    return entry.message || "Not ready.";
-  }
+  const harnessLine = (host, harness) =>
+    formatHarnessLine(statusOf(host.id), harnessOn(host.id, harness.id));
 
   /** How one host stands in the list: enough to see which one needs work. */
-  function hostLine(host) {
-    const status = statusOf(host.id);
-    if (status.state === "checking") return "Checking…";
-    if (status.state === "down") return "Not reachable";
-    const ready = status.harnesses.filter((entry) => entry.ready).length;
-    return `Reachable · ${ready} of ${status.harnesses.length} ready`;
-  }
+  const hostLine = (host) => formatHostLine(statusOf(host.id));
 
   /** The tone of a host's dot: reachable with every harness ready, reachable
    * with work left, or not reachable. */
-  function hostTone(host) {
-    const status = statusOf(host.id);
-    if (status.state === "checking") return "off";
-    if (status.state === "down") return "bad";
-    return status.harnesses.some((entry) => entry.ready) ? "good" : "wait";
-  }
+  const hostTone = (host) => formatHostTone(statusOf(host.id));
 
   /** One harness's row: its state and its Sign in. A harness that is not
    * ready gets the prominent button, so the work left is what stands out. */
@@ -3222,10 +4285,25 @@ function makeHarnessRows(ui, store, parts) {
     // function and merges the enclosing one when a line starts with `?`, then
     // a call, inside an object literal. No upstream issue found.
     const trailing = offered
-      ? h(Button, { size: "sm", variant: entry?.ready ? "subtle" : "prominent", disabled: blocked, "aria-label": `Sign in to ${harness.title} on ${host.label}`, onClick: () => onSignIn(harness.id) }, entry?.ready ? "Sign in again" : "Sign in")
+      ? h(
+          Button,
+          {
+            size: "sm",
+            variant: entry?.ready ? "subtle" : "prominent",
+            disabled: blocked,
+            "aria-label": `Sign in to ${harness.title} on ${host.label}`,
+            onClick: () => onSignIn(harness.id),
+          },
+          entry?.ready ? "Sign in again" : "Sign in",
+        )
       : null;
     return h(PreferenceRow, {
-      title: h("span", { className: "flex min-w-0 items-center gap-2" }, harnessIcon(harness.id), harness.title),
+      title: h(
+        "span",
+        { className: "flex min-w-0 items-center gap-2" },
+        harnessIcon(harness.id),
+        harness.title,
+      ),
       subtitle: harnessLine(host, harness),
       trailing,
     });
@@ -3242,7 +4320,11 @@ function makeHarnessRows(ui, store, parts) {
         inline: true,
         title: LABELS.signInTitle,
         subtitle: LABELS.harnessesIntro,
-        actions: h(Button, { size: "sm", disabled: blocked, onClick: () => onSignIn(null) }, "Show what is signed in"),
+        actions: h(
+          Button,
+          { size: "sm", disabled: blocked, onClick: () => onSignIn(null) },
+          "Show what is signed in",
+        ),
       }),
       blocked
         ? h(
@@ -3255,7 +4337,9 @@ function makeHarnessRows(ui, store, parts) {
       h(
         SettingsGroup,
         null,
-        SIGNIN_HARNESSES.map((harness) => h(HarnessRow, { key: harness.id, host, harness, blocked, onSignIn })),
+        SIGNIN_HARNESSES.map((harness) =>
+          h(HarnessRow, { key: harness.id, host, harness, blocked, onSignIn }),
+        ),
       ),
     );
   }
@@ -3265,15 +4349,27 @@ function makeHarnessRows(ui, store, parts) {
 /**
  * The page's right side joins one host's status, edit form, harnesses and sign-in, so the owner fixes a host in one place.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {HostDetailParts}
  */
-function makeHostDetail(ui, store, parts) {
+function makeHostDetail(ui, _store, parts) {
   const { React, h } = ui;
   const { statusOf, Button, ContentHeader, HostForm, SignInPanel, HarnessSection } = parts;
   /** The right side of the page for one host: what it is, and what it needs. */
-  function HostDetail({ host, ready, busy, active, signing, signinHost, onSignIn, onShowSignIn, onCloseSignIn, onSaved, onRemove }) {
+  function HostDetail({
+    host,
+    ready,
+    busy,
+    active,
+    signing,
+    signinHost,
+    onSignIn,
+    onShowSignIn,
+    onCloseSignIn,
+    onSaved,
+    onRemove,
+  }) {
     const [editing, setEditing] = React.useState(false);
     const status = statusOf(host.id);
     // Built before the header props: see HarnessRow's trailing for why.
@@ -3281,8 +4377,26 @@ function makeHostDetail(ui, store, parts) {
       ? h(
           "div",
           { className: "flex items-center gap-2" },
-          h(Button, { size: "sm", disabled: busy, "aria-label": `Edit ${host.label}`, onClick: () => setEditing(true) }, "Edit"),
-          h(Button, { size: "sm", disabled: busy, "aria-label": `Remove ${host.label}`, onClick: () => onRemove(host) }, "Remove"),
+          h(
+            Button,
+            {
+              size: "sm",
+              disabled: busy,
+              "aria-label": `Edit ${host.label}`,
+              onClick: () => setEditing(true),
+            },
+            "Edit",
+          ),
+          h(
+            Button,
+            {
+              size: "sm",
+              disabled: busy,
+              "aria-label": `Remove ${host.label}`,
+              onClick: () => onRemove(host),
+            },
+            "Remove",
+          ),
         )
       : null;
     return h(
@@ -3309,14 +4423,25 @@ function makeHostDetail(ui, store, parts) {
           )
         : null,
       signing
-        ? h(SignInPanel, { key: `${host.id}:${signing.harness}`, host, signing, active, onClose: onCloseSignIn })
+        ? h(SignInPanel, {
+            key: `${host.id}:${signing.harness}`,
+            host,
+            signing,
+            active,
+            onClose: onCloseSignIn,
+          })
         : h(HarnessSection, { host, signinHost, onSignIn, onShowSignIn }),
     );
   }
 
   /** One host's address and whether it answers. */
   function hostSubtitle(host, status) {
-    const reach = status.state === "checking" ? "Checking…" : status.state === "down" ? status.error : "Reachable";
+    const reach =
+      status.state === "checking"
+        ? "Checking…"
+        : status.state === "down"
+          ? status.error
+          : "Reachable";
     return `${host.origin} · ${reach}`;
   }
   return { HostDetail, hostSubtitle };
@@ -3325,11 +4450,11 @@ function makeHostDetail(ui, store, parts) {
 /**
  * The page's left side, where the owner picks a host or starts to add one, and where the page-wide actions sit.
  * @param {Ui} ui
- * @param {PluginStore} store
+ * @param {PluginStore} _store
  * @param {Parts} parts
  * @returns {HostListParts}
  */
-function makeHostList(ui, store, parts) {
+function makeHostList(ui, _store, parts) {
   const { React, h } = ui;
   const { refresh, ContentHeader, StateDot, hostTone, hostLine, Button } = parts;
   /** The left side of the page: every host, and the two page-wide actions. */
@@ -3376,13 +4501,114 @@ function makeHostList(ui, store, parts) {
       h(
         "div",
         { className: "flex items-center gap-2" },
-        ready ? h(Button, { variant: adding ? "subtle" : "prominent", onClick: onAdd }, running ? "Setup running…" : "Add a host") : null,
+        ready
+          ? h(
+              Button,
+              { variant: adding ? "subtle" : "prominent", onClick: onAdd },
+              running ? "Setup running…" : "Add a host",
+            )
+          : null,
         h(Button, { loading: checking, onClick: check }, "Check again"),
       ),
       h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.hostsFileNote),
     );
   }
   return { HostList };
+}
+
+/** Restores an active setup or sign-in view when the Hosts page reopens. */
+function initialHostsView(store) {
+  if (store.setupRun.state === "running") return ADD_VIEW;
+  return store.signinRun.state === "running" ? store.signinRun.hostId : "";
+}
+
+/** Restores an in-progress sign-in selection when the Hosts page reopens. */
+function initialSigningState(store) {
+  return store.signinRun.state === "running"
+    ? { id: store.signinRun.hostId, harness: store.signinRun.harness }
+    : null;
+}
+
+/** Renders the right-hand detail column of HostsView for the selected host or Add a host flow. */
+function renderHostsDetailColumn({
+  h,
+  HostDetail,
+  AddHostView,
+  notice,
+  selected,
+  ready,
+  busy,
+  active,
+  signing,
+  signinHost,
+  run,
+  resetSignIn,
+  setSigning,
+  select,
+  setNotice,
+  refresh,
+  remove,
+}) {
+  return h(
+    "div",
+    { className: "grid gap-4", style: DETAIL_STYLE },
+    notice
+      ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, notice)
+      : null,
+    selected
+      ? h(HostDetail, {
+          key: selected.id,
+          host: selected,
+          ready,
+          busy,
+          active,
+          signing: signing?.id === selected.id ? signing : null,
+          signinHost,
+          onSignIn: (harness) => {
+            resetSignIn();
+            setSigning({ id: selected.id, harness });
+          },
+          onShowSignIn: (id) => {
+            setSigning({ id, harness: run.harness });
+            select(id);
+          },
+          onCloseSignIn: () => setSigning(null),
+          onSaved: (saved) => {
+            setNotice(`Saved ${saved.label}.`);
+            void refresh();
+          },
+          onRemove: remove,
+        })
+      : ready
+        ? h(AddHostView, { active, disabled: busy, onOpenHost: select })
+        : null,
+  );
+}
+
+/** Renders the two-column HostsView section with file error banner, host list, and detail column. */
+function renderHostsSection(props) {
+  const { h, HostList, file, list, selected, ready, setup, select, onAdd } = props;
+  return h(
+    "section",
+    { "aria-label": `${SETTINGS_TITLE} settings`, className: "grid gap-4" },
+    file.state === "error"
+      ? h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, file.error)
+      : null,
+    h(
+      "div",
+      { style: COLUMNS_STYLE },
+      h(HostList, {
+        list,
+        selected,
+        adding: !selected,
+        ready,
+        running: setup.state === "running",
+        onSelect: select,
+        onAdd,
+      }),
+      renderHostsDetailColumn({ ...props, busy: file.busy }),
+    ),
+  );
 }
 
 /**
@@ -3394,7 +4620,17 @@ function makeHostList(ui, store, parts) {
  */
 function makeHostsView(ui, store, parts) {
   const { React, h } = ui;
-  const { useStore, readHostsFile, resetSetup, removeHost, refresh, HostList, HostDetail, resetSignIn, AddHostView } = parts;
+  const {
+    useStore,
+    readHostsFile,
+    resetSetup,
+    removeHost,
+    refresh,
+    HostList,
+    HostDetail,
+    resetSignIn,
+    AddHostView,
+  } = parts;
   /** The whole hosts view: the Hosts page, or the Settings card on a Desktop
    * with no pages. Hosts on the left, and on the right one thing at a time,
    * so that the setup and a sign-in each have the room and the attention
@@ -3406,8 +4642,8 @@ function makeHostsView(ui, store, parts) {
     const run = useStore(() => store.signinRun);
     const setup = useStore(() => store.setupRun);
     // A sign-in or a setup that still runs shows again when the page opens.
-    const [view, setView] = React.useState(() => (store.setupRun.state === "running" ? ADD_VIEW : store.signinRun.state === "running" ? store.signinRun.hostId : ""));
-    const [signing, setSigning] = React.useState(() => (store.signinRun.state === "running" ? { id: store.signinRun.hostId, harness: store.signinRun.harness } : null));
+    const [view, setView] = React.useState(() => initialHostsView(store));
+    const [signing, setSigning] = React.useState(() => initialSigningState(store));
     const [notice, setNotice] = React.useState("");
     // The file may have changed by hand since the last read.
     React.useEffect(() => {
@@ -3424,8 +4660,12 @@ function makeHostsView(ui, store, parts) {
       };
     }, [view]);
     const ready = file.state === "ready";
-    const selected = view === ADD_VIEW ? undefined : list.find((host) => host.id === view) ?? list[0];
-    const signinHost = run.state === "running" && run.hostId !== selected?.id ? list.find((host) => host.id === run.hostId) : undefined;
+    const selected =
+      view === ADD_VIEW ? undefined : (list.find((host) => host.id === view) ?? list[0]);
+    const signinHost =
+      run.state === "running" && run.hostId !== selected?.id
+        ? list.find((host) => host.id === run.hostId)
+        : undefined;
     const select = (id) => {
       setView(id);
       setNotice("");
@@ -3446,48 +4686,29 @@ function makeHostsView(ui, store, parts) {
         })
         .catch((cause) => setNotice(errorText(cause)));
     };
-    return h(
-      "section",
-      { "aria-label": `${SETTINGS_TITLE} settings`, className: "grid gap-4" },
-      file.state === "error" ? h("p", { role: "alert", className: "m-0 text-body-sm text-danger" }, file.error) : null,
-      h(
-        "div",
-        { style: COLUMNS_STYLE },
-        h(HostList, { list, selected, adding: !selected, ready, running: setup.state === "running", onSelect: select, onAdd }),
-        h(
-          "div",
-          { className: "grid gap-4", style: DETAIL_STYLE },
-          notice ? h("p", { role: "status", className: "m-0 text-body-sm text-secondary" }, notice) : null,
-          selected
-            ? h(HostDetail, {
-                key: selected.id,
-                host: selected,
-                ready,
-                busy: file.busy,
-                active,
-                signing: signing?.id === selected.id ? signing : null,
-                signinHost,
-                onSignIn: (harness) => {
-                  resetSignIn();
-                  setSigning({ id: selected.id, harness });
-                },
-                onShowSignIn: (id) => {
-                  setSigning({ id, harness: run.harness });
-                  select(id);
-                },
-                onCloseSignIn: () => setSigning(null),
-                onSaved: (saved) => {
-                  setNotice(`Saved ${saved.label}.`);
-                  void refresh();
-                },
-                onRemove: remove,
-              })
-            : ready
-              ? h(AddHostView, { active, disabled: file.busy, onOpenHost: select })
-              : null,
-        ),
-      ),
-    );
+    return renderHostsSection({
+      h,
+      HostList,
+      HostDetail,
+      AddHostView,
+      file,
+      list,
+      notice,
+      selected,
+      ready,
+      setup,
+      active,
+      signing,
+      signinHost,
+      run,
+      resetSignIn,
+      setSigning,
+      select,
+      onAdd,
+      setNotice,
+      refresh,
+      remove,
+    });
   }
   return { HostsView };
 }
@@ -3510,16 +4731,38 @@ function makeHostsPage(ui, store, parts) {
       { className: "h-full min-h-0" },
       h(
         "section",
-        { "aria-label": SETTINGS_TITLE, "data-buzz-surface": "", "data-shape": "panel", className: "h-full min-h-0" },
+        {
+          "aria-label": SETTINGS_TITLE,
+          "data-buzz-surface": "",
+          "data-shape": "panel",
+          className: "h-full min-h-0",
+        },
         h(
           "div",
           { className: "flex h-full min-h-0 flex-col" },
           h(
             "header",
             { "data-buzz-ui": "", className: "panel-header", "data-variant": "default" },
-            h("div", { className: "panel-header-title" }, h("div", { className: "panel-header-label" }, h("span", { className: "panel-header-label-icon", "aria-hidden": "true" }, h(icons.host, { size: PAGE_ICON_SIZE })), h("h2", null, SETTINGS_TITLE))),
+            h(
+              "div",
+              { className: "panel-header-title" },
+              h(
+                "div",
+                { className: "panel-header-label" },
+                h(
+                  "span",
+                  { className: "panel-header-label-icon", "aria-hidden": "true" },
+                  h(icons.host, { size: PAGE_ICON_SIZE }),
+                ),
+                h("h2", null, SETTINGS_TITLE),
+              ),
+            ),
           ),
-          h("div", { style: PAGE_SCROLL_STYLE }, h("div", { style: PAGE_BODY_STYLE }, h(HostsView, { active: () => !store.disposed }))),
+          h(
+            "div",
+            { style: PAGE_SCROLL_STYLE },
+            h("div", { style: PAGE_BODY_STYLE }, h(HostsView, { active: () => !store.disposed })),
+          ),
         ),
       ),
     );
@@ -3535,8 +4778,24 @@ function makeHostsPage(ui, store, parts) {
       { "aria-label": `${SETTINGS_TITLE} settings`, className: "grid gap-4" },
       h("h2", null, SETTINGS_TITLE),
       h("p", { className: "m-0 text-body-sm text-secondary" }, LABELS.summaryIntro),
-      list.length ? h(SettingsGroup, null, list.map((host) => h(PreferenceRow, { key: host.id, title: host.label, subtitle: hostLine(host) }))) : null,
-      h("div", null, h(Button, { variant: "prominent", onClick: () => void store.openHostsPage?.() }, `Open ${SETTINGS_TITLE}`)),
+      list.length
+        ? h(
+            SettingsGroup,
+            null,
+            list.map((host) =>
+              h(PreferenceRow, { key: host.id, title: host.label, subtitle: hostLine(host) }),
+            ),
+          )
+        : null,
+      h(
+        "div",
+        null,
+        h(
+          Button,
+          { variant: "prominent", onClick: () => void store.openHostsPage?.() },
+          `Open ${SETTINGS_TITLE}`,
+        ),
+      ),
     );
   }
 
@@ -3552,20 +4811,106 @@ function makeHostsPage(ui, store, parts) {
  * remote calls, all routed to the host that holds each agent.
  * @param {Ui} ui
  * @param {Parts} parts */
+/** Builds the remote agent lifecycle handlers routed to the host holding each agent. */
+function createHostedRemote({ call, requireNewKey, remember, locate, forget }) {
+  return {
+    async provision({ name, picture, community, config }) {
+      const clean = cleanConfig(config);
+      const host = hostById(clean.host);
+      // Refuse before a key is made: an agent on a harness that cannot
+      // take a turn would sit there mute.
+      const offered = parseHarnesses(
+        await call(host, "GET", "/harnesses", undefined, HARNESS_TIMEOUT_MS),
+      );
+      const entry = offered.find((item) => item.id === clean.harness);
+      if (!entry?.ready)
+        throw new RunnerError(
+          `${entry?.title || clean.harness} is not ready on ${host.label}: ${entry?.message || "not offered"}.`,
+          { op: "provision", host: host.id, harness: clean.harness },
+        );
+      const created = await call(host, "POST", "/agents", {
+        name,
+        community,
+        ...(picture ? { picture } : {}),
+      });
+      if (!created || !HEX64.test(created.pubkey))
+        throw new RunnerError(`${host.label} returned no valid agent pubkey.`, {
+          op: "provision",
+        });
+      await requireNewKey(host, created.pubkey);
+      remember(created.pubkey, host.id);
+      return { pubkey: created.pubkey, ...(created.picture ? { picture: created.picture } : {}) };
+    },
+    async activate({ pubkey, name, community, auth, config }) {
+      const host = (await locate(pubkey)) || hostById(cleanConfig(config).host);
+      await call(
+        host,
+        "POST",
+        `/agents/${pubkey}/activate`,
+        { name, community, auth, config: runtimeConfig(config) },
+        ACTIVATE_TIMEOUT_MS,
+      );
+    },
+    async profile({ pubkey, name, picture }) {
+      const host = await locate(pubkey);
+      if (!host) throw new RunnerError("No host knows this agent.", { op: "profile" });
+      await call(host, "PUT", `/agents/${pubkey}/profile`, {
+        name,
+        ...(picture ? { picture } : {}),
+      });
+    },
+    async interrupt({ pubkey, channelId, threadRootId }) {
+      const host = await locate(pubkey);
+      if (!host) return false;
+      const result = await call(host, "POST", `/agents/${pubkey}/interrupt`, {
+        channelId,
+        threadRootId,
+      });
+      return !!result?.interrupted;
+    },
+    async remove({ pubkey }) {
+      const host = await locate(pubkey);
+      // An agent no host knows is already gone, which counts as removed.
+      if (host) await call(host, "DELETE", `/agents/${pubkey}`);
+      forget(pubkey);
+    },
+  };
+}
+
 function hostedAgentType(ui, parts) {
   const { icons } = ui;
-  const { harnessTitle, Create, CreateModel, PanelFooter, providerSnapshot, subscribe, refresh, DialogBody, Settings, call, requireNewKey, remember, locate, forget } = parts;
+  const {
+    harnessTitle,
+    Create,
+    CreateModel,
+    PanelFooter,
+    providerSnapshot,
+    subscribe,
+    refresh,
+    DialogBody,
+    Settings,
+    call,
+    requireNewKey,
+    remember,
+    locate,
+    forget,
+  } = parts;
   return {
     id: TYPE_ID,
     title: pickerTitle(HOSTS),
-    description: "Runs on your own Tailscale host, on any harness the host offers. The key stays on the host.",
+    description:
+      "Runs on your own Tailscale host, on any harness the host offers. The key stays on the host.",
     icon: icons.host,
     defaults: () => ({ config: cleanConfig({}) }),
     summary: (agent) => {
       const config = cleanConfig(agent.config);
       const saved = localStorage.getItem(STORE_PREFIX + agent.pubkey);
-      const host = HOSTS.find((entry) => entry.id === saved) || HOSTS.find((entry) => entry.id === config.host);
-      return [TYPE_TITLE, harnessTitle(host?.id, config.harness), config.model, host?.label].filter(Boolean).join(" · ");
+      const host =
+        HOSTS.find((entry) => entry.id === saved) ||
+        HOSTS.find((entry) => entry.id === config.host);
+      return [TYPE_TITLE, harnessTitle(host?.id, config.harness), config.model, host?.label]
+        .filter(Boolean)
+        .join(" · ");
     },
     Create,
     CreateModel,
@@ -3576,53 +4921,16 @@ function hostedAgentType(ui, parts) {
       check: () => refresh(),
       DialogBody,
     },
-    tabs: [{ id: "settings", title: "Settings", role: "settings", splitSettings: true, component: Settings }],
-    remote: {
-      async provision({ name, picture, community, config }) {
-        const clean = cleanConfig(config);
-        const host = hostById(clean.host);
-        // Refuse before a key is made: an agent on a harness that cannot
-        // take a turn would sit there mute.
-        const offered = parseHarnesses(await call(host, "GET", "/harnesses", undefined, HARNESS_TIMEOUT_MS));
-        const entry = offered.find((item) => item.id === clean.harness);
-        if (!entry || !entry.ready)
-          throw new RunnerError(
-            `${(entry && entry.title) || clean.harness} is not ready on ${host.label}: ${(entry && entry.message) || "not offered"}.`,
-            { op: "provision", host: host.id, harness: clean.harness },
-          );
-        const created = await call(host, "POST", "/agents", {
-          name,
-          community,
-          ...(picture ? { picture } : {}),
-        });
-        if (!created || !HEX64.test(created.pubkey))
-          throw new RunnerError(`${host.label} returned no valid agent pubkey.`, { op: "provision" });
-        await requireNewKey(host, created.pubkey);
-        remember(created.pubkey, host.id);
-        return { pubkey: created.pubkey, ...(created.picture ? { picture: created.picture } : {}) };
+    tabs: [
+      {
+        id: "settings",
+        title: "Settings",
+        role: "settings",
+        splitSettings: true,
+        component: Settings,
       },
-      async activate({ pubkey, name, community, auth, config }) {
-        const host = (await locate(pubkey)) || hostById(cleanConfig(config).host);
-        await call(host, "POST", `/agents/${pubkey}/activate`, { name, community, auth, config: runtimeConfig(config) }, ACTIVATE_TIMEOUT_MS);
-      },
-      async profile({ pubkey, name, picture }) {
-        const host = await locate(pubkey);
-        if (!host) throw new RunnerError("No host knows this agent.", { op: "profile" });
-        await call(host, "PUT", `/agents/${pubkey}/profile`, { name, ...(picture ? { picture } : {}) });
-      },
-      async interrupt({ pubkey, channelId, threadRootId }) {
-        const host = await locate(pubkey);
-        if (!host) return false;
-        const result = await call(host, "POST", `/agents/${pubkey}/interrupt`, { channelId, threadRootId });
-        return !!result?.interrupted;
-      },
-      async remove({ pubkey }) {
-        const host = await locate(pubkey);
-        // An agent no host knows is already gone, which counts as removed.
-        if (host) await call(host, "DELETE", `/agents/${pubkey}`);
-        forget(pubkey);
-      },
-    },
+    ],
+    remote: createHostedRemote({ call, requireNewKey, remember, locate, forget }),
   };
 }
 
@@ -3637,14 +4945,17 @@ const PART_FACTORIES = Object.freeze([
   makeSetup,
   makeSignIn,
   makeHostEdits,
+  makeBaseControls,
   makeControls,
   makeInstructions,
   makeFloating,
   makeListPopup,
+  makeSelectValue,
   makeSelectTrigger,
   makeSelectList,
   makeSelect,
   makeHarnessSelect,
+  makeHarnessMenuItems,
   makeHarnessMenu,
   makeModelSelect,
   makeEffort,
@@ -3677,7 +4988,9 @@ export async function apply(ctx) {
 
   // Each factory reads the parts made before it; a part used before its
   // factory runs is read from `parts` when called.
-  const parts = /** @type {Parts} */ (/** @type {unknown} */ ({ helper: new HelperClient(ctx.host) }));
+  const parts = /** @type {Parts} */ (
+    /** @type {unknown} */ ({ helper: new HelperClient(ctx.host) })
+  );
   for (const make of PART_FACTORIES) Object.assign(parts, make(ui, store, parts));
 
   // The first read, before the type: its picker title names the hosts. A
@@ -3693,13 +5006,34 @@ export async function apply(ctx) {
   // works on a Desktop without them. The page's scope comes first: the card
   // shows a summary when the page exists, and the whole view when it does not.
   if (typeof ctx.inject === "function") {
-    ctx.inject(["communityReader"], (scope) => void (store.communityReader = scope.communityReader));
+    ctx.inject(["communityReader"], (scope) => {
+      store.communityReader = scope.communityReader;
+    });
     ctx.inject(["pages", "navigation"], (scope) => {
-      scope.pages.register({ id: HOSTS_PAGE_ID, title: SETTINGS_TITLE, component: parts.HostsPage, primary: true, icon: HOSTS_PAGE_ICON, layout: "workspace" });
-      store.openHostsPage = () => scope.navigation.open({ version: 1, kind: "plugin", pluginId: PLUGIN_ID, pageId: HOSTS_PAGE_ID });
+      scope.pages.register({
+        id: HOSTS_PAGE_ID,
+        title: SETTINGS_TITLE,
+        component: parts.HostsPage,
+        primary: true,
+        icon: HOSTS_PAGE_ICON,
+        layout: "workspace",
+      });
+      store.openHostsPage = () =>
+        scope.navigation.open({
+          version: 1,
+          kind: "plugin",
+          pluginId: PLUGIN_ID,
+          pageId: HOSTS_PAGE_ID,
+        });
     });
     ctx.inject(["settingsCards"], (scope) => {
-      scope.settingsCards.register({ id: SETTINGS_CARD_ID, title: SETTINGS_TITLE, group: SETTINGS_GROUP, icon: ui.icons.host, component: parts.HostsSettings });
+      scope.settingsCards.register({
+        id: SETTINGS_CARD_ID,
+        title: SETTINGS_TITLE,
+        group: SETTINGS_GROUP,
+        icon: ui.icons.host,
+        component: parts.HostsSettings,
+      });
     });
   }
 

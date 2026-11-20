@@ -43,8 +43,16 @@ const FAKE_ACCOUNT = "smoke@example.invalid";
  * `max` (hidden by the runner), one without effort, and `default` (dropped). */
 const FAKE_MODELS = [
   { value: "default", displayName: "Default" },
-  { value: "opus", resolvedModel: "claude-opus-4-1", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
-  { value: "sonnet", resolvedModel: "claude-sonnet-4-5-20250929", supportedEffortLevels: ["low", "medium", "high"] },
+  {
+    value: "opus",
+    resolvedModel: "claude-opus-4-1",
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    value: "sonnet",
+    resolvedModel: "claude-sonnet-4-5-20250929",
+    supportedEffortLevels: ["low", "medium", "high"],
+  },
   { value: "haiku", resolvedModel: "claude-haiku-4-5", supportsEffort: false },
 ];
 const FAKE_SETTINGS = { model: "sonnet", effort: "medium" };
@@ -60,14 +68,17 @@ const flag = (name) => {
   return at >= 0 ? argv[at + 1] : undefined;
 };
 const sessionId = flag("--resume") ?? flag("--session-id") ?? "none";
-const log = (entry) => appendFileSync(LOG, `${JSON.stringify({ pid: process.pid, session: sessionId, ...entry })}\n`);
+const log = (entry) =>
+  appendFileSync(LOG, `${JSON.stringify({ pid: process.pid, session: sessionId, ...entry })}\n`);
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
 if (argv[0] === "--version" || (argv[0] === "auth" && argv[1] === "status")) {
   const signedOut = existsSync(join(dirname(LOG), "signed-out"));
   log({ type: "probe", argv, signedOut, env: process.env });
   process.stdout.write(
-    argv[0] === "--version" ? `${FAKE_VERSION}\n` : `${JSON.stringify(signedOut ? { loggedIn: false } : { loggedIn: true, email: FAKE_ACCOUNT })}\n`,
+    argv[0] === "--version"
+      ? `${FAKE_VERSION}\n`
+      : `${JSON.stringify(signedOut ? { loggedIn: false } : { loggedIn: true, email: FAKE_ACCOUNT })}\n`,
   );
   process.exit(0);
 }
@@ -101,18 +112,31 @@ async function turn(message) {
     type: "turn",
     uuid: message.uuid,
     hasBuzzEvent: content.includes("<buzz-event"),
-    hasThreadContext: content.includes("<thread-context") || content.includes("<conversation-context"),
+    hasThreadContext:
+      content.includes("<thread-context") || content.includes("<conversation-context"),
     scopeLine: content.match(/^Scope: .*$/m)?.[0],
     steer: content.includes("<new-message-arrived-while-you-were-working>"),
   });
   write({ type: "system", subtype: "init", session_id: sessionId, model: "fake-model" });
-  write({ type: "user", isReplay: true, uuid: message.uuid, message: message.message, session_id: sessionId });
-  write({ type: "system", subtype: "session_state_changed", state: "running", session_id: sessionId });
+  write({
+    type: "user",
+    isReplay: true,
+    uuid: message.uuid,
+    message: message.message,
+    session_id: sessionId,
+  });
+  write({
+    type: "system",
+    subtype: "session_state_changed",
+    state: "running",
+    session_id: sessionId,
+  });
   if (content.includes("FLOOD")) {
     log({ type: "flooding" });
     const chunk = "x".repeat(FLOOD_CHUNK);
     for (let sent = 0; sent < FLOOD_BYTES; sent += FLOOD_CHUNK) {
-      if (!process.stdout.write(chunk)) await new Promise((resolve) => process.stdout.once("drain", resolve));
+      if (!process.stdout.write(chunk))
+        await new Promise((resolve) => process.stdout.once("drain", resolve));
     }
     await new Promise(() => undefined);
   }
@@ -128,14 +152,29 @@ async function turn(message) {
     log({ type: "hanging" });
     await new Promise((resolve) => (interrupted = resolve));
     log({ type: "aborted" });
-    write({ type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_streaming", session_id: sessionId });
-    write({ type: "system", subtype: "session_state_changed", state: "idle", session_id: sessionId });
+    write({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      terminal_reason: "aborted_streaming",
+      session_id: sessionId,
+    });
+    write({
+      type: "system",
+      subtype: "session_state_changed",
+      state: "idle",
+      session_id: sessionId,
+    });
     busy = false;
     return;
   }
   if (content.includes("SLOW")) await new Promise((resolve) => setTimeout(resolve, SLOW_MS));
   if (content.includes("TOOLS")) streamTools();
-  const list = await ask({ subtype: "mcp_message", server_name: "buzz", message: { jsonrpc: "2.0", id: 1, method: "tools/list" } });
+  const list = await ask({
+    subtype: "mcp_message",
+    server_name: "buzz",
+    message: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+  });
   const tools = list.response?.mcp_response?.result?.tools ?? [];
   log({
     type: "tools/list",
@@ -144,7 +183,11 @@ async function turn(message) {
     alwaysLoad: tools.every((tool) => tool._meta?.["anthropic/alwaysLoad"] === true),
   });
   const callTool = async (id, name, args) => {
-    const got = await ask({ subtype: "mcp_message", server_name: "buzz", message: { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } } });
+    const got = await ask({
+      subtype: "mcp_message",
+      server_name: "buzz",
+      message: { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } },
+    });
     const result = got.response?.mcp_response?.result;
     return { isError: result?.isError === true, reply: result?.content?.[0]?.text };
   };
@@ -158,7 +201,12 @@ async function turn(message) {
     const got = await ask({
       subtype: "mcp_message",
       server_name: "buzz",
-      message: { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "media_get", arguments: { url: media } } },
+      message: {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "media_get", arguments: { url: media } },
+      },
     });
     const result = got.response?.mcp_response?.result;
     log({ type: "media", isError: result?.isError === true, reply: result?.content?.[0]?.text });
@@ -166,17 +214,34 @@ async function turn(message) {
   const call = await ask({
     subtype: "mcp_message",
     server_name: "buzz",
-    message: { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "send", arguments: { text: "pong from fake claude", audience: "everyone", final: true } } },
+    message: {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "send",
+        arguments: { text: "pong from fake claude", audience: "everyone", final: true },
+      },
+    },
   });
   const result = call.response?.mcp_response?.result;
   log({ type: "tools/call", isError: result?.isError === true, reply: result?.content?.[0]?.text });
   const hook = await ask({
     subtype: "hook_callback",
     callback_id: "final",
-    input: { tool_name: "mcp__buzz__send", tool_input: { text: "pong from fake claude", final: true } },
+    input: {
+      tool_name: "mcp__buzz__send",
+      tool_input: { text: "pong from fake claude", final: true },
+    },
   });
   log({ type: "hook", response: hook.response });
-  write({ type: "result", subtype: "success", is_error: false, result: "done", session_id: sessionId });
+  write({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "done",
+    session_id: sessionId,
+  });
   write({ type: "system", subtype: "session_state_changed", state: "idle", session_id: sessionId });
   busy = false;
   // #lizard forgives: mirrors one upstream protocol handler branch for branch
@@ -185,19 +250,53 @@ async function turn(message) {
 /** What claude prints for a turn that thinks, talks and uses tools. */
 function streamTools() {
   const assistant = (block) =>
-    write({ type: "assistant", message: { id: TOOLS_MESSAGE_ID, role: "assistant", content: [block] }, parent_tool_use_id: null, session_id: sessionId });
+    write({
+      type: "assistant",
+      message: { id: TOOLS_MESSAGE_ID, role: "assistant", content: [block] },
+      parent_tool_use_id: null,
+      session_id: sessionId,
+    });
   const result = (block) =>
-    write({ type: "user", message: { role: "user", content: [{ type: "tool_result", ...block }] }, parent_tool_use_id: null, session_id: sessionId });
+    write({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", ...block }] },
+      parent_tool_use_id: null,
+      session_id: sessionId,
+    });
   assistant({ type: "thinking", thinking: `Planning the work. ${PLAINTEXT_MARKER}` });
   assistant({ type: "text", text: "Reading the file. " });
   assistant({ type: "text", text: "Then running a command." });
-  assistant({ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: "/etc/hosts", offset: 2, limit: 3 } });
+  assistant({
+    type: "tool_use",
+    id: "toolu_read",
+    name: "Read",
+    input: { file_path: "/etc/hosts", offset: 2, limit: 3 },
+  });
   result({ tool_use_id: "toolu_read", content: `line two\nline three ${PLAINTEXT_MARKER}` });
-  assistant({ type: "tool_use", id: "toolu_bash", name: "Bash", input: { command: "ls -la", description: "List files" } });
-  result({ tool_use_id: "toolu_bash", is_error: true, content: [{ type: "text", text: `${PLAINTEXT_MARKER} ${"x".repeat(TOOLS_BIG_BYTES)}` }] });
-  assistant({ type: "tool_use", id: "toolu_todo", name: "TodoWrite", input: { todos: [{ content: "Check hosts", status: "in_progress", activeForm: "Checking" }] } });
+  assistant({
+    type: "tool_use",
+    id: "toolu_bash",
+    name: "Bash",
+    input: { command: "ls -la", description: "List files" },
+  });
+  result({
+    tool_use_id: "toolu_bash",
+    is_error: true,
+    content: [{ type: "text", text: `${PLAINTEXT_MARKER} ${"x".repeat(TOOLS_BIG_BYTES)}` }],
+  });
+  assistant({
+    type: "tool_use",
+    id: "toolu_todo",
+    name: "TodoWrite",
+    input: { todos: [{ content: "Check hosts", status: "in_progress", activeForm: "Checking" }] },
+  });
   result({ tool_use_id: "toolu_todo", content: "Todos updated" });
-  assistant({ type: "tool_use", id: "toolu_edit", name: "Edit", input: { file_path: "/tmp/fake.txt", old_string: "old", new_string: "new" } });
+  assistant({
+    type: "tool_use",
+    id: "toolu_edit",
+    name: "Edit",
+    input: { file_path: "/tmp/fake.txt", old_string: "old", new_string: "new" },
+  });
   result({ tool_use_id: "toolu_edit", content: "The file was updated" });
 }
 
@@ -227,31 +326,62 @@ lines.on("line", (line) => {
         hasSessionModel: prompt.includes("## Session Model"),
         workspace: prompt.match(/Current working directory: (.*)/)?.[1],
         sdkMcpServers: request.sdkMcpServers,
-        finalHook: request.hooks?.PostToolUse?.some((entry) => entry.hookCallbackIds?.includes("final")),
+        finalHook: request.hooks?.PostToolUse?.some((entry) =>
+          entry.hookCallbackIds?.includes("final"),
+        ),
       });
-      write({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: { models: FAKE_MODELS } } });
+      write({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id,
+          response: { models: FAKE_MODELS },
+        },
+      });
       return;
     }
     if (request.subtype === "get_settings") {
       log({ type: "get_settings" });
-      write({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: { applied: FAKE_SETTINGS } } });
+      write({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id,
+          response: { applied: FAKE_SETTINGS },
+        },
+      });
       return;
     }
     if (request.subtype === "interrupt") {
       log({ type: "interrupt" });
-      write({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: {} } });
+      write({
+        type: "control_response",
+        response: { subtype: "success", request_id: message.request_id, response: {} },
+      });
       interrupted?.();
       return;
     }
-    write({ type: "control_response", response: { subtype: "error", request_id: message.request_id, error: "unsupported" } });
+    write({
+      type: "control_response",
+      response: { subtype: "error", request_id: message.request_id, error: "unsupported" },
+    });
     return;
   }
   if (message.type === "user") {
     // A message during a busy turn is folded into it, as claude does.
     if (busy) {
       const content = String(message.message?.content ?? "");
-      log({ type: "steer", steer: content.includes("<new-message-arrived-while-you-were-working>") });
-      write({ type: "user", isReplay: true, uuid: message.uuid, message: message.message, session_id: sessionId });
+      log({
+        type: "steer",
+        steer: content.includes("<new-message-arrived-while-you-were-working>"),
+      });
+      write({
+        type: "user",
+        isReplay: true,
+        uuid: message.uuid,
+        message: message.message,
+        session_id: sessionId,
+      });
       return;
     }
     queue = queue.then(() => turn(message));

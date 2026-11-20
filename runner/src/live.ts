@@ -8,9 +8,10 @@
 // hands the rest to the agent's gate. The relay's membership notices keep
 // that channel scope current while the socket stays open. The cursor
 // survives restarts so a reconnect catches up from the last event it saw.
+
+import type { BuzzEvent, Template } from "@buzz/buzz-mcp/client";
 import { CHAT_KINDS } from "@buzz/features/agents/attention";
 import { eventDto, type RelayEvent } from "@buzz/features/relay/events";
-import type { BuzzEvent, Template } from "@buzz/buzz-mcp/client";
 import {
   CATCHUP_MAX_S,
   CHANNEL_ID,
@@ -43,7 +44,7 @@ import {
 import { errorMessage, RelayError } from "./errors";
 import type { Logger } from "./log";
 import { backoff, sleep } from "./net";
-import { rosterMembers, type ChannelSummary } from "./reads";
+import { type ChannelSummary, rosterMembers } from "./reads";
 import type { AgentState } from "./store";
 
 export type LiveOptions = Readonly<{
@@ -66,13 +67,22 @@ export type LiveOptions = Readonly<{
 
 export type LiveStatus = "connecting" | "connected" | "stopped";
 /** A published event awaiting the relay's `OK`. */
-type Waiting = { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
+type Waiting = {
+  resolve(): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+};
 /** The relay treats a re-sent event as success. */
 const DUPLICATE = "duplicate";
 const now = () => Math.floor(Date.now() / 1000);
 /** Subscriptions whose loss ends the session: the wake subscriptions are the
  * listener's purpose, and the notices are its only way to hear a join. */
-const RESTART_SUBSCRIPTIONS: ReadonlySet<string> = new Set([SUB_MENTIONS, SUB_DMS, SUB_REPLIES, SUB_NOTICES]);
+const RESTART_SUBSCRIPTIONS: ReadonlySet<string> = new Set([
+  SUB_MENTIONS,
+  SUB_DMS,
+  SUB_REPLIES,
+  SUB_NOTICES,
+]);
 
 /** One socket's state, shared by its handlers and dropped with it. */
 type Session = {
@@ -205,7 +215,12 @@ export class LiveListener {
         });
       } catch (error) {
         if (this.abort.signal.aborted) break;
-        log.warn("relay session ended", { attempt: attempt + 1, elapsedMs: Date.now() - started, authenticated, error });
+        log.warn("relay session ended", {
+          attempt: attempt + 1,
+          elapsedMs: Date.now() - started,
+          authenticated,
+          error,
+        });
       }
       if (this.abort.signal.aborted) break;
       this.status = "connecting";
@@ -243,13 +258,19 @@ export class LiveListener {
         },
       };
       // Connect, then authenticate, each within its own deadline.
-      session.deadline = setTimeout(() => session.fail(new RelayError("relay connect timed out")), WS_CONNECT_TIMEOUT_MS);
+      session.deadline = setTimeout(
+        () => session.fail(new RelayError("relay connect timed out")),
+        WS_CONNECT_TIMEOUT_MS,
+      );
       const stop = () => ws.close();
       this.abort.signal.addEventListener("abort", stop, { once: true });
 
       ws.addEventListener("open", () => {
         clearTimeout(session.deadline);
-        session.deadline = setTimeout(() => session.fail(new RelayError("relay authentication timed out")), WS_AUTH_TIMEOUT_MS);
+        session.deadline = setTimeout(
+          () => session.fail(new RelayError("relay authentication timed out")),
+          WS_AUTH_TIMEOUT_MS,
+        );
         log.debug("relay connected");
       });
       ws.addEventListener("error", () => session.fail(new RelayError("relay socket error")));
@@ -271,7 +292,10 @@ export class LiveListener {
       if (session.probeId) session.send(["CLOSE", session.probeId]);
       session.probeId = `${SUB_PROBE}-${++session.probeSerial}`;
       session.send(["REQ", session.probeId, { kinds: [KIND_PROBE], "#p": [agent], limit: 0 }]);
-      session.probeDeadline = setTimeout(() => session.fail(new RelayError("relay probe unanswered")), WS_PROBE_TIMEOUT_MS);
+      session.probeDeadline = setTimeout(
+        () => session.fail(new RelayError("relay probe unanswered")),
+        WS_PROBE_TIMEOUT_MS,
+      );
       // The relay can silently prune multi-channel scopes, so the
       // Desktop client renews them every quiet minute; do the same.
       this.renewMentions(session.send);
@@ -311,7 +335,8 @@ export class LiveListener {
     if (!session.authenticated) return;
     if (this.publishAnswer(session, type, first, second, data[3])) return;
     if (this.probeAnswer(session, type, first)) return;
-    if (type === "EVENT" && typeof first === "string") return this.receive(first, second, session.send);
+    if (type === "EVENT" && typeof first === "string")
+      return this.receive(first, second, session.send);
     if (type === "EOSE" && first === SUB_MEMBERSHIP) return this.rostersLoaded(session.send);
     this.relayClosedOrNotice(session, type, first, second);
   }
@@ -351,10 +376,17 @@ export class LiveListener {
 
   /** The relay's `OK` for an event this listener published; a duplicate
    * counts as accepted. True when the frame answered one. */
-  private publishAnswer(session: Session, type: unknown, first: unknown, second: unknown, message: unknown): boolean {
+  private publishAnswer(
+    session: Session,
+    type: unknown,
+    first: unknown,
+    second: unknown,
+    message: unknown,
+  ): boolean {
     const { outbox } = session;
-    if (type !== "OK" || typeof first !== "string" || !outbox?.waiting.has(first)) return false;
-    const waiting = outbox.waiting.get(first)!;
+    if (type !== "OK" || typeof first !== "string" || !outbox) return false;
+    const waiting = outbox.waiting.get(first);
+    if (!waiting) return false;
     outbox.waiting.delete(first);
     clearTimeout(waiting.timer);
     const reason = String(message ?? "");
@@ -366,7 +398,8 @@ export class LiveListener {
   /** The answer to the probe in flight: the socket is alive, so the next
    * probe is scheduled. True when the frame answered it. */
   private probeAnswer(session: Session, type: unknown, first: unknown): boolean {
-    if (!session.probeId || first !== session.probeId || (type !== "EOSE" && type !== "CLOSED")) return false;
+    if (!session.probeId || first !== session.probeId || (type !== "EOSE" && type !== "CLOSED"))
+      return false;
     clearTimeout(session.probeDeadline);
     if (type === "EOSE") session.send(["CLOSE", session.probeId]);
     session.probeId = "";
@@ -380,10 +413,14 @@ export class LiveListener {
     // Our own CLOSE of an answered probe comes back as CLOSED: not news.
     if (type === "CLOSED" && typeof first === "string" && first.startsWith(`${SUB_PROBE}-`)) return;
     if (type === "CLOSED" && typeof first === "string") {
-      log.warn("relay closed a subscription", { subscription: first, reason: String(second ?? "").slice(0, 200) });
+      log.warn("relay closed a subscription", {
+        subscription: first,
+        reason: String(second ?? "").slice(0, 200),
+      });
       // The wake subscriptions are the listener's purpose: start over.
       // The notices are the only way it hears a join, so they count too.
-      if (RESTART_SUBSCRIPTIONS.has(first)) session.fail(new RelayError(`subscription ${first} closed`));
+      if (RESTART_SUBSCRIPTIONS.has(first))
+        session.fail(new RelayError(`subscription ${first} closed`));
       return;
     }
     if (type === "NOTICE") log.info("relay notice", { notice: String(first ?? "").slice(0, 200) });
@@ -429,7 +466,10 @@ export class LiveListener {
     this.loading = new Map();
     this.loadStartedAt = Date.now();
     // A load without EOSE would hold every later notice in `reloadQueued`.
-    this.loadDeadline = setTimeout(() => this.failSession?.(new RelayError("relay roster load timed out")), ROSTER_LOAD_TIMEOUT_MS);
+    this.loadDeadline = setTimeout(
+      () => this.failSession?.(new RelayError("relay roster load timed out")),
+      ROSTER_LOAD_TIMEOUT_MS,
+    );
     send(["REQ", SUB_MEMBERSHIP, { kinds: [KIND_CHANNEL_MEMBERS], "#p": [this.options.agent] }]);
   }
 
@@ -440,7 +480,8 @@ export class LiveListener {
     this.loading = undefined;
     const { agent } = this.options;
     for (const [channel, at] of this.granted)
-      if (this.rosters.get(channel)?.includes(agent) || this.loadStartedAt - at >= ROSTER_SETTLE_MS) this.granted.delete(channel);
+      if (this.rosters.get(channel)?.includes(agent) || this.loadStartedAt - at >= ROSTER_SETTLE_MS)
+        this.granted.delete(channel);
     // A grant this load could not judge yet (a reconnect soon after its
     // notice) gets its own confirming load, as the old socket's timer died.
     if (this.granted.size) this.settle(send);
@@ -460,7 +501,9 @@ export class LiveListener {
    * replace the old REQ; the dedupe set drops events the new one replays. */
   private subscribeMentions(send: (message: unknown) => void) {
     const { agent } = this.options;
-    const joined = [...this.rosters].filter(([, members]) => members.includes(agent)).map(([channel]) => channel);
+    const joined = [...this.rosters]
+      .filter(([, members]) => members.includes(agent))
+      .map(([channel]) => channel);
     const channels = [...new Set([...joined, ...this.granted.keys()])].sort();
     const scope = channels.join(",");
     if (this.mentionScope && scope === this.mentionScope) return;
@@ -469,7 +512,8 @@ export class LiveListener {
     this.sinces.set(SUB_MENTIONS, since);
     const filter = { kinds: [...CHAT_KINDS], "#p": [agent], since };
     send(["REQ", SUB_MENTIONS, channels.length ? { ...filter, "#h": channels } : filter]);
-    if (channels.length) this.options.log.info("mention subscription scoped", { channels: channels.length });
+    if (channels.length)
+      this.options.log.info("mention subscription scoped", { channels: channels.length });
     this.subscribeReplies(send, channels, since);
   }
 
@@ -483,7 +527,11 @@ export class LiveListener {
    * with CLOSED, which reads as a lost subscription and reconnects. The next
    * reconnect drops the stale scope, and until then the gate still checks
    * every event it brings. */
-  private subscribeReplies(send: (message: unknown) => void, channels: readonly string[], since: number) {
+  private subscribeReplies(
+    send: (message: unknown) => void,
+    channels: readonly string[],
+    since: number,
+  ) {
     const owner = this.options.replyAuthor;
     if (!owner || !channels.length) return;
     this.sinces.set(SUB_REPLIES, since);
@@ -522,7 +570,8 @@ export class LiveListener {
       return;
     }
     if (subscription === SUB_MEMBERSHIP) {
-      if (event.kind !== KIND_CHANNEL_MEMBERS || event.pubkey !== this.options.relayAuthor()) return;
+      if (event.kind !== KIND_CHANNEL_MEMBERS || event.pubkey !== this.options.relayAuthor())
+        return;
       const channel = event.tags.find((item) => item[0] === "d")?.[1];
       if (!channel) return;
       if (this.loading) return void this.loading.set(channel, rosterMembers(event));
@@ -533,12 +582,17 @@ export class LiveListener {
       return;
     }
     if (subscription === SUB_NOTICES) return this.notice(event, send);
-    if (subscription !== SUB_MENTIONS && subscription !== SUB_DMS && subscription !== SUB_REPLIES) return;
+    if (subscription !== SUB_MENTIONS && subscription !== SUB_DMS && subscription !== SUB_REPLIES)
+      return;
     // The relay applies the filter; this check keeps a stray frame from
     // reaching the gate as if it were the owner's.
     if (subscription === SUB_REPLIES && event.pubkey !== this.options.replyAuthor) return;
     if (event.created_at < (this.sinces.get(subscription) ?? 0)) {
-      log.debug("event dropped", { reason: "before-since", subscription, event: event.id.slice(0, 12) });
+      log.debug("event dropped", {
+        reason: "before-since",
+        subscription,
+        event: event.id.slice(0, 12),
+      });
       return;
     }
     if (this.seen.has(event.id)) return;
@@ -551,7 +605,8 @@ export class LiveListener {
     void this.options
       .onEvent(event)
       .then((admitted) => {
-        if (admitted) this.options.state.advance(Math.min(event.created_at, now() + FUTURE_SKEW_S), event.id);
+        if (admitted)
+          this.options.state.advance(Math.min(event.created_at, now() + FUTURE_SKEW_S), event.id);
       })
       .catch((error) => log.error("event handler failed", { event: event.id.slice(0, 12), error }));
   }
@@ -566,8 +621,17 @@ export class LiveListener {
     const kinds: readonly number[] = [KIND_MEMBER_ADDED, KIND_MEMBER_REMOVED];
     const forAgent = event.tags.some(([name, value]) => name === "p" && value === agent);
     const channel = event.tags.find((item) => item[0] === "h")?.[1] ?? "";
-    if (!kinds.includes(event.kind) || event.pubkey !== this.options.relayAuthor() || !forAgent || !CHANNEL_ID.test(channel)) {
-      log.warn("event dropped", { reason: "bad-notice", subscription: SUB_NOTICES, event: event.id.slice(0, 12) });
+    if (
+      !kinds.includes(event.kind) ||
+      event.pubkey !== this.options.relayAuthor() ||
+      !forAgent ||
+      !CHANNEL_ID.test(channel)
+    ) {
+      log.warn("event dropped", {
+        reason: "bad-notice",
+        subscription: SUB_NOTICES,
+        event: event.id.slice(0, 12),
+      });
       return;
     }
     log.info("membership notice", { kind: event.kind, channel });
@@ -606,7 +670,8 @@ export class LiveListener {
         }
       if (this.types.get(channel) === "dm") next.add(channel);
     }
-    const changed = next.size !== this.dms.size || [...next].some((channel) => !this.dms.has(channel));
+    const changed =
+      next.size !== this.dms.size || [...next].some((channel) => !this.dms.has(channel));
     if (!changed) return;
     this.dms = next;
     log.info("dm channels updated", { count: next.size });

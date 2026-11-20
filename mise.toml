@@ -1,0 +1,8 @@
+# Pinned tool versions for this repository (https://mise.jdx.dev).
+# Run `mise install` to match the check and hook environment.
+[tools]
+node = "24.22.3"
+pnpm = "12.22.0"
+markdownlint-cli2 = "0.24.1"
+shfmt = "3.14.1"
+"pipx:lizard" = "1.24.3"

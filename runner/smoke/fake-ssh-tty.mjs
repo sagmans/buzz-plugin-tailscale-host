@@ -82,7 +82,10 @@ async function main() {
     process.stderr.write("fake ssh: the sign-in asked for no terminal\n");
     return end(EXIT_NO_TTY);
   }
-  if (env.FAKE_SSH_CHECK === "1") process.stderr.write(`# Tailscale SSH requires an additional check.\n# To authenticate, visit: ${CHECK_LINK}\n`);
+  if (env.FAKE_SSH_CHECK === "1")
+    process.stderr.write(
+      `# Tailscale SSH requires an additional check.\n# To authenticate, visit: ${CHECK_LINK}\n`,
+    );
   if (env.FAKE_SSH_NO_TOOL === "1") return end(EXIT_NO_TOOL);
   const marker = MARKER_RE.exec(command)?.[1];
   const words = WORDS_RE.exec(command)?.[1]?.trim() ?? "";

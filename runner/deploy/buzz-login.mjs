@@ -23,7 +23,15 @@
 // emails or organization ids.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { constants as osConstants, userInfo } from "node:os";
@@ -148,23 +156,33 @@ class Cancelled extends LoginError {
 const secrets = new Set();
 const remember = (value) => {
   if (value)
-    for (const form of [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value)]) if (form) secrets.add(form);
+    for (const form of [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value)])
+      if (form) secrets.add(form);
   return value;
 };
 /** Control characters, line and paragraph separators and format
  * characters (bidi overrides, zero-width): each can hide or fake text. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional sanitization of terminal control bytes from untrusted harness output
 const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}]+/gu;
 /** One such character, for input checked a character at a time. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional rejection of control bytes in interactive terminal input
 const UNSAFE_CHAR = /^[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}]$/u;
 /** Harness text may carry terminal control sequences; only plain text is
  * shown, cut to a size, with any entered secret masked, longest form first. */
 function clean(value, max = SHOW_MAX_CHARS) {
-  let text = String(value ?? "").replace(UNSAFE_TEXT, " ").trim();
-  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) text = text.split(secret).join("<hidden>");
+  let text = String(value ?? "")
+    .replace(UNSAFE_TEXT, " ")
+    .trim();
+  for (const secret of [...secrets].sort((a, b) => b.length - a.length))
+    text = text.split(secret).join("<hidden>");
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 /** Each line cleaned on its own, so a message keeps its lines. */
-const lines = (text) => String(text ?? "").split("\n").map((line) => `${clean(line, URL_MAX_CHARS)}\n`).join("");
+const lines = (text) =>
+  String(text ?? "")
+    .split("\n")
+    .map((line) => `${clean(line, URL_MAX_CHARS)}\n`)
+    .join("");
 /** A reader that went away (`buzz-login pi list | head`) ends the output,
  * not the run: the run still closes goose-acp and removes its folder. */
 const closed = new Set();
@@ -174,8 +192,11 @@ const say = (text = "") => write(process.stdout, lines(text));
 const note = (text) => write(process.stderr, lines(text));
 /** Fixed-width rows; widths from the content, so long ids stay readable. */
 function table(rows) {
-  const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => clean(row[column]).length)));
-  for (const row of rows) say(`  ${row.map((cell, column) => clean(cell).padEnd(widths[column])).join("  ")}`.trimEnd());
+  const widths = rows[0].map((_, column) =>
+    Math.max(...rows.map((row) => clean(row[column]).length)),
+  );
+  for (const row of rows)
+    say(`  ${row.map((cell, column) => clean(cell).padEnd(widths[column])).join("  ")}`.trimEnd());
 }
 /** A link as the URL parser reads it, or undefined: only https is shown. */
 function httpsUrl(value) {
@@ -204,7 +225,9 @@ const FINAL_BYTE = /[@-~]/;
  * in a shell history or a file. */
 function requireTerminal() {
   if (!process.stdin.isTTY || !process.stderr.isTTY)
-    throw new LoginError(`This step needs a terminal: run ${AS_HARNESS_USER} in one.`, { exit: EXIT_USAGE });
+    throw new LoginError(`This step needs a terminal: run ${AS_HARNESS_USER} in one.`, {
+      exit: EXIT_USAGE,
+    });
 }
 
 /** One line from the terminal, in raw mode so a secret is never echoed and
@@ -218,7 +241,7 @@ function ask(message, { secret = false, signal } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason ?? new Cancelled());
     let value = "";
-    let escape = "";
+    let escState = "";
     const finish = (error) => {
       clearTimeout(timer);
       input.off("data", onData);
@@ -229,21 +252,24 @@ function ask(message, { secret = false, signal } = {}) {
       if (error) reject(error);
       else resolve(value);
     };
-    const timer = setTimeout(() => finish(new LoginError("No answer in time.", { exit: EXIT_TEMPFAIL })), PROMPT_TIMEOUT_MS);
+    const timer = setTimeout(
+      () => finish(new LoginError("No answer in time.", { exit: EXIT_TEMPFAIL })),
+      PROMPT_TIMEOUT_MS,
+    );
     const onAbort = () => finish(signal.reason ?? new Cancelled());
     const onData = (chunk) => {
       // #lizard forgives: one branch per terminal control key
       for (const char of chunk.toString("utf8")) {
-        if (escape === ESC) {
-          escape = SEQUENCE_OPENERS.has(char) ? char : "";
+        if (escState === ESC) {
+          escState = SEQUENCE_OPENERS.has(char) ? char : "";
           continue;
         }
-        if (escape) {
-          if (FINAL_BYTE.test(char)) escape = "";
+        if (escState) {
+          if (FINAL_BYTE.test(char)) escState = "";
           continue;
         }
         if (char === ESC) {
-          escape = ESC;
+          escState = ESC;
           continue;
         }
         if (char === CTRL_C || (char === CTRL_D && !value)) return finish(new Cancelled());
@@ -257,7 +283,10 @@ function ask(message, { secret = false, signal } = {}) {
           if (!secret) process.stderr.write("\b \b".repeat(value.length));
           value = "";
         } else if (!UNSAFE_CHAR.test(char)) {
-          if (value.length >= INPUT_MAX_CHARS) return finish(new LoginError("That is longer than any key or code.", { exit: EXIT_USAGE }));
+          if (value.length >= INPUT_MAX_CHARS)
+            return finish(
+              new LoginError("That is longer than any key or code.", { exit: EXIT_USAGE }),
+            );
           value += char;
           if (!secret) process.stderr.write(char);
         }
@@ -281,9 +310,12 @@ async function askSecret(message, options) {
 
 /** A numbered choice; the owner types a number or the exact id. */
 async function pick(message, options, signal) {
-  if (!options.length) throw new LoginError(`${message}: there is nothing to choose.`, { exit: EXIT_UNAVAILABLE });
+  if (!options.length)
+    throw new LoginError(`${message}: there is nothing to choose.`, { exit: EXIT_UNAVAILABLE });
   note(message);
-  options.forEach((option, index) => note(`  ${String(index + 1).padStart(3)}. ${option.label}`));
+  for (const [index, option] of options.entries()) {
+    note(`  ${String(index + 1).padStart(3)}. ${option.label}`);
+  }
   for (;;) {
     const answer = (await ask("Number or id", { signal })).trim();
     const byNumber = /^\d+$/.test(answer) ? options[Number(answer) - 1] : undefined;
@@ -395,12 +427,15 @@ async function run(bin, args, { env, timeoutMs, terminal = false, input } = {}) 
     throw new LoginError(`Could not start ${bin}.`, { cause, exit: EXIT_UNAVAILABLE });
   }
   const failed = new Promise((_, reject) =>
-    child.once("error", (cause) => reject(new LoginError(`Could not run ${bin}.`, { cause, exit: EXIT_UNAVAILABLE }))),
+    child.once("error", (cause) =>
+      reject(new LoginError(`Could not run ${bin}.`, { cause, exit: EXIT_UNAVAILABLE })),
+    ),
   );
   if (terminal) terminalChild = true;
   let output = Buffer.alloc(0);
   const keep = (chunk) => {
-    if (output.length < OUTPUT_MAX_BYTES) output = Buffer.concat([output, chunk]).subarray(0, OUTPUT_MAX_BYTES);
+    if (output.length < OUTPUT_MAX_BYTES)
+      output = Buffer.concat([output, chunk]).subarray(0, OUTPUT_MAX_BYTES);
   };
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -420,7 +455,11 @@ async function run(bin, args, { env, timeoutMs, terminal = false, input } = {}) 
   }
   try {
     const { code, signal } = await Promise.race([ended(child), failed]);
-    if (timedOut) throw new LoginError(`${bin} ${args.join(" ")} did not finish in ${Math.round(timeoutMs / 1000)} s.`, { exit: EXIT_TEMPFAIL });
+    if (timedOut)
+      throw new LoginError(
+        `${bin} ${args.join(" ")} did not finish in ${Math.round(timeoutMs / 1000)} s.`,
+        { exit: EXIT_TEMPFAIL },
+      );
     return { code, signal, output: output.toString("utf8") };
   } finally {
     clearTimeout(timer);
@@ -436,7 +475,9 @@ async function run(bin, args, { env, timeoutMs, terminal = false, input } = {}) 
  * give: 128 + the signal number for a killed one. */
 function childFailed(what, { code, signal }) {
   const number = signal ? osConstants.signals[signal] : undefined;
-  return new LoginError(`${what} stopped (${signal ?? `exit ${code}`}).`, { exit: number ? 128 + number : EXIT_FAIL });
+  return new LoginError(`${what} stopped (${signal ?? `exit ${code}`}).`, {
+    exit: number ? 128 + number : EXIT_FAIL,
+  });
 }
 
 // --- Claude. ---
@@ -461,7 +502,9 @@ async function claudeStatus() {
     throw new LoginError(`claude auth status gave no status (exit ${code}).`, { cause });
   }
   if (!status?.loggedIn) return { signedIn: "no" };
-  const how = [status.authMethod, status.apiProvider, status.subscriptionType].filter((part) => typeof part === "string" && part);
+  const how = [status.authMethod, status.apiProvider, status.subscriptionType].filter(
+    (part) => typeof part === "string" && part,
+  );
   return { signedIn: `yes (${how.join(", ")})` };
 }
 
@@ -476,7 +519,11 @@ async function claudeLogin(args) {
   noMoreArgs(args);
   requireTerminal();
   const method = billing ? "--console" : "--claudeai";
-  note(billing ? "Signing Claude in with an Anthropic Console account (API billing)." : "Signing Claude in with a claude.ai subscription.");
+  note(
+    billing
+      ? "Signing Claude in with an Anthropic Console account (API billing)."
+      : "Signing Claude in with a claude.ai subscription.",
+  );
   note("Open the link Claude shows, sign in, then paste the code back here.");
   const { code, signal } = await run(CLAUDE_BIN, ["auth", "login", method], {
     env: CLAUDE_ENV(),
@@ -516,7 +563,8 @@ async function codexLogin(args) {
   let device = takeFlag(args, "--device");
   noMoreArgs(args);
   requireTerminal();
-  if (apiKey && device) throw new LoginError("Choose one: --api-key or --device.", { exit: EXIT_USAGE });
+  if (apiKey && device)
+    throw new LoginError("Choose one: --api-key or --device.", { exit: EXIT_USAGE });
   if (!apiKey && !device) {
     const way = await pick("How should Codex sign in?", [
       { id: "device", label: "ChatGPT account, with a code (device sign-in)" },
@@ -527,7 +575,9 @@ async function codexLogin(args) {
   }
   if (device) {
     privateCodexHome();
-    note("Open the link Codex shows and enter its code. ChatGPT must allow device code sign-in (Settings > Security).");
+    note(
+      "Open the link Codex shows and enter its code. ChatGPT must allow device code sign-in (Settings > Security).",
+    );
     const { code, signal } = await run(CODEX_BIN, ["login", "--device-auth"], {
       env: CODEX_ENV(),
       timeoutMs: SIGN_IN_TIMEOUT_MS,
@@ -536,14 +586,16 @@ async function codexLogin(args) {
     if (code !== 0) throw childFailed("codex login --device-auth", { code, signal });
   } else {
     const key = await askSecret("OpenAI API key");
-    if (/\s/.test(key)) throw new LoginError("An API key has no spaces or line breaks.", { exit: EXIT_USAGE });
+    if (/\s/.test(key))
+      throw new LoginError("An API key has no spaces or line breaks.", { exit: EXIT_USAGE });
     privateCodexHome();
     const { code, output } = await run(CODEX_BIN, ["login", "--with-api-key"], {
       env: CODEX_ENV(),
       timeoutMs: STATUS_TIMEOUT_MS,
       input: key,
     });
-    if (code !== 0) throw new LoginError(`codex login --with-api-key failed (exit ${code}): ${clean(output)}`);
+    if (code !== 0)
+      throw new LoginError(`codex login --with-api-key failed (exit ${code}): ${clean(output)}`);
   }
   say(`Codex: signed in: ${(await codexStatus()).signedIn}.`);
 }
@@ -601,9 +653,15 @@ class Goose {
       this.stderr = (this.stderr + chunk.toString("utf8")).slice(-SHOW_MAX_CHARS * 4);
     });
     this.child.stdin.on("error", () => {});
-    this.child.on("error", (cause) => this.fail(new LoginError(`Could not start goose-acp.`, { cause, exit: EXIT_UNAVAILABLE })));
+    this.child.on("error", (cause) =>
+      this.fail(new LoginError(`Could not start goose-acp.`, { cause, exit: EXIT_UNAVAILABLE })),
+    );
     this.child.on("exit", (code, signal) =>
-      this.fail(new LoginError(`goose-acp stopped (${signal ?? `exit ${code}`}): ${clean(this.stderr)}`, { exit: EXIT_UNAVAILABLE })),
+      this.fail(
+        new LoginError(`goose-acp stopped (${signal ?? `exit ${code}`}): ${clean(this.stderr)}`, {
+          exit: EXIT_UNAVAILABLE,
+        }),
+      ),
     );
   }
 
@@ -615,7 +673,11 @@ class Goose {
 
   read(chunk) {
     this.buffer = Buffer.concat([this.buffer, chunk]);
-    for (let newline = this.buffer.indexOf(0x0a); newline >= 0; newline = this.buffer.indexOf(0x0a)) {
+    for (
+      let newline = this.buffer.indexOf(0x0a);
+      newline >= 0;
+      newline = this.buffer.indexOf(0x0a)
+    ) {
       const line = this.buffer.subarray(0, newline).toString("utf8").trim();
       this.buffer = this.buffer.subarray(newline + 1);
       if (line) this.message(line);
@@ -635,14 +697,20 @@ class Goose {
     }
     if (message.method && message.id !== undefined) {
       // A request to the client (a permission, a file): nothing here serves it.
-      this.send({ jsonrpc: "2.0", id: message.id, error: { code: JSONRPC_METHOD_NOT_FOUND, message: "Not supported" } });
+      this.send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: JSONRPC_METHOD_NOT_FOUND, message: "Not supported" },
+      });
     } else if (message.method) {
       this.handlers.get(message.method)?.(message.params ?? {});
     } else if (this.calls.has(message.id)) {
       const call = this.calls.get(message.id);
       this.calls.delete(message.id);
       if (message.error)
-        call.reject(new LoginError(`goose: ${clean(errorText(message.error))}`, { cause: message.error }));
+        call.reject(
+          new LoginError(`goose: ${clean(errorText(message.error))}`, { cause: message.error }),
+        );
       else call.resolve(message.result ?? {});
     }
   }
@@ -661,11 +729,21 @@ class Goose {
       if (this.failure) return reject(this.failure);
       const timer = setTimeout(() => {
         this.calls.delete(id);
-        reject(new LoginError(`goose-acp did not answer ${method} in ${Math.round(timeoutMs / 1000)} s.`));
+        reject(
+          new LoginError(
+            `goose-acp did not answer ${method} in ${Math.round(timeoutMs / 1000)} s.`,
+          ),
+        );
       }, timeoutMs);
       this.calls.set(id, {
-        resolve: (value) => (clearTimeout(timer), resolve(value)),
-        reject: (error) => (clearTimeout(timer), reject(error)),
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
       });
       this.send({ jsonrpc: "2.0", id, method, params });
     });
@@ -695,7 +773,13 @@ class Goose {
   async providers() {
     const { entries } = await this.request("_goose/unstable/providers/list", { providerIds: [] });
     return (entries ?? [])
-      .filter((entry) => entry.visibleInSetup && !entry.deprecated && !entry.acp && PROVIDER_ID.test(entry.providerId ?? ""))
+      .filter(
+        (entry) =>
+          entry.visibleInSetup &&
+          !entry.deprecated &&
+          !entry.acp &&
+          PROVIDER_ID.test(entry.providerId ?? ""),
+      )
       .sort((a, b) => String(a.providerName).localeCompare(String(b.providerName)));
   }
 
@@ -728,12 +812,20 @@ async function withGoose(work) {
   }
 }
 
-const keyFields = (entry) => (entry.configKeys ?? []).filter((key) => !key.oauthFlow && !key.deviceCodeFlow);
+const keyFields = (entry) =>
+  (entry.configKeys ?? []).filter((key) => !key.oauthFlow && !key.deviceCodeFlow);
 /** Only a device code works on a server: a browser sign-in waits for a
  * callback on this host's localhost, which the owner's browser can't reach. */
 const deviceSignIn = (entry) => (entry.configKeys ?? []).some((key) => key.deviceCodeFlow);
 const gooseWays = (entry) =>
-  [keyFields(entry).length ? "key" : "", deviceSignIn(entry) ? "sign-in" : (entry.configKeys ?? []).some((key) => key.oauthFlow) ? "browser only" : ""]
+  [
+    keyFields(entry).length ? "key" : "",
+    deviceSignIn(entry)
+      ? "sign-in"
+      : (entry.configKeys ?? []).some((key) => key.oauthFlow)
+        ? "browser only"
+        : "",
+  ]
     .filter(Boolean)
     .join(", ");
 
@@ -743,7 +835,8 @@ const gooseWays = (entry) =>
 async function gooseMethod(goose, entry) {
   const set = await goose.setKeys(entry.providerId);
   const keys = entry.configKeys ?? [];
-  if (keys.some((key) => (key.oauthFlow || key.deviceCodeFlow) && set.has(key.name))) return "sign-in";
+  if (keys.some((key) => (key.oauthFlow || key.deviceCodeFlow) && set.has(key.name)))
+    return "sign-in";
   if (keys.some((key) => key.secret && set.has(key.name))) return "key";
   return keys.some((key) => set.has(key.name)) ? "settings" : "";
 }
@@ -766,20 +859,33 @@ async function gooseProvider(goose, id, message, usable = () => true) {
   if (id === undefined)
     id = await pick(
       message,
-      providers.filter(usable).map((entry) => ({ id: entry.providerId, label: `${entry.providerId} (${entry.providerName})` })),
+      providers.filter(usable).map((entry) => ({
+        id: entry.providerId,
+        label: `${entry.providerId} (${entry.providerName})`,
+      })),
     );
   const entry = providers.find((entry) => entry.providerId === id);
-  if (!entry) throw new LoginError(`goose has no provider ${id}. See: buzz-login goose list`, { exit: EXIT_USAGE });
+  if (!entry)
+    throw new LoginError(`goose has no provider ${id}. See: buzz-login goose list`, {
+      exit: EXIT_USAGE,
+    });
   return entry;
 }
 
 async function gooseList() {
   await withGoose(async (goose) => {
     const [providers, defaults] = await Promise.all([goose.providers(), goose.defaults()]);
-    say(`Goose providers (default: ${defaults.provider ? `${defaults.provider} / ${defaults.model || "-"}` : "none"})`);
+    say(
+      `Goose providers (default: ${defaults.provider ? `${defaults.provider} / ${defaults.model || "-"}` : "none"})`,
+    );
     const rows = [["ID", "NAME", "SET UP", "WAYS"]];
     for (const entry of providers)
-      rows.push([entry.providerId, entry.providerName, (entry.configured && (await gooseMethod(goose, entry))) || "-", gooseWays(entry) || "-"]);
+      rows.push([
+        entry.providerId,
+        entry.providerName,
+        (entry.configured && (await gooseMethod(goose, entry))) || "-",
+        gooseWays(entry) || "-",
+      ]);
     table(rows);
   });
 }
@@ -791,9 +897,18 @@ async function gooseKey(args) {
   noMoreArgs(args);
   requireTerminal();
   await withGoose(async (goose) => {
-    const entry = await gooseProvider(goose, id, "Which goose provider gets a key?", (entry) => keyFields(entry).length > 0);
+    const entry = await gooseProvider(
+      goose,
+      id,
+      "Which goose provider gets a key?",
+      (entry) => keyFields(entry).length > 0,
+    );
     const keys = keyFields(entry);
-    if (!keys.length) throw new LoginError(`${entry.providerId} takes no key. Try: buzz-login goose oauth ${entry.providerId}`, { exit: EXIT_USAGE });
+    if (!keys.length)
+      throw new LoginError(
+        `${entry.providerId} takes no key. Try: buzz-login goose oauth ${entry.providerId}`,
+        { exit: EXIT_USAGE },
+      );
     const set = await goose.setKeys(entry.providerId);
     const fields = [];
     for (const key of keys) {
@@ -804,15 +919,23 @@ async function gooseKey(args) {
         // Enter keeps what goose holds, else takes the default it offers.
         if (set.has(key.name)) continue;
         if (key.default) fields.push({ key: key.name, value: key.default });
-        else if (key.required) throw new LoginError(`${key.name} is required.`, { exit: EXIT_USAGE });
+        else if (key.required)
+          throw new LoginError(`${key.name} is required.`, { exit: EXIT_USAGE });
         continue;
       }
       fields.push({ key: key.name, value });
     }
     if (!fields.length) return say(`Goose: nothing changed for ${entry.providerId}.`);
-    await goose.request("_goose/unstable/providers/config/save", { providerId: entry.providerId, fields });
-    const after = (await goose.providers()).find((listed) => listed.providerId === entry.providerId);
-    say(`Goose: ${entry.providerId} ${after?.configured ? "is set up" : "is saved but goose does not call it set up yet; check the fields"}.`);
+    await goose.request("_goose/unstable/providers/config/save", {
+      providerId: entry.providerId,
+      fields,
+    });
+    const after = (await goose.providers()).find(
+      (listed) => listed.providerId === entry.providerId,
+    );
+    say(
+      `Goose: ${entry.providerId} ${after?.configured ? "is set up" : "is saved but goose does not call it set up yet; check the fields"}.`,
+    );
   });
 }
 
@@ -832,16 +955,26 @@ async function gooseOauth(args) {
     goose.on(GOOSE_DEVICE_CODE, ({ providerId, userCode, verificationUri, expiresIn }) => {
       if (providerId !== entry.providerId) return;
       const page = httpsUrl(verificationUri);
-      if (!USER_CODE.test(String(userCode)) || !page) return note("goose sent a sign-in code that does not look right; it is not shown.");
+      if (!USER_CODE.test(String(userCode)) || !page)
+        return note("goose sent a sign-in code that does not look right; it is not shown.");
       shown = true;
-      note(`Open ${page} and enter the code ${userCode}${Number.isFinite(expiresIn) ? ` (within ${Math.round(expiresIn / 60)} min)` : ""}.`);
+      note(
+        `Open ${page} and enter the code ${userCode}${Number.isFinite(expiresIn) ? ` (within ${Math.round(expiresIn / 60)} min)` : ""}.`,
+      );
     });
     note(`Starting the ${entry.providerName} sign-in…`);
     // A provider already signed in may finish without a code; one that
     // sends none while it waits is said so, not left silent.
-    const quiet = setTimeout(() => shown || note("goose has sent no code yet; it is still waiting. Ctrl-C stops."), GOOSE_CODE_WAIT_MS);
+    const quiet = setTimeout(
+      () => shown || note("goose has sent no code yet; it is still waiting. Ctrl-C stops."),
+      GOOSE_CODE_WAIT_MS,
+    );
     try {
-      await goose.request("_goose/unstable/providers/config/authenticate", { providerId: entry.providerId }, SIGN_IN_TIMEOUT_MS);
+      await goose.request(
+        "_goose/unstable/providers/config/authenticate",
+        { providerId: entry.providerId },
+        SIGN_IN_TIMEOUT_MS,
+      );
     } finally {
       clearTimeout(quiet);
     }
@@ -856,20 +989,36 @@ async function gooseDefault(args) {
   let model = optionalId(args, MODEL_ID, "model");
   noMoreArgs(args);
   await withGoose(async (goose) => {
-    const entry = await gooseProvider(goose, id, "Which goose provider is the default?", (entry) => entry.configured);
+    const entry = await gooseProvider(
+      goose,
+      id,
+      "Which goose provider is the default?",
+      (entry) => entry.configured,
+    );
     const known = new Set((entry.models ?? []).map((listed) => listed.id));
     try {
-      const { models } = await goose.request("_goose/unstable/providers/supported-models/list", { providerId: entry.providerId });
+      const { models } = await goose.request("_goose/unstable/providers/supported-models/list", {
+        providerId: entry.providerId,
+      });
       for (const listed of models ?? []) known.add(listed);
     } catch {
       // A provider not set up yet lists nothing live; its catalog stays.
     }
     if (model === undefined && process.stdin.isTTY)
-      model = await pick(`Which ${entry.providerId} model?`, [...known].sort().map((listed) => ({ id: listed, label: listed })));
+      model = await pick(
+        `Which ${entry.providerId} model?`,
+        [...known].sort().map((listed) => ({ id: listed, label: listed })),
+      );
     if (model === undefined) model = entry.defaultModel || "";
-    if (!model || !known.has(model)) throw new LoginError(`${entry.providerId} lists no model ${model || "(none given)"}.`, { exit: EXIT_USAGE });
+    if (!model || !known.has(model))
+      throw new LoginError(`${entry.providerId} lists no model ${model || "(none given)"}.`, {
+        exit: EXIT_USAGE,
+      });
     if (!entry.configured) note(`${entry.providerId} is not set up yet; agents fail until it is.`);
-    await goose.request("_goose/unstable/defaults/save", { providerId: entry.providerId, modelId: model });
+    await goose.request("_goose/unstable/defaults/save", {
+      providerId: entry.providerId,
+      modelId: model,
+    });
     say(`Goose: default is ${entry.providerId} / ${model}.`);
   });
 }
@@ -896,7 +1045,8 @@ class AuthFile {
       throw error;
     }
     const parsed = JSON.parse(text.replace(/^\uFEFF/, ""));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new LoginError(`${this.path} is not a JSON object`);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new LoginError(`${this.path} is not a JSON object`);
     return parsed;
   }
   all() {
@@ -904,10 +1054,15 @@ class AuthFile {
   }
   async read(id) {
     const credential = (await this.all())[id];
-    return credential?.type === "api_key" && credential.key ? { ...credential, key: this.resolve(credential.key) } : credential;
+    return credential?.type === "api_key" && credential.key
+      ? { ...credential, key: this.resolve(credential.key) }
+      : credential;
   }
   async list() {
-    return Object.entries(await this.all()).map(([providerId, value]) => ({ providerId, type: value.type }));
+    return Object.entries(await this.all()).map(([providerId, value]) => ({
+      providerId,
+      type: value.type,
+    }));
   }
   modify(id, change) {
     return this.locked(async (all) => {
@@ -925,7 +1080,10 @@ class AuthFile {
   /** A `!command` or `$NAME` key is refused, as buzz-app's Pi host does:
    * the hosted agents could not use it. */
   resolve(key) {
-    if (INDIRECT_KEY.test(key)) throw new LoginError("Pi keys here are the key itself, not a `!command` or `$NAME`.", { exit: EXIT_USAGE });
+    if (INDIRECT_KEY.test(key))
+      throw new LoginError("Pi keys here are the key itself, not a `!command` or `$NAME`.", {
+        exit: EXIT_USAGE,
+      });
     return key;
   }
   async locked(change, save = true) {
@@ -937,7 +1095,8 @@ class AuthFile {
     try {
       const all = await this.load();
       const result = await change(all);
-      if (save) await writeFile(this.path, `${JSON.stringify(all, null, 2)}\n`, { mode: FILE_MODE });
+      if (save)
+        await writeFile(this.path, `${JSON.stringify(all, null, 2)}\n`, { mode: FILE_MODE });
       return result;
     } finally {
       await release();
@@ -950,7 +1109,10 @@ async function piModels() {
   try {
     ({ builtinModels } = await import(pathToFileURL(PI_AI_PROVIDERS).href));
   } catch (cause) {
-    throw new LoginError(`Pi's packages are not installed at ${PI_MODULES}.`, { cause, exit: EXIT_UNAVAILABLE });
+    throw new LoginError(`Pi's packages are not installed at ${PI_MODULES}.`, {
+      cause,
+      exit: EXIT_UNAVAILABLE,
+    });
   }
   return builtinModels({ credentials: new AuthFile(PI_AUTH) });
 }
@@ -962,7 +1124,10 @@ function piSettings() {
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch (error) {
     if (error.code === "ENOENT") return {};
-    throw new LoginError(`${PI_SETTINGS} is not valid JSON; fix it with the pi command or by hand.`, { cause: error });
+    throw new LoginError(
+      `${PI_SETTINGS} is not valid JSON; fix it with the pi command or by hand.`,
+      { cause: error },
+    );
   }
 }
 
@@ -973,9 +1138,13 @@ function piProviders(models) {
     .filter((provider) => PROVIDER_ID.test(provider.id) && models.getModels(provider.id).length)
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
-const piWays = (provider) => [provider.auth?.apiKey?.login ? "key" : "", provider.auth?.oauth?.login ? "sign-in" : ""].filter(Boolean).join(", ");
+const piWays = (provider) =>
+  [provider.auth?.apiKey?.login ? "key" : "", provider.auth?.oauth?.login ? "sign-in" : ""]
+    .filter(Boolean)
+    .join(", ");
 /** Checking can refresh a sign-in over the network; it is bounded. */
-const piCheck = (models, id) => models.checkAuth(id, { signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) }).catch(() => undefined);
+const piCheck = (models, id) =>
+  models.checkAuth(id, { signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) }).catch(() => undefined);
 
 async function piStatus(models) {
   const signedIn = [];
@@ -986,18 +1155,31 @@ async function piStatus(models) {
   const settings = piSettings();
   return {
     signedIn: signedIn.join(", ") || "no",
-    defaults: settings.defaultProvider ? `${settings.defaultProvider} / ${settings.defaultModel || "-"}` : "-",
+    defaults: settings.defaultProvider
+      ? `${settings.defaultProvider} / ${settings.defaultModel || "-"}`
+      : "-",
   };
 }
 
 async function piList() {
   const models = await piModels();
   const settings = piSettings();
-  say(`Pi providers (default: ${settings.defaultProvider ? `${settings.defaultProvider} / ${settings.defaultModel || "-"}` : "none"})`);
+  say(
+    `Pi providers (default: ${settings.defaultProvider ? `${settings.defaultProvider} / ${settings.defaultModel || "-"}` : "none"})`,
+  );
   const rows = [["ID", "NAME", "SIGNED IN", "WAYS"]];
   for (const provider of piProviders(models)) {
     const auth = await piCheck(models, provider.id);
-    rows.push([provider.id, provider.name, auth ? (auth.type === "oauth" ? "sign-in" : `key${auth.source ? ` (${auth.source})` : ""}`) : "-", piWays(provider) || "-"]);
+    rows.push([
+      provider.id,
+      provider.name,
+      auth
+        ? auth.type === "oauth"
+          ? "sign-in"
+          : `key${auth.source ? ` (${auth.source})` : ""}`
+        : "-",
+      piWays(provider) || "-",
+    ]);
   }
   table(rows);
 }
@@ -1008,7 +1190,8 @@ function deviceId() {
     const stored = readFileSync(DEVICE_ID_FILE, "utf8").trim();
     if (UUID.test(stored)) return stored;
   } catch (error) {
-    if (error.code !== "ENOENT") throw new LoginError(`Could not read ${DEVICE_ID_FILE}.`, { cause: error });
+    if (error.code !== "ENOENT")
+      throw new LoginError(`Could not read ${DEVICE_ID_FILE}.`, { cause: error });
   }
   const id = randomUUID();
   mkdirSync(STATE_DIR, { recursive: true, mode: DIR_MODE });
@@ -1028,7 +1211,11 @@ function piInteraction(signal) {
         case "manual_code":
           return askSecret(prompt.message, options);
         case "select":
-          return pick(prompt.message, (prompt.options ?? []).map((option) => ({ id: option.id, label: option.label })), options.signal);
+          return pick(
+            prompt.message,
+            (prompt.options ?? []).map((option) => ({ id: option.id, label: option.label })),
+            options.signal,
+          );
         default:
           return (await ask(prompt.message, options)).trim();
       }
@@ -1039,10 +1226,13 @@ function piInteraction(signal) {
         if (!link) return note("Pi sent a sign-in link that is not https; it is not shown.");
         note(`Open this link in your browser:\n${link}`);
         if (event.instructions) note(event.instructions);
-        note("If the browser ends on a page that does not load (localhost), copy that page's full address and paste it here.");
+        note(
+          "If the browser ends on a page that does not load (localhost), copy that page's full address and paste it here.",
+        );
       } else if (event.type === "device_code") {
         const page = httpsUrl(event.verificationUri);
-        if (!USER_CODE.test(String(event.userCode)) || !page) return note("Pi sent a sign-in code that does not look right; it is not shown.");
+        if (!USER_CODE.test(String(event.userCode)) || !page)
+          return note("Pi sent a sign-in code that does not look right; it is not shown.");
         note(`Open ${page} and enter the code ${event.userCode}.`);
       } else if (event.message) {
         note(event.message);
@@ -1058,9 +1248,15 @@ function piInteraction(signal) {
 async function piProvider(models, id, message, usable) {
   const providers = piProviders(models);
   if (id === undefined)
-    id = await pick(message, providers.filter(usable).map((provider) => ({ id: provider.id, label: `${provider.id} (${provider.name})` })));
+    id = await pick(
+      message,
+      providers
+        .filter(usable)
+        .map((provider) => ({ id: provider.id, label: `${provider.id} (${provider.name})` })),
+    );
   const provider = providers.find((provider) => provider.id === id);
-  if (!provider) throw new LoginError(`Pi has no provider ${id}. See: buzz-login pi list`, { exit: EXIT_USAGE });
+  if (!provider)
+    throw new LoginError(`Pi has no provider ${id}. See: buzz-login pi list`, { exit: EXIT_USAGE });
   return provider;
 }
 
@@ -1071,15 +1267,32 @@ async function piLogin(args, type) {
   requireTerminal();
   const models = await piModels();
   const oauth = type === "oauth";
-  const usable = (provider) => Boolean(oauth ? provider.auth?.oauth?.login : provider.auth?.apiKey?.login);
-  const provider = await piProvider(models, id, oauth ? "Which Pi provider signs in?" : "Which Pi provider gets a key?", usable);
+  const usable = (provider) =>
+    Boolean(oauth ? provider.auth?.oauth?.login : provider.auth?.apiKey?.login);
+  const provider = await piProvider(
+    models,
+    id,
+    oauth ? "Which Pi provider signs in?" : "Which Pi provider gets a key?",
+    usable,
+  );
   if (!usable(provider))
-    throw new LoginError(`${provider.id} has no ${oauth ? "sign-in" : "key entry"} in Pi (ways: ${piWays(provider) || "none"}).`, { exit: EXIT_USAGE });
+    throw new LoginError(
+      `${provider.id} has no ${oauth ? "sign-in" : "key entry"} in Pi (ways: ${piWays(provider) || "none"}).`,
+      { exit: EXIT_USAGE },
+    );
   const signal = AbortSignal.timeout(SIGN_IN_TIMEOUT_MS);
-  await models.login(provider.id, type, piInteraction(signal), oauth ? { getDeviceId: deviceId } : undefined);
+  await models.login(
+    provider.id,
+    type,
+    piInteraction(signal),
+    oauth ? { getDeviceId: deviceId } : undefined,
+  );
   const auth = await piCheck(models, provider.id);
-  say(`Pi: ${provider.id} ${auth ? `is signed in (${auth.type === "oauth" ? "sign-in" : "key"})` : "was saved, but Pi does not see it as usable"}.`);
-  if (!piSettings().defaultProvider) note(`Pi has no default yet: buzz-login pi default ${provider.id}/<model>`);
+  say(
+    `Pi: ${provider.id} ${auth ? `is signed in (${auth.type === "oauth" ? "sign-in" : "key"})` : "was saved, but Pi does not see it as usable"}.`,
+  );
+  if (!piSettings().defaultProvider)
+    note(`Pi has no default yet: buzz-login pi default ${provider.id}/<model>`);
 }
 
 /** Pi's defaults, written under Pi's lock and replaced whole, so a reader
@@ -1089,7 +1302,9 @@ async function piDefault(args) {
   let effort = args.shift();
   noMoreArgs(args);
   if (effort !== undefined && !THINKING_LEVEL.test(effort))
-    throw new LoginError("Give the thinking level as `buzz-login pi list` shows it, e.g. high.", { exit: EXIT_USAGE });
+    throw new LoginError("Give the thinking level as `buzz-login pi list` shows it, e.g. high.", {
+      exit: EXIT_USAGE,
+    });
   const models = await piModels();
   let id;
   let model;
@@ -1098,16 +1313,27 @@ async function piDefault(args) {
     id = slash > 0 ? spec.slice(0, slash) : spec;
     model = slash > 0 ? spec.slice(slash + 1) : undefined;
     if (!PROVIDER_ID.test(id) || (model !== undefined && !MODEL_ID.test(model)))
-      throw new LoginError("Give the default as <provider>/<model>, as `buzz-login pi list` shows.", { exit: EXIT_USAGE });
+      throw new LoginError(
+        "Give the default as <provider>/<model>, as `buzz-login pi list` shows.",
+        { exit: EXIT_USAGE },
+      );
   }
   const provider = await piProvider(models, id, "Which Pi provider is the default?", () => true);
   const listed = models.getModels(provider.id);
   if (model === undefined) {
-    if (!process.stdin.isTTY) throw new LoginError("Give the default as <provider>/<model>.", { exit: EXIT_USAGE });
-    model = await pick(`Which ${provider.id} model?`, listed.map((entry) => ({ id: entry.id, label: entry.name && entry.name !== entry.id ? `${entry.id} (${entry.name})` : entry.id })));
+    if (!process.stdin.isTTY)
+      throw new LoginError("Give the default as <provider>/<model>.", { exit: EXIT_USAGE });
+    model = await pick(
+      `Which ${provider.id} model?`,
+      listed.map((entry) => ({
+        id: entry.id,
+        label: entry.name && entry.name !== entry.id ? `${entry.id} (${entry.name})` : entry.id,
+      })),
+    );
   }
   const chosen = listed.find((entry) => entry.id === model);
-  if (!chosen) throw new LoginError(`Pi's ${provider.id} has no model ${model}.`, { exit: EXIT_USAGE });
+  if (!chosen)
+    throw new LoginError(`Pi's ${provider.id} has no model ${model}.`, { exit: EXIT_USAGE });
   // The thinking level must be one the model supports: Pi clamps any other,
   // so a level it would not run is refused here rather than saved silently.
   const levels = await piThinkingLevels(chosen);
@@ -1117,8 +1343,12 @@ async function piDefault(args) {
       ...levels.map((level) => ({ id: level, label: level })),
     ]);
   if (effort && !levels.includes(effort))
-    throw new LoginError(`${model} has no thinking level ${effort}; it has: ${levels.join(", ") || "none"}.`, { exit: EXIT_USAGE });
-  if (!(await piCheck(models, provider.id))) note(`${provider.id} is not signed in yet; agents fail until it is.`);
+    throw new LoginError(
+      `${model} has no thinking level ${effort}; it has: ${levels.join(", ") || "none"}.`,
+      { exit: EXIT_USAGE },
+    );
+  if (!(await piCheck(models, provider.id)))
+    note(`${provider.id} is not signed in yet; agents fail until it is.`);
   await mkdir(PI_DIR, { recursive: true, mode: DIR_MODE });
   await writeFile(PI_SETTINGS, "{}\n", { flag: "wx", mode: FILE_MODE }).catch((error) => {
     if (error.code !== "EEXIST") throw error;
@@ -1148,7 +1378,10 @@ async function piThinkingLevels(model) {
   try {
     ({ getSupportedThinkingLevels } = await import(pathToFileURL(PI_AI_MODELS).href));
   } catch (cause) {
-    throw new LoginError(`Pi's packages are not installed at ${PI_MODULES}.`, { cause, exit: EXIT_UNAVAILABLE });
+    throw new LoginError(`Pi's packages are not installed at ${PI_MODULES}.`, {
+      cause,
+      exit: EXIT_UNAVAILABLE,
+    });
   }
   return getSupportedThinkingLevels(model);
 }
@@ -1174,7 +1407,9 @@ async function status(args) {
   rows.push(await row("pi", async () => piStatus(await piModels())));
   table(rows);
   say();
-  say("Pi agents use a new sign-in at once. A running Claude, Codex or Goose agent may need a stop and start to use it.");
+  say(
+    "Pi agents use a new sign-in at once. A running Claude, Codex or Goose agent may need a stop and start to use it.",
+  );
 }
 
 // --- Arguments. ---
@@ -1203,26 +1438,50 @@ function takeFlag(args, flag) {
   return true;
 }
 function noMoreArgs(args) {
-  if (args.length) throw new LoginError(`Unexpected: ${clean(args.join(" "))}\n${USAGE}`, { exit: EXIT_USAGE });
+  if (args.length)
+    throw new LoginError(`Unexpected: ${clean(args.join(" "))}\n${USAGE}`, { exit: EXIT_USAGE });
 }
 /** An id from the command line, checked for shape before any harness sees it. */
 function optionalId(args, shape, what) {
   if (!args.length || args[0].startsWith("-")) return undefined;
   const value = args.shift();
-  if (!shape.test(value)) throw new LoginError(`That is not a ${what} id: ${clean(value)}`, { exit: EXIT_USAGE });
+  if (!shape.test(value))
+    throw new LoginError(`That is not a ${what} id: ${clean(value)}`, { exit: EXIT_USAGE });
   return value;
 }
 const COMMANDS = {
   status,
   claude: claudeLogin,
   codex: codexLogin,
-  goose: (args) => sub("goose", args, { list: (rest) => (noMoreArgs(rest), gooseList()), key: gooseKey, oauth: gooseOauth, default: gooseDefault }),
-  pi: (args) => sub("pi", args, { list: (rest) => (noMoreArgs(rest), piList()), key: (rest) => piLogin(rest, "api_key"), oauth: (rest) => piLogin(rest, "oauth"), default: piDefault }),
+  goose: (args) =>
+    sub("goose", args, {
+      list: (rest) => {
+        noMoreArgs(rest);
+        return gooseList();
+      },
+      key: gooseKey,
+      oauth: gooseOauth,
+      default: gooseDefault,
+    }),
+  pi: (args) =>
+    sub("pi", args, {
+      list: (rest) => {
+        noMoreArgs(rest);
+        return piList();
+      },
+      key: (rest) => piLogin(rest, "api_key"),
+      oauth: (rest) => piLogin(rest, "oauth"),
+      default: piDefault,
+    }),
 };
 
 function sub(harness, args, actions) {
   const action = args.shift();
-  if (!Object.hasOwn(actions, action ?? "")) throw new LoginError(`buzz-login ${harness}: choose ${Object.keys(actions).join(", ")}.\n${USAGE}`, { exit: EXIT_USAGE });
+  if (!Object.hasOwn(actions, action ?? ""))
+    throw new LoginError(
+      `buzz-login ${harness}: choose ${Object.keys(actions).join(", ")}.\n${USAGE}`,
+      { exit: EXIT_USAGE },
+    );
   return actions[action](args);
 }
 
@@ -1241,7 +1500,9 @@ const MENU = [
 async function main(argv) {
   // The bash front checks this too; the files written here are buzz-agent's.
   if (userInfo().username !== RUN_AS || process.env.HOME !== HOME_DIR)
-    throw new LoginError(`Run buzz-login as ${RUN_AS}: ${AS_HARNESS_USER} status`, { exit: EXIT_NOPERM });
+    throw new LoginError(`Run buzz-login as ${RUN_AS}: ${AS_HARNESS_USER} status`, {
+      exit: EXIT_NOPERM,
+    });
   process.umask(0o077);
   saveTerminal();
   const args = [...argv];
@@ -1252,7 +1513,8 @@ async function main(argv) {
     args.push(...MENU.find((item) => item.id === chosen).args);
   }
   const command = args.shift();
-  if (!Object.hasOwn(COMMANDS, command)) throw new LoginError(`Unknown command: ${clean(command)}\n${USAGE}`, { exit: EXIT_USAGE });
+  if (!Object.hasOwn(COMMANDS, command))
+    throw new LoginError(`Unknown command: ${clean(command)}\n${USAGE}`, { exit: EXIT_USAGE });
   await COMMANDS[command](args);
 }
 
@@ -1281,8 +1543,12 @@ try {
   // The cause chain, so a failure is diagnosed from this one message.
   const causes = [];
   for (let cause = error?.cause; cause && causes.length < 4; cause = cause.cause)
-    causes.push(clean(cause.message ?? (typeof cause === "object" ? JSON.stringify(cause) : cause)));
-  note(`buzz-login: ${error?.message ?? error}${causes.length ? `\n  because: ${causes.join("; ")}` : ""}`);
+    causes.push(
+      clean(cause.message ?? (typeof cause === "object" ? JSON.stringify(cause) : cause)),
+    );
+  note(
+    `buzz-login: ${error?.message ?? error}${causes.length ? `\n  because: ${causes.join("; ")}` : ""}`,
+  );
   process.exitCode = error instanceof LoginError ? error.exit : EXIT_FAIL;
 } finally {
   secrets.clear();

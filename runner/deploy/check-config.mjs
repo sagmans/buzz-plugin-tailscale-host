@@ -14,7 +14,17 @@ import { dirname } from "node:path";
 const EX_USAGE = 64;
 const EX_CONFIG = 78;
 /** What install.sh passes; every one is required. */
-const EXPECTED_KEYS = ["runtimeDir", "stateDir", "runAsUser", "workspaceRoot", "wrapper", "harnessWrapper", "codex", "goose", "pi"];
+const EXPECTED_KEYS = [
+  "runtimeDir",
+  "stateDir",
+  "runAsUser",
+  "workspaceRoot",
+  "wrapper",
+  "harnessWrapper",
+  "codex",
+  "goose",
+  "pi",
+];
 /** The runner's own defaults for keys a config may leave out
  * (runner/src/config.ts DEFAULTS, runner/src/constants.ts). Keep in step. */
 const RUNNER_DEFAULTS = Object.freeze({
@@ -50,21 +60,28 @@ try {
 } catch (error) {
   fail(EX_CONFIG, [`cannot read ${path} as JSON: ${error.message}`]);
 }
-if (!config || typeof config !== "object" || Array.isArray(config)) fail(EX_CONFIG, [`${path} must hold a JSON object`]);
+if (!config || typeof config !== "object" || Array.isArray(config))
+  fail(EX_CONFIG, [`${path} must hold a JSON object`]);
 
 const value = (key) => config[key] ?? RUNNER_DEFAULTS[key];
 const problems = [];
 const same = (key, want, shown = key) => {
   const got = value(key);
-  if (got !== want) problems.push(`${shown} is ${JSON.stringify(got)}, but install.sh installs ${JSON.stringify(want)}`);
+  if (got !== want)
+    problems.push(
+      `${shown} is ${JSON.stringify(got)}, but install.sh installs ${JSON.stringify(want)}`,
+    );
 };
 
-if (config.ownerPubkey === PLACEHOLDER_OWNER) problems.push("ownerPubkey is still the example placeholder");
+if (config.ownerPubkey === PLACEHOLDER_OWNER)
+  problems.push("ownerPubkey is still the example placeholder");
 // systemd creates only RuntimeDirectory, and the runner refuses a socket
 // directory it does not own.
 const socketDir = dirname(String(value("socket")));
 if (socketDir !== expected.runtimeDir)
-  problems.push(`socket must be in ${expected.runtimeDir} (systemd RuntimeDirectory), got ${JSON.stringify(value("socket"))}`);
+  problems.push(
+    `socket must be in ${expected.runtimeDir} (systemd RuntimeDirectory), got ${JSON.stringify(value("socket"))}`,
+  );
 same("stateDir", expected.stateDir);
 same("runAsUser", expected.runAsUser);
 same("workspaceRoot", expected.workspaceRoot);
@@ -77,7 +94,9 @@ const harnesses = config.harnesses && typeof config.harnesses === "object" ? con
 for (const id of ["codex", "goose", "pi"]) {
   const path = harnesses[id]?.path;
   if (path !== undefined && path !== expected[id])
-    problems.push(`harnesses.${id}.path is ${JSON.stringify(path)}, but harness-wrapper runs ${JSON.stringify(expected[id])}`);
+    problems.push(
+      `harnesses.${id}.path is ${JSON.stringify(path)}, but harness-wrapper runs ${JSON.stringify(expected[id])}`,
+    );
 }
 
 if (problems.length) fail(EX_CONFIG, problems);

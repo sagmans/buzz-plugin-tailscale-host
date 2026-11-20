@@ -57,7 +57,9 @@ function ownDependencies(): Plugin {
       if (!base) return null;
       const found = await this.resolve(source, ENTRY, { ...options, skipSelf: true });
       if (found) return found;
-      this.error(`${relative(base, from)} imports "${source}", which runner/package.json does not declare: add it with a pinned version`);
+      this.error(
+        `${relative(base, from)} imports "${source}", which runner/package.json does not declare: add it with a pinned version`,
+      );
     },
   };
 }

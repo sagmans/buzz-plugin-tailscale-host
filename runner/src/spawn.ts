@@ -9,10 +9,10 @@
 // sequence therefore starts with stdin EOF (which ends a stream-json
 // session), treats signals as best effort, and gives up after a bound so the
 // caller (and its turn slot) is never held by a child that will not die.
-import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn as spawnChild } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
-import type { HostProcess, HostProcessOptions } from "@buzz/features/host/service";
 import type { Spawn } from "@buzz/bundled/claude-code/claude";
+import type { HostProcess, HostProcessOptions } from "@buzz/features/host/service";
 import {
   CHILD_CWD,
   CHILD_PATH,
@@ -40,7 +40,12 @@ export type SpawnTarget = Readonly<{
 
 /** What a stop reports: children that exited and those still alive at the
  * deadline (their pids). */
-export type ChildStop = Readonly<{ children: number; exited: number; alive: readonly number[]; elapsedMs: number }>;
+export type ChildStop = Readonly<{
+  children: number;
+  exited: number;
+  alive: readonly number[];
+  elapsedMs: number;
+}>;
 
 /** One agent's claude children. AgentSessions stops processes with
  * `void kill()` and never awaits them; this is what lets the runner wait for
@@ -82,7 +87,12 @@ export class ChildTracker {
     ]);
     clearTimeout(timer);
     const alive = among.filter((pid) => this.live.has(pid));
-    return { children: among.length, exited: among.length - alive.length, alive, elapsedMs: Date.now() - started };
+    return {
+      children: among.length,
+      exited: among.length - alive.length,
+      alive,
+      elapsedMs: Date.now() - started,
+    };
   }
 }
 
@@ -95,7 +105,14 @@ const RESUME_FLAG = "--resume";
 export function wrapperSpawn(target: SpawnTarget, log: Logger): Spawn {
   return async (id: string, options: HostProcessOptions = {}): Promise<HostProcess> => {
     if (id !== CLAUDE_ID) throw new ProcessError(`Only ${CLAUDE_ID} can be started, not ${id}`);
-    const args = [...SUDO_PREFIX, target.runAsUser, "--", target.wrapper, target.agent, ...(options.args ?? [])];
+    const args = [
+      ...SUDO_PREFIX,
+      target.runAsUser,
+      "--",
+      target.wrapper,
+      target.agent,
+      ...(options.args ?? []),
+    ];
     return startChild(
       { sudo: target.sudo, args, label: CLAUDE_ID, children: target.children },
       options,
@@ -131,7 +148,9 @@ export type HarnessSpawnTarget = Readonly<{
 export function harnessSpawn(target: HarnessSpawnTarget, log: Logger): Spawn {
   return async (id: string, options: HostProcessOptions = {}): Promise<HostProcess> => {
     if (!target.programs.includes(id))
-      throw new ProcessError(`${target.harness} may start only ${target.programs.join(", ")}, not ${id}`);
+      throw new ProcessError(
+        `${target.harness} may start only ${target.programs.join(", ")}, not ${id}`,
+      );
     const args = [
       ...SUDO_PREFIX,
       target.runAsUser,
@@ -154,7 +173,12 @@ export function harnessSpawn(target: HarnessSpawnTarget, log: Logger): Spawn {
 /** `sudo -n -u`: never prompt, so a missing sudoers rule fails, not hangs. */
 const SUDO_PREFIX = ["-n", "-u"] as const;
 
-type ChildSpec = Readonly<{ sudo: string; args: readonly string[]; label: string; children: ChildTracker }>;
+type ChildSpec = Readonly<{
+  sudo: string;
+  args: readonly string[];
+  label: string;
+  children: ChildTracker;
+}>;
 
 /** Starts one wrapped child and gives it Desktop's `HostProcess` shape with
  * the runner's stop sequence and stdout line cap. */
@@ -224,7 +248,9 @@ function waitForSpawn(child: Child, label: string, onSpawn: () => void) {
       onSpawn();
       resolve();
     });
-    child.once("error", (cause) => reject(new ProcessError(`Cannot start the ${label} wrapper`, { cause })));
+    child.once("error", (cause) =>
+      reject(new ProcessError(`Cannot start the ${label} wrapper`, { cause })),
+    );
   });
 }
 
@@ -261,10 +287,13 @@ function stopper({
       return;
     }
     if (!delivered && !gone())
-      log.error(`${label} stop signal not delivered (sudo may run as root: EPERM); relying on stdin EOF`, {
-        pid,
-        signal: name,
-      });
+      log.error(
+        `${label} stop signal not delivered (sudo may run as root: EPERM); relying on stdin EOF`,
+        {
+          pid,
+          signal: name,
+        },
+      );
   };
 
   let killing: Promise<void> | undefined;
@@ -279,7 +308,10 @@ function stopper({
       signal("SIGKILL");
       if (await waitExit(Math.max(0, PROCESS_STOP_MAX_MS - (Date.now() - started)))) return;
       // Left running: systemd's stop (root) still ends it with the unit.
-      log.error(`${label} did not exit; giving up on it and freeing its turn`, { pid, elapsedMs: Date.now() - started });
+      log.error(`${label} did not exit; giving up on it and freeing its turn`, {
+        pid,
+        elapsedMs: Date.now() - started,
+      });
       release(null);
     })());
 }
@@ -303,11 +335,17 @@ function capStdout({
   child.stdout.on("data", (chunk: Buffer) => {
     if (overflowed) return;
     const newline = chunk.lastIndexOf(NEWLINE);
-    const longest = newline < 0 ? lineBytes + chunk.length : Math.max(lineBytes + chunk.indexOf(NEWLINE), chunk.length - newline - 1);
+    const longest =
+      newline < 0
+        ? lineBytes + chunk.length
+        : Math.max(lineBytes + chunk.indexOf(NEWLINE), chunk.length - newline - 1);
     lineBytes = newline < 0 ? lineBytes + chunk.length : chunk.length - newline - 1;
     if (longest > STDOUT_LINE_MAX_BYTES) {
       overflowed = true;
-      log.error(`${label} output line over cap; stopping it`, { pid, capBytes: STDOUT_LINE_MAX_BYTES });
+      log.error(`${label} output line over cap; stopping it`, {
+        pid,
+        capBytes: STDOUT_LINE_MAX_BYTES,
+      });
       child.stdout.destroy();
       void kill();
       return;
@@ -327,7 +365,9 @@ function stdinWriter(child: Child, label: string, tap: Tap) {
       if (!stdin.writable) return reject(new ProcessError(`${label} stdin is closed`));
       tap?.stdin(data);
       stdin.write(data, "utf8", (error) =>
-        error ? reject(new ProcessError(`${label} stdin write failed`, { cause: error })) : resolve(),
+        error
+          ? reject(new ProcessError(`${label} stdin write failed`, { cause: error }))
+          : resolve(),
       );
     });
   const end = async (data?: string) => {
@@ -339,7 +379,12 @@ function stdinWriter(child: Child, label: string, tap: Tap) {
 
 /** The telemetry tap of one claude process, which needs the session its
  * args launch: `--resume` resumes one, `--session-id` starts one. */
-function openTap(target: SpawnTarget, options: HostProcessOptions, log: Logger, pid: number | undefined) {
+function openTap(
+  target: SpawnTarget,
+  options: HostProcessOptions,
+  log: Logger,
+  pid: number | undefined,
+) {
   const args = options.args ?? [];
   const flag = (name: string) => {
     const at = args.indexOf(name);

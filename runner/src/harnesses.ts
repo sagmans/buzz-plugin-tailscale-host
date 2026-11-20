@@ -26,13 +26,19 @@
 // `codex app-server` in the discovery workspace.
 import { constants as fsConstants } from "node:fs";
 import { access, stat } from "node:fs/promises";
-import { ClaudeProcess, type ClaudeModel, type Spawn } from "@buzz/bundled/claude-code/claude";
-import { checkClaude, type ClaudeStatus } from "@buzz/bundled/claude-code/setup";
-import { effortName, type Model as CodexModel, resolveModel } from "@buzz/bundled/codex/config";
+import { type ClaudeModel, ClaudeProcess, type Spawn } from "@buzz/bundled/claude-code/claude";
+import { type ClaudeStatus, checkClaude } from "@buzz/bundled/claude-code/setup";
+import { type Model as CodexModel, effortName, resolveModel } from "@buzz/bundled/codex/config";
 import { AppServer, listModels as listCodexModels } from "@buzz/bundled/codex/rpc";
-import { GooseSetup, type Provider as GooseProvider } from "@buzz/bundled/goose/setup";
+import { type Provider as GooseProvider, GooseSetup } from "@buzz/bundled/goose/setup";
 import { Pi } from "@buzz/bundled/pi/pi";
-import { DEFAULT_THINKING, type PiModel, PiSetup, type Provider, runsAt } from "@buzz/bundled/pi/setup";
+import {
+  DEFAULT_THINKING,
+  type PiModel,
+  PiSetup,
+  type Provider,
+  runsAt,
+} from "@buzz/bundled/pi/setup";
 import type { RunnerConfig } from "./config";
 import {
   CLAUDE_HARNESS,
@@ -48,21 +54,27 @@ import {
   HARNESS_CATALOG,
   HARNESS_DISCOVERY_TIMEOUT_MS,
   HARNESS_MODELS_TTL_MS,
-  HOSTED_MODELS_TTL_MS,
   HARNESS_PATH_CHECK_TIMEOUT_MS,
   HARNESS_STATUS_TTL_MS,
+  type HarnessId,
+  HOSTED_MODELS_TTL_MS,
   PI_DISCOVERY_TIMEOUT_MS,
   PI_HARNESS,
   PI_MODEL_SEPARATOR,
   PI_MODELS_MAX,
   PROBE_ADMIT_TIMEOUT_MS,
-  type HarnessId,
 } from "./constants";
-import { BusyError, errorMessage, HarnessUnavailableError, NotFoundError, ProcessError } from "./errors";
+import {
+  BusyError,
+  errorMessage,
+  HarnessUnavailableError,
+  NotFoundError,
+  ProcessError,
+} from "./errors";
 import type { Logger } from "./log";
 import { withTimeout } from "./net";
 import type { PoolMember, SessionPool } from "./pool";
-import { wrapperPath, type WrapperTarget } from "./wrapper";
+import { type WrapperTarget, wrapperPath } from "./wrapper";
 
 /** Readiness as Desktop's provider menu words it (claude-code `setup.ts`
  * ClaudeStatus). A harness this runner cannot run yet is never `ready`;
@@ -166,26 +178,38 @@ export class Harnesses {
   async listModels(id: string): Promise<ModelsView> {
     const harness = this.offered(id);
     if (!HARNESS_CATALOG[harness].supported)
-      throw new HarnessUnavailableError(`${HARNESS_CATALOG[harness].title} cannot run on this host yet`);
+      throw new HarnessUnavailableError(
+        `${HARNESS_CATALOG[harness].title} cannot run on this host yet`,
+      );
     if (harness === CLAUDE_HARNESS) {
       const status = await this.claudeStatus();
       if (status.state !== "ready")
-        throw new HarnessUnavailableError(STATE_MESSAGES[status.state] ?? "Claude is not ready on the host");
+        throw new HarnessUnavailableError(
+          STATE_MESSAGES[status.state] ?? "Claude is not ready on the host",
+        );
     } else {
       const view = await this.view(harness);
-      if (!view.ready) throw new HarnessUnavailableError(`${view.title} is not ready on this host: ${view.message ?? ""}`);
+      if (!view.ready)
+        throw new HarnessUnavailableError(
+          `${view.title} is not ready on this host: ${view.message ?? ""}`,
+        );
     }
     const ttl = harness === CLAUDE_HARNESS ? HARNESS_MODELS_TTL_MS : HOSTED_MODELS_TTL_MS;
     // An empty list is what a harness without a sign-in lists: it is never
     // kept, so the first sign-in shows at once.
-    return cached(this.models, harness, ttl, (view) => view.models.length > 0, () =>
-      harness === PI_HARNESS
-        ? this.discoverPi()
-        : harness === GOOSE_HARNESS
-          ? this.discoverGoose()
-          : harness === CODEX_HARNESS
-            ? this.discoverCodex()
-            : this.discover(),
+    return cached(
+      this.models,
+      harness,
+      ttl,
+      (view) => view.models.length > 0,
+      () =>
+        harness === PI_HARNESS
+          ? this.discoverPi()
+          : harness === GOOSE_HARNESS
+            ? this.discoverGoose()
+            : harness === CODEX_HARNESS
+              ? this.discoverCodex()
+              : this.discover(),
     );
   }
 
@@ -199,7 +223,9 @@ export class Harnesses {
       throw new HarnessUnavailableError("This host does not offer that harness");
     const harness = id as HarnessId;
     if (!HARNESS_CATALOG[harness].supported)
-      throw new HarnessUnavailableError(`${HARNESS_CATALOG[harness].title} cannot run on this host yet`);
+      throw new HarnessUnavailableError(
+        `${HARNESS_CATALOG[harness].title} cannot run on this host yet`,
+      );
     return harness;
   }
 
@@ -212,13 +238,18 @@ export class Harnesses {
     // signed in) and not only that the harness is unsupported.
     const view = await this.view(id as HarnessId);
     if (!view.ready)
-      throw new HarnessUnavailableError(`${view.title} is not ready on this host${view.message ? `: ${view.message}` : ""}`);
+      throw new HarnessUnavailableError(
+        `${view.title} is not ready on this host${view.message ? `: ${view.message}` : ""}`,
+      );
     return this.requireUsable(id);
   }
 
   /** Whether `id` is offered and supported, for agents loaded at startup. */
   usable(id: string) {
-    return this.deps.config.harnesses.includes(id as HarnessId) && HARNESS_CATALOG[id as HarnessId]?.supported === true;
+    return (
+      this.deps.config.harnesses.includes(id as HarnessId) &&
+      HARNESS_CATALOG[id as HarnessId]?.supported === true
+    );
   }
 
   dispose() {
@@ -259,10 +290,26 @@ export class Harnesses {
     const { title } = HARNESS_CATALOG[id];
     const base = { id, title, supported: false, ready: false } as const;
     const path = this.deps.config.harnessPaths[id];
-    if (!path) return { ...base, installed: false, state: "missing", message: NOT_RUNNABLE_MESSAGES.missing };
+    if (!path)
+      return {
+        ...base,
+        installed: false,
+        state: "missing",
+        message: NOT_RUNNABLE_MESSAGES.missing,
+      };
     if (!(await this.present(id, path)))
-      return { ...base, installed: false, state: "missing", message: NOT_RUNNABLE_MESSAGES.notFound };
-    return { ...base, installed: true, state: "signed-out", message: NOT_RUNNABLE_MESSAGES.installed };
+      return {
+        ...base,
+        installed: false,
+        state: "missing",
+        message: NOT_RUNNABLE_MESSAGES.notFound,
+      };
+    return {
+      ...base,
+      installed: true,
+      state: "signed-out",
+      message: NOT_RUNNABLE_MESSAGES.installed,
+    };
   }
 
   /** A harness this runner can run, other than Claude: ready once it is
@@ -271,19 +318,37 @@ export class Harnesses {
   private async runnableView(id: HarnessId): Promise<HarnessView> {
     const { title } = HARNESS_CATALOG[id];
     const missing = (message: string) =>
-      ({ id, title, supported: true, installed: false, ready: false, state: "missing", message }) as const;
+      ({
+        id,
+        title,
+        supported: true,
+        installed: false,
+        ready: false,
+        state: "missing",
+        message,
+      }) as const;
     const path = this.deps.config.harnessPaths[id];
     if (!path) return missing(NOT_RUNNABLE_MESSAGES.missing);
     if (!(await this.present(id, path))) return missing(NOT_RUNNABLE_MESSAGES.notFound);
     let wrapped: string;
     try {
-      wrapped = await cached(this.wrapped, id, HARNESS_STATUS_TTL_MS, () => true, () => wrapperPath(this.deps.wrapper, id));
+      wrapped = await cached(
+        this.wrapped,
+        id,
+        HARNESS_STATUS_TTL_MS,
+        () => true,
+        () => wrapperPath(this.deps.wrapper, id),
+      );
     } catch (error) {
       this.deps.log.warn("harness wrapper path check failed", { harness: id, error });
       return missing(RUNNABLE_MESSAGES.wrapperFailed);
     }
     if (wrapped !== path) {
-      this.deps.log.error("harness path differs from the one its wrapper runs", { harness: id, path, wrapped });
+      this.deps.log.error("harness path differs from the one its wrapper runs", {
+        harness: id,
+        path,
+        wrapped,
+      });
       return missing(RUNNABLE_MESSAGES.wrapperDiffers);
     }
     return { id, title, supported: true, installed: true, ready: true, state: "ready" };
@@ -311,7 +376,8 @@ export class Harnesses {
 
   /** `checkClaude`, reused for a minute, one check at a time. */
   private claudeStatus(): Promise<ClaudeStatus> {
-    if (this.status && Date.now() - this.status.at < HARNESS_STATUS_TTL_MS) return this.status.value;
+    if (this.status && Date.now() - this.status.at < HARNESS_STATUS_TTL_MS)
+      return this.status.value;
     const value = checkClaude(this.probeSpawn()).then((status) => {
       if (status.state !== "ready")
         this.deps.log.warn("claude not ready on this host", {
@@ -336,7 +402,11 @@ export class Harnesses {
     const started = Date.now();
     try {
       const work = (async () => {
-        process = await ClaudeProcess.start(this.probeSpawn(), { cwd: "~", systemPrompt: "", discovery: true });
+        process = await ClaudeProcess.start(this.probeSpawn(), {
+          cwd: "~",
+          systemPrompt: "",
+          discovery: true,
+        });
         const running = process;
         // A model or effort Claude does not report is just not shown as the default.
         const [listed, reported, effort] = await Promise.all([
@@ -344,14 +414,26 @@ export class Harnesses {
           running.readModel().catch(() => undefined),
           running.readEffort().catch(() => undefined),
         ]);
-        return catalog(listed, this.deps.config.model || reported || "", this.deps.config.effort ?? effort);
+        return catalog(
+          listed,
+          this.deps.config.model || reported || "",
+          this.deps.config.effort ?? effort,
+        );
       })();
       const view = await withTimeout(work, HARNESS_DISCOVERY_TIMEOUT_MS, "claude model discovery");
-      this.deps.log.info("claude models listed", { models: view.models.length, elapsedMs: Date.now() - started });
+      this.deps.log.info("claude models listed", {
+        models: view.models.length,
+        elapsedMs: Date.now() - started,
+      });
       return view;
     } catch (error) {
-      this.deps.log.warn("claude model discovery failed", { elapsedMs: Date.now() - started, error });
-      throw new HarnessUnavailableError("Claude did not list its models on the host", { cause: error });
+      this.deps.log.warn("claude model discovery failed", {
+        elapsedMs: Date.now() - started,
+        error,
+      });
+      throw new HarnessUnavailableError("Claude did not list its models on the host", {
+        cause: error,
+      });
     } finally {
       // Cast: TS narrows the closure-assigned variable to undefined here.
       await (process as ClaudeProcess | undefined)?.kill().catch(() => undefined);
@@ -378,7 +460,10 @@ export class Harnesses {
         return piCatalog(lists, defaults);
       })();
       const view = await withTimeout(work, PI_DISCOVERY_TIMEOUT_MS, "pi model discovery");
-      this.deps.log.info("pi models listed", { models: view.models.length, elapsedMs: Date.now() - started });
+      this.deps.log.info("pi models listed", {
+        models: view.models.length,
+        elapsedMs: Date.now() - started,
+      });
       return view;
     } catch (error) {
       this.deps.log.warn("pi model discovery failed", { elapsedMs: Date.now() - started, error });
@@ -418,11 +503,19 @@ export class Harnesses {
         return gooseCatalog(lists, defaults);
       })();
       const view = await withTimeout(work, GOOSE_DISCOVERY_TIMEOUT_MS, "goose model discovery");
-      this.deps.log.info("goose models listed", { models: view.models.length, elapsedMs: Date.now() - started });
+      this.deps.log.info("goose models listed", {
+        models: view.models.length,
+        elapsedMs: Date.now() - started,
+      });
       return view;
     } catch (error) {
-      this.deps.log.warn("goose model discovery failed", { elapsedMs: Date.now() - started, error });
-      throw new HarnessUnavailableError("Goose did not list its models on the host", { cause: error });
+      this.deps.log.warn("goose model discovery failed", {
+        elapsedMs: Date.now() - started,
+        error,
+      });
+      throw new HarnessUnavailableError("Goose did not list its models on the host", {
+        cause: error,
+      });
     }
   }
 
@@ -437,11 +530,19 @@ export class Harnesses {
         return codexCatalog(await listCodexModels(rpc));
       })();
       const view = await withTimeout(work, CODEX_DISCOVERY_TIMEOUT_MS, "codex model discovery");
-      this.deps.log.info("codex models listed", { models: view.models.length, elapsedMs: Date.now() - started });
+      this.deps.log.info("codex models listed", {
+        models: view.models.length,
+        elapsedMs: Date.now() - started,
+      });
       return view;
     } catch (error) {
-      this.deps.log.warn("codex model discovery failed", { elapsedMs: Date.now() - started, error });
-      throw new HarnessUnavailableError("Codex did not list its models on the host", { cause: error });
+      this.deps.log.warn("codex model discovery failed", {
+        elapsedMs: Date.now() - started,
+        error,
+      });
+      throw new HarnessUnavailableError("Codex did not list its models on the host", {
+        cause: error,
+      });
     } finally {
       await rpc.close().catch(() => undefined);
     }
@@ -456,11 +557,20 @@ export class Harnesses {
       const admitted = this.deps.pool.admit(this.member, key);
       let release: () => void;
       try {
-        release = await withTimeout(admitted, PROBE_ADMIT_TIMEOUT_MS, "live-session slot for a probe");
+        release = await withTimeout(
+          admitted,
+          PROBE_ADMIT_TIMEOUT_MS,
+          "live-session slot for a probe",
+        );
       } catch (error) {
         // A slot that frees later is handed straight back.
-        void admitted.then((late) => late(), () => undefined);
-        throw new BusyError("Every live session on the host is busy; try again shortly", { cause: error });
+        void admitted.then(
+          (late) => late(),
+          () => undefined,
+        );
+        throw new BusyError("Every live session on the host is busy; try again shortly", {
+          cause: error,
+        });
       }
       this.probes.add(key);
       const done = () => {
@@ -483,18 +593,31 @@ export class Harnesses {
  * 258-300; see NOTICE): `default` is not a choice, labels are Desktop's model
  * names, and `max` is not offered. A current model Claude does not list is
  * shown first, at any listed effort. */
-function catalog(listed: readonly ClaudeModel[], own: string, effort: string | undefined): ModelsView {
+function catalog(
+  listed: readonly ClaudeModel[],
+  own: string,
+  effort: string | undefined,
+): ModelsView {
   const resting = (efforts: readonly { id: string }[]) =>
     effort && efforts.some((level) => level.id === effort) ? { effort } : {};
   const offered = listed.filter((model) => model.value !== "default");
   const models = offered.map((model) => {
     const efforts = effortChoices(effortLevels(model));
-    return { id: model.value, label: modelName(model.resolvedModel ?? model.value), efforts, ...resting(efforts) };
+    return {
+      id: model.value,
+      label: modelName(model.resolvedModel ?? model.value),
+      efforts,
+      ...resting(efforts),
+    };
   });
-  const current = offered.find((model) => own === model.value || own === model.resolvedModel)?.value ?? own;
+  const current =
+    offered.find((model) => own === model.value || own === model.resolvedModel)?.value ?? own;
   if (!current || models.some((model) => model.id === current)) return { current, models };
   const efforts = effortChoices(offered.flatMap(effortLevels));
-  return { current, models: [{ id: current, label: modelName(current), efforts, ...resting(efforts) }, ...models] };
+  return {
+    current,
+    models: [{ id: current, label: modelName(current), efforts, ...resting(efforts) }, ...models],
+  };
 }
 
 /** A value reused for `ttlMs`, one computation at a time; a failed one, or
@@ -542,7 +665,9 @@ function piCatalog(
     )
     .slice(0, PI_MODELS_MAX);
   const current =
-    defaults.provider && defaults.model ? `${defaults.provider}${PI_MODEL_SEPARATOR}${defaults.model}` : "";
+    defaults.provider && defaults.model
+      ? `${defaults.provider}${PI_MODEL_SEPARATOR}${defaults.model}`
+      : "";
   return { current, models };
 }
 
@@ -564,7 +689,9 @@ function gooseCatalog(
     )
     .slice(0, GOOSE_MODELS_MAX);
   const current =
-    defaults.provider && defaults.model ? `${defaults.provider}${GOOSE_MODEL_SEPARATOR}${defaults.model}` : "";
+    defaults.provider && defaults.model
+      ? `${defaults.provider}${GOOSE_MODEL_SEPARATOR}${defaults.model}`
+      : "";
   return { current, models };
 }
 
@@ -575,7 +702,10 @@ function codexCatalog(listed: readonly CodexModel[]): ModelsView {
   const models = listed.slice(0, CODEX_MODELS_MAX).map((row) => ({
     id: row.model,
     label: row.displayName || row.model,
-    efforts: row.supportedReasoningEfforts.map(({ reasoningEffort: id }) => ({ id, label: effortName(id) })),
+    efforts: row.supportedReasoningEfforts.map(({ reasoningEffort: id }) => ({
+      id,
+      label: effortName(id),
+    })),
     ...(row.defaultReasoningEffort ? { effort: row.defaultReasoningEffort } : {}),
   }));
   return { current: resolveModel("", listed) ?? "", models };
@@ -585,9 +715,12 @@ function codexCatalog(listed: readonly CodexModel[]): ModelsView {
 // (70-82, 986-993; Apache-2.0, Copyright 2026 Block, Inc.; see NOTICE)
 // because that module also loads Desktop's agent store and cannot be imported
 // here. Keep them in step with it.
-const effortLabel = (id: string) => (id === "xhigh" ? "Extra high" : `${id.charAt(0).toUpperCase()}${id.slice(1)}`);
+const effortLabel = (id: string) =>
+  id === "xhigh" ? "Extra high" : `${id.charAt(0).toUpperCase()}${id.slice(1)}`;
 const effortChoices = (levels: readonly string[]) =>
-  [...new Set(levels)].filter((id) => id !== CLAUDE_HIDDEN_EFFORT).map((id) => ({ id, label: effortLabel(id) }));
+  [...new Set(levels)]
+    .filter((id) => id !== CLAUDE_HIDDEN_EFFORT)
+    .map((id) => ({ id, label: effortLabel(id) }));
 const effortLevels = (model: ClaudeModel) =>
   model.supportsEffort === false ? [] : (model.supportedEffortLevels ?? []);
 const MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(?:\[.*\])?$/;

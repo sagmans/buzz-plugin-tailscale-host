@@ -26,13 +26,24 @@ const REQUEST_CHARS = 12;
 const PAGE_CURSOR = "page-2";
 const agentArg = process.argv[2] ?? "";
 const log = (entry) => {
-  if (process.env.FAKE_CODEX_LOG) appendFileSync(process.env.FAKE_CODEX_LOG, `${JSON.stringify({ pid: process.pid, agent: agentArg, ...entry })}\n`);
+  if (process.env.FAKE_CODEX_LOG)
+    appendFileSync(
+      process.env.FAKE_CODEX_LOG,
+      `${JSON.stringify({ pid: process.pid, agent: agentArg, ...entry })}\n`,
+    );
 };
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const notify = (method, params) => write({ method, params });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-log({ type: "start", argv: process.argv.slice(2), env: Object.keys(process.env).filter((key) => !key.startsWith("__")).sort(), cwd: process.cwd() });
+log({
+  type: "start",
+  argv: process.argv.slice(2),
+  env: Object.keys(process.env)
+    .filter((key) => !key.startsWith("__"))
+    .sort(),
+  cwd: process.cwd(),
+});
 
 /** Codex's catalog: two pages, the first model recommended. */
 const MODELS = [
@@ -42,13 +53,26 @@ const MODELS = [
     description: "",
     isDefault: true,
     defaultReasoningEffort: "medium",
-    supportedReasoningEfforts: ["low", "medium", "high"].map((reasoningEffort) => ({ reasoningEffort, description: "" })),
+    supportedReasoningEfforts: ["low", "medium", "high"].map((reasoningEffort) => ({
+      reasoningEffort,
+      description: "",
+    })),
   },
-  { model: "gpt-mini", displayName: "", description: "", isDefault: false, defaultReasoningEffort: "", supportedReasoningEfforts: [] },
+  {
+    model: "gpt-mini",
+    displayName: "",
+    description: "",
+    isDefault: false,
+    defaultReasoningEffort: "",
+    supportedReasoningEfforts: [],
+  },
 ];
 
-const threadsFile = process.env.FAKE_CODEX_STATE ? join(process.env.FAKE_CODEX_STATE, `threads-${agentArg}.json`) : "";
-const known = () => (threadsFile && existsSync(threadsFile) ? JSON.parse(readFileSync(threadsFile, "utf8")) : []);
+const threadsFile = process.env.FAKE_CODEX_STATE
+  ? join(process.env.FAKE_CODEX_STATE, `threads-${agentArg}.json`)
+  : "";
+const known = () =>
+  threadsFile && existsSync(threadsFile) ? JSON.parse(readFileSync(threadsFile, "utf8")) : [];
 const keep = (id) => threadsFile && writeFileSync(threadsFile, JSON.stringify([...known(), id]));
 
 /** Loaded threads: their settings and running turn. */
@@ -81,7 +105,9 @@ function load(id, params, resumed) {
     identity: (params.developerInstructions ?? "").includes(agentArg),
     namespace: namespace?.name,
     tools: (namespace?.tools ?? []).map((tool) => tool.name),
-    functions: (namespace?.tools ?? []).every((tool) => tool.type === "function" && tool.inputSchema),
+    functions: (namespace?.tools ?? []).every(
+      (tool) => tool.type === "function" && tool.inputSchema,
+    ),
     deferred: (namespace?.tools ?? []).some((tool) => tool.deferLoading),
     webSearch: params.config?.web_search,
     inherited: params.config?.mcp_servers?.inherited ?? null,
@@ -99,7 +125,9 @@ async function turn(id, params) {
   const events = [...text.matchAll(/Event ID: ([0-9a-f]{64})/g)].map((match) => match[1]);
   const request = events.at(-1) ?? "";
   const content = text.match(/^Content: (.*)$/gm)?.at(-1) ?? "";
-  const context = Object.values(params.additionalContext ?? {}).map((value) => value.value ?? "").join("");
+  const context = Object.values(params.additionalContext ?? {})
+    .map((value) => value.value ?? "")
+    .join("");
   const run = { id: `turn-${process.pid}-${++nextTurn}`, steered: false, interrupt: undefined };
   thread.turn = run;
   log({
@@ -121,13 +149,22 @@ async function turn(id, params) {
   // before its turn/start call resumes. Separate writes only sometimes merge.
   const opening = [
     { id, result: { turn: { id: run.id, status: "inProgress" } } },
-    { method: "turn/started", params: { threadId: thread.id, turn: { id: run.id, status: "inProgress" } } },
-    { method: "item/started", params: { threadId: thread.id, turnId: run.id, item: { type: "reasoning", id: "r1" } } },
+    {
+      method: "turn/started",
+      params: { threadId: thread.id, turn: { id: run.id, status: "inProgress" } },
+    },
+    {
+      method: "item/started",
+      params: { threadId: thread.id, turnId: run.id, item: { type: "reasoning", id: "r1" } },
+    },
   ];
   process.stdout.write(opening.map((message) => `${JSON.stringify(message)}\n`).join(""));
   const end = (status, error) => {
     if (thread.turn === run) thread.turn = undefined;
-    notify("turn/completed", { threadId: thread.id, turn: { id: run.id, status, ...(error ? { error: { message: error } } : {}) } });
+    notify("turn/completed", {
+      threadId: thread.id,
+      turn: { id: run.id, status, ...(error ? { error: { message: error } } : {}) },
+    });
   };
   if (content.includes("CRASH")) {
     log({ type: "crash", thread: thread.id });
@@ -135,15 +172,33 @@ async function turn(id, params) {
   }
   if (content.includes("FAIL")) return end("failed", "model said no");
   if (content.includes("ASK")) {
-    const answer = await ask("item/commandExecution/requestApproval", { threadId: thread.id, turnId: run.id, itemId: "a1" });
+    const answer = await ask("item/commandExecution/requestApproval", {
+      threadId: thread.id,
+      turnId: run.id,
+      itemId: "a1",
+    });
     log({ type: "approval", thread: thread.id, code: answer?.error?.code ?? null });
   }
   notify("item/started", {
     threadId: thread.id,
     turnId: run.id,
-    item: { type: "commandExecution", id: "x1", command: "/bin/bash -lc 'cat README.md'", commandActions: [{ type: "read", name: "README.md", path: "README.md" }] },
+    item: {
+      type: "commandExecution",
+      id: "x1",
+      command: "/bin/bash -lc 'cat README.md'",
+      commandActions: [{ type: "read", name: "README.md", path: "README.md" }],
+    },
   });
-  notify("item/completed", { threadId: thread.id, turnId: run.id, item: { type: "commandExecution", id: "x1", command: "cat README.md", aggregatedOutput: "readme" } });
+  notify("item/completed", {
+    threadId: thread.id,
+    turnId: run.id,
+    item: {
+      type: "commandExecution",
+      id: "x1",
+      command: "cat README.md",
+      aggregatedOutput: "readme",
+    },
+  });
   if (content.includes("HANG")) {
     terminals.set(thread.id, ["proc-1"]);
     await new Promise((resolve) => (run.interrupt = resolve));
@@ -153,7 +208,11 @@ async function turn(id, params) {
   if (content.includes("SLOW")) await sleep(SLOW_MS);
   if (!content.includes("QUIET")) {
     const words = `${REPLY_PREFIX}${request.slice(0, REQUEST_CHARS)}${run.steered ? STEERED : ""}`;
-    notify("item/started", { threadId: thread.id, turnId: run.id, item: { type: "dynamicToolCall", id: "t1", tool: "send" } });
+    notify("item/started", {
+      threadId: thread.id,
+      turnId: run.id,
+      item: { type: "dynamicToolCall", id: "t1", tool: "send" },
+    });
     const answer = await ask("item/tool/call", {
       threadId: thread.id,
       turnId: run.id,
@@ -162,33 +221,71 @@ async function turn(id, params) {
       tool: "send",
       arguments: { text: words, audience: "everyone", final: true },
     });
-    log({ type: "tool", thread: thread.id, name: "send", success: answer?.result?.success === true, said: String(answer?.result?.contentItems?.[0]?.text ?? answer?.error?.message ?? "").slice(0, 300) });
+    log({
+      type: "tool",
+      thread: thread.id,
+      name: "send",
+      success: answer?.result?.success === true,
+      said: String(answer?.result?.contentItems?.[0]?.text ?? answer?.error?.message ?? "").slice(
+        0,
+        300,
+      ),
+    });
     // A call from a turn that is not running is refused.
-    const stray = await ask("item/tool/call", { threadId: thread.id, turnId: "turn-none", callId: "call-2", namespace: "buzz", tool: "send", arguments: { text: "stray", final: true } });
-    log({ type: "stray", thread: thread.id, success: stray?.result?.success === true, said: String(stray?.result?.contentItems?.[0]?.text ?? "").slice(0, 200) });
+    const stray = await ask("item/tool/call", {
+      threadId: thread.id,
+      turnId: "turn-none",
+      callId: "call-2",
+      namespace: "buzz",
+      tool: "send",
+      arguments: { text: "stray", final: true },
+    });
+    log({
+      type: "stray",
+      thread: thread.id,
+      success: stray?.result?.success === true,
+      said: String(stray?.result?.contentItems?.[0]?.text ?? "").slice(0, 200),
+    });
   }
-  notify("item/completed", { threadId: thread.id, turnId: run.id, item: { type: "agentMessage", id: "m1", text: "codex says done" } });
+  notify("item/completed", {
+    threadId: thread.id,
+    turnId: run.id,
+    item: { type: "agentMessage", id: "m1", text: "codex says done" },
+  });
   end("completed");
   // #lizard forgives: mirrors one upstream protocol handler branch for branch
 }
 
 const methods = {
   initialize: (params) => {
-    log({ type: "initialize", experimental: params.capabilities?.experimentalApi === true, client: params.clientInfo?.name });
+    log({
+      type: "initialize",
+      experimental: params.capabilities?.experimentalApi === true,
+      client: params.clientInfo?.name,
+    });
     return { userAgent: "fake-codex/0.164.0" };
   },
   "config/read": ({ cwd }) => {
     log({ type: "config", cwd });
-    return { config: { mcp_servers: { inherited: { command: "/bin/true" } }, model_reasoning_summary: null } };
+    return {
+      config: {
+        mcp_servers: { inherited: { command: "/bin/true" } },
+        model_reasoning_summary: null,
+      },
+    };
   },
-  "model/list": ({ cursor }) => (cursor === PAGE_CURSOR ? { data: [MODELS[1]], nextCursor: null } : { data: [MODELS[0]], nextCursor: PAGE_CURSOR }),
+  "model/list": ({ cursor }) =>
+    cursor === PAGE_CURSOR
+      ? { data: [MODELS[1]], nextCursor: null }
+      : { data: [MODELS[0]], nextCursor: PAGE_CURSOR },
   "thread/start": (params) => {
     const id = `th-${process.pid}-${++nextThread}`;
     keep(id);
     return load(id, params, false);
   },
   "thread/resume": (params) => {
-    if (!known().includes(params.threadId)) throw new Error(`no rollout found for thread id ${params.threadId}`);
+    if (!known().includes(params.threadId))
+      throw new Error(`no rollout found for thread id ${params.threadId}`);
     return load(params.threadId, params, true);
   },
   "thread/name/set": ({ threadId, name }) => {
@@ -202,7 +299,15 @@ const methods = {
   },
   "turn/steer": ({ threadId, expectedTurnId, input }) => {
     const run = threads.get(threadId)?.turn;
-    log({ type: "steer", thread: threadId, ok: Boolean(run && run.id === expectedTurnId), text: (input ?? []).map((block) => block.text ?? "").join("").includes("new-message") });
+    log({
+      type: "steer",
+      thread: threadId,
+      ok: Boolean(run && run.id === expectedTurnId),
+      text: (input ?? [])
+        .map((block) => block.text ?? "")
+        .join("")
+        .includes("new-message"),
+    });
     if (!run) throw new Error("no active turn to steer");
     if (run.id !== expectedTurnId) throw new Error("expected turn mismatch");
     run.steered = true;
@@ -218,10 +323,16 @@ const methods = {
     log({ type: "clean", thread: threadId });
     return {};
   },
-  "thread/backgroundTerminals/list": ({ threadId }) => ({ data: (terminals.get(threadId) ?? []).map((processId) => ({ processId })), nextCursor: null }),
+  "thread/backgroundTerminals/list": ({ threadId }) => ({
+    data: (terminals.get(threadId) ?? []).map((processId) => ({ processId })),
+    nextCursor: null,
+  }),
   "thread/backgroundTerminals/terminate": ({ threadId, processId }) => {
     log({ type: "terminate", thread: threadId, processId });
-    terminals.set(threadId, (terminals.get(threadId) ?? []).filter((id) => id !== processId));
+    terminals.set(
+      threadId,
+      (terminals.get(threadId) ?? []).filter((id) => id !== processId),
+    );
     return {};
   },
 };
@@ -248,12 +359,17 @@ createInterface({ input: process.stdin })
     log({ type: "request", method: message.method });
     if (message.method === "turn/start") return void turn(message.id, message.params ?? {});
     const handler = methods[message.method];
-    if (!handler) return write({ id: message.id, error: { code: -32601, message: `no ${message.method}` } });
+    if (!handler)
+      return write({ id: message.id, error: { code: -32601, message: `no ${message.method}` } });
     Promise.resolve()
       .then(() => handler(message.params ?? {}))
       .then(
         (result) => write({ id: message.id, result }),
-        (error) => write({ id: message.id, error: { code: -32603, message: String(error?.message ?? error) } }),
+        (error) =>
+          write({
+            id: message.id,
+            error: { code: -32603, message: String(error?.message ?? error) },
+          }),
       );
   })
   .on("close", () => {

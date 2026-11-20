@@ -21,6 +21,7 @@ the behavior, the install and the mobile behavior. Keep the README and
 | `runner/package.json`, `runner/pnpm-lock.yaml`, `runner/pnpm-workspace.yaml` | The runner's own pinned packages and the 14-day minimum release age. |
 | `docs/` | Runner contract (`RUNNER_CONTRACT.md`) and harness design (`HARNESSES.md`). |
 | `scripts/check` | All repository checks. The Git hooks call it. |
+| `biome.json`, `mise.toml` | Formatter/linter rules and pinned CLI tool versions for checks and hooks. |
 | `scripts/setup-hooks`, `.githooks/` | Generic hooks and helpers, copied from a template. |
 | `.githooks/<hook>.d/` | This repository's own hook checks. |
 

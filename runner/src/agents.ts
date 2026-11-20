@@ -6,12 +6,15 @@
 // 0600 record, and used only inside this process (nodeClient's closure and
 // the AUTH signer). It is never returned, logged, put in a child's argv or
 // environment, or written anywhere the claude user can read.
-import { nodeClient } from "@buzz/buzz-mcp/node";
+
+import { ServerPool } from "@buzz/bundled/goose/sessions";
 import type { BuzzClient, Template } from "@buzz/buzz-mcp/client";
+import { nodeClient } from "@buzz/buzz-mcp/node";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
-import { verifyOwnerProof, type AuthTag } from "./attest";
+import { type AuthTag, verifyOwnerProof } from "./attest";
 import type { RunnerConfig } from "./config";
+import type { HarnessId } from "./constants";
 import {
   ACTIVATE_DEADLINE_MS,
   AGENT_RECORDS_MAX,
@@ -25,32 +28,41 @@ import {
   HARNESS_MODEL_IDS,
   HARNESS_PROGRAMS,
   KIND_PROFILE,
-  MODEL_ID,
   MEDIA_TOTAL_MAX_BYTES,
+  MODEL_ID,
   PROVISION_RATE_MAX,
   PROVISION_RATE_WINDOW_MS,
   TURN_QUEUE_LIMIT,
   VERSION,
 } from "./constants";
 import { ConflictError, NotFoundError, RelayError, RunnerError, ValidationError } from "./errors";
-import { ServerPool } from "@buzz/bundled/goose/sessions";
 import { Harnesses } from "./harnesses";
-import type { HarnessId } from "./constants";
 import { Limiter } from "./limiter";
 import { LiveListener } from "./live";
+import { type Logger, short } from "./log";
 import { McpServers } from "./mcp-server";
-import { short, type Logger } from "./log";
 import { retry, sleep } from "./net";
-import { CommunityReads, relaySelf } from "./reads";
-import { AgentRuntime } from "./runtime";
 import { SessionPool } from "./pool";
 import { withoutAttestation } from "./publish";
-import { ChildTracker, harnessSpawn, wrapperSpawn, type ChildStop } from "./spawn";
+import { CommunityReads, relaySelf } from "./reads";
+import { AgentRuntime } from "./runtime";
+import { type ChildStop, ChildTracker, harnessSpawn, wrapperSpawn } from "./spawn";
+import {
+  type AgentRecord,
+  type AgentSettings,
+  type AgentState,
+  type StateStore,
+  trimMedia,
+} from "./store";
 import { type StreamTap, Telemetry } from "./telemetry";
-import { trimMedia, type AgentRecord, type AgentSettings, type AgentState, type StateStore } from "./store";
 
 export type ProvisionInput = Readonly<{ name: string; picture?: string; community: string }>;
-export type ActivateInput = Readonly<{ name: string; community: string; auth: AuthTag; config?: AgentSettings }>;
+export type ActivateInput = Readonly<{
+  name: string;
+  community: string;
+  auth: AuthTag;
+  config?: AgentSettings;
+}>;
 export type ProfileInput = Readonly<{ name: string; picture?: string }>;
 
 /** What a running agent holds besides its record. */
@@ -113,7 +125,8 @@ export class AgentManager {
         },
         harnessLog,
       ),
-      spawnHarness: (harness) => this.spawnHarness(harness, DISCOVERY_AGENT, this.hostChildren, harnessLog),
+      spawnHarness: (harness) =>
+        this.spawnHarness(harness, DISCOVERY_AGENT, this.hostChildren, harnessLog),
       wrapper: { sudo: config.sudo, runAsUser: config.runAsUser, wrapper: config.harnessWrapper },
       pool: this.pool,
       log: harnessLog,
@@ -150,7 +163,9 @@ export class AgentManager {
   async start() {
     for (const record of this.store.listAgents()) {
       if (!this.config.relays.includes(record.community)) {
-        this.log.warn("agent community no longer allowed; not started", { agent: short(record.pubkey) });
+        this.log.warn("agent community no longer allowed; not started", {
+          agent: short(record.pubkey),
+        });
         this.records.set(record.pubkey, record);
         continue;
       }
@@ -174,11 +189,18 @@ export class AgentManager {
         if (!record.activated && record.name === input.name && record.community === input.community)
           return { pubkey: record.pubkey, ...(record.picture ? { picture: record.picture } : {}) };
       if (this.records.size >= AGENT_RECORDS_MAX)
-        throw new RunnerError("agent_limit", 409, `This runner keeps at most ${AGENT_RECORDS_MAX} agents`);
+        throw new RunnerError(
+          "agent_limit",
+          409,
+          `This runner keeps at most ${AGENT_RECORDS_MAX} agents`,
+        );
       const started = Date.now();
       this.provisioned = this.provisioned.filter((at) => started - at < PROVISION_RATE_WINDOW_MS);
       if (this.provisioned.length >= PROVISION_RATE_MAX) {
-        this.log.warn("provision rate limited", { windowMs: PROVISION_RATE_WINDOW_MS, max: PROVISION_RATE_MAX });
+        this.log.warn("provision rate limited", {
+          windowMs: PROVISION_RATE_WINDOW_MS,
+          max: PROVISION_RATE_MAX,
+        });
         throw new RunnerError("rate_limited", 429, "Too many new agents; try again later");
       }
       this.provisioned.push(started);
@@ -209,7 +231,11 @@ export class AgentManager {
       ...(record.picture ? { picture: record.picture } : {}),
       community: record.community,
       activated: record.activated,
-      config: { ...record.config, harness: harnessOf(record.config), scope: record.config.scope ?? DEFAULT_SCOPE },
+      config: {
+        ...record.config,
+        harness: harnessOf(record.config),
+        scope: record.config.scope ?? DEFAULT_SCOPE,
+      },
       // Shown read-only, as Desktop shows a local agent's folder.
       workspace: `${this.config.workspaceRoot}/${record.pubkey}`,
     };
@@ -226,15 +252,21 @@ export class AgentManager {
     const wanted = settings.harness ?? harnessOf(record.config);
     const moved = record.activated && wanted !== harnessOf(record.config);
     const gated = moved || (!record.activated && wanted !== CLAUDE_HARNESS);
-    const harness = gated ? await this.harnesses.requireReady(wanted) : this.harnesses.requireUsable(wanted);
+    const harness = gated
+      ? await this.harnesses.requireReady(wanted)
+      : this.harnesses.requireUsable(wanted);
     const efforts = HARNESS_EFFORTS[harness] ?? [];
     // Desktop never offers `max` for Claude (claude-code `effortChoices`);
     // each harness takes only the levels its own picker shows.
     if (settings.effort && !efforts.includes(settings.effort))
-      throw new ValidationError(`effort ${settings.effort} is not offered for ${HARNESS_CATALOG[harness].title}`);
+      throw new ValidationError(
+        `effort ${settings.effort} is not offered for ${HARNESS_CATALOG[harness].title}`,
+      );
     // Request validation took any harness's model shape; this one's may be narrower.
     if (settings.model && !(HARNESS_MODEL_IDS[harness] ?? MODEL_ID).test(settings.model))
-      throw new ValidationError(`model ${settings.model} is not a ${HARNESS_CATALOG[harness].title} model id`);
+      throw new ValidationError(
+        `model ${settings.model} is not a ${HARNESS_CATALOG[harness].title} model id`,
+      );
     return { config: { ...settings, harness }, moved };
   }
 
@@ -248,7 +280,11 @@ export class AgentManager {
     // The next launch reads the file afresh; this copy must not write again.
     sessions.close();
     await this.launch(record);
-    this.log.info("agent harness changed", { agent: short(record.pubkey), from, to: harnessOf(record.config) });
+    this.log.info("agent harness changed", {
+      agent: short(record.pubkey),
+      from,
+      to: harnessOf(record.config),
+    });
   }
 
   /** Verifies the owner's proof, publishes the profile with it, then starts
@@ -264,9 +300,13 @@ export class AgentManager {
       const work = this.locked(pubkey, () => {
         const abandon = new AbortController();
         const inner = this.activateNow(pubkey, input, abandon.signal);
-        deadline(inner, ACTIVATE_DEADLINE_MS, "activate", () => abandon.abort()).then(resolve, reject);
+        deadline(inner, ACTIVATE_DEADLINE_MS, "activate", () => abandon.abort()).then(
+          resolve,
+          reject,
+        );
         inner.catch((error: unknown) => {
-          if (abandon.signal.aborted) this.log.warn("activate stopped after its deadline", { agent: short(pubkey), error });
+          if (abandon.signal.aborted)
+            this.log.warn("activate stopped after its deadline", { agent: short(pubkey), error });
         });
         return inner;
       });
@@ -293,7 +333,8 @@ export class AgentManager {
     // A new owner proof must reach the AUTH signer and the client, which
     // captured the old one; otherwise only the prompt may have changed.
     if (moved) await this.move(next, harnessOf(record.config));
-    else if (live && JSON.stringify(record.auth) === JSON.stringify(next.auth)) live.runtime.reconfigure();
+    else if (live && JSON.stringify(record.auth) === JSON.stringify(next.auth))
+      live.runtime.reconfigure();
     else {
       this.report(await this.halt(pubkey), short(pubkey));
       stillWanted(abandoned);
@@ -306,7 +347,11 @@ export class AgentManager {
     return this.locked(pubkey, async () => {
       const record = this.require(pubkey);
       const { picture: _old, ...rest } = record;
-      let next: AgentRecord = { ...rest, name: input.name, ...(input.picture ? { picture: input.picture } : {}) };
+      let next: AgentRecord = {
+        ...rest,
+        name: input.name,
+        ...(input.picture ? { picture: input.picture } : {}),
+      };
       await this.save(next);
       if (next.activated) {
         next = { ...next, profileAt: await this.publishProfile(next) };
@@ -358,9 +403,12 @@ export class AgentManager {
     ]);
     // Sessions closed with their agents; any server left has no one to serve.
     this.mcp.dispose();
-    const stops = results.flatMap((result) => (result.status === "fulfilled" && result.value ? [result.value] : []));
+    const stops = results.flatMap((result) =>
+      result.status === "fulfilled" && result.value ? [result.value] : [],
+    );
     for (const result of results)
-      if (result.status === "rejected") this.log.error("agent stop failed", { error: result.reason });
+      if (result.status === "rejected")
+        this.log.error("agent stop failed", { error: result.reason });
     this.report(
       {
         children: stops.reduce((sum, stop) => sum + stop.children, 0),
@@ -385,7 +433,10 @@ export class AgentManager {
       elapsedMs: stop.elapsedMs,
     });
     if (stop.alive.length)
-      this.log.error("claude children still running at the stop deadline", { ...where, pids: stop.alive });
+      this.log.error("claude children still running at the stop deadline", {
+        ...where,
+        pids: stop.alive,
+      });
   }
 
   /** Stops the agent and waits for its claude processes, within the agent's
@@ -404,7 +455,9 @@ export class AgentManager {
     live.telemetry?.dispose();
     if (deleting) live.state.close();
     // A process that was still starting when the stop began counts too.
-    const stop = await live.children.stopAll(CHILD_STOP_BUDGET_MS, [...new Set([...among, ...live.children.pids()])]);
+    const stop = await live.children.stopAll(CHILD_STOP_BUDGET_MS, [
+      ...new Set([...among, ...live.children.pids()]),
+    ]);
     return { ...stop, elapsedMs: Date.now() - started };
   }
 
@@ -435,7 +488,11 @@ export class AgentManager {
       media: this.store.mediaDir(record.pubkey),
     });
     if (this.config.attestEvents) return client;
-    return withoutAttestation(client, { relay: record.community, key: record.secretKey, ...(auth ? { auth } : {}) });
+    return withoutAttestation(client, {
+      relay: record.community,
+      key: record.secretKey,
+      ...(auth ? { auth } : {}),
+    });
   }
 
   /** Kind 0 as Desktop's native agents publish it (agent-controller
@@ -445,7 +502,11 @@ export class AgentManager {
     // A replaceable event replaces only an older one: wait out the second.
     while (record.profileAt !== undefined && now() <= record.profileAt) await sleep(MS_PER_S / 4);
     const client = this.client(record);
-    const content = JSON.stringify({ name: record.name, bot: true, ...(record.picture ? { picture: record.picture } : {}) });
+    const content = JSON.stringify({
+      name: record.name,
+      bot: true,
+      ...(record.picture ? { picture: record.picture } : {}),
+    });
     try {
       const event = await retry(
         "publish profile",
@@ -478,13 +539,16 @@ export class AgentManager {
     // The read above yields: a stop, a delete or another launch of this
     // agent may have run meanwhile, and a second runtime would answer every
     // message twice. Nothing is opened before this check, so nothing leaks.
-    if (this.stopping || this.running.has(record.pubkey) || !this.records.has(record.pubkey)) return;
+    if (this.stopping || this.running.has(record.pubkey) || !this.records.has(record.pubkey))
+      return;
     const client = this.client(record);
     const state = this.store.agentState(record.pubkey);
     const reads = new CommunityReads(client, () => relayAuthor);
     const mediaDir = this.store.mediaDir(record.pubkey);
     // A budget lowered across releases applies from the start.
-    void trimMedia(mediaDir, MEDIA_TOTAL_MAX_BYTES).catch((error) => log.warn("media trim failed", { error }));
+    void trimMedia(mediaDir, MEDIA_TOTAL_MAX_BYTES).catch((error) =>
+      log.warn("media trim failed", { error }),
+    );
     const secret = hexToBytes(record.secretKey);
     let runtime!: AgentRuntime;
     const listener = new LiveListener({
@@ -492,7 +556,10 @@ export class AgentManager {
       agent: record.pubkey,
       authTag: record.auth,
       sign: (template: Template) =>
-        finalizeEvent({ ...template, tags: template.tags.map((tag) => [...tag]), created_at: now() }, secret),
+        finalizeEvent(
+          { ...template, tags: template.tags.map((tag) => [...tag]), created_at: now() },
+          secret,
+        ),
       state,
       replyAuthor: this.config.replyWake ? this.config.ownerPubkey : undefined,
       relayAuthor: () => relayAuthor,
@@ -521,29 +588,14 @@ export class AgentManager {
       isHosted: (pubkey) => this.records.has(pubkey),
       mediaDir,
       harness,
-      spawn:
-        harness === CLAUDE_HARNESS
-          ? wrapperSpawn(
-              {
-                sudo: this.config.sudo,
-                runAsUser: this.config.runAsUser,
-                wrapper: this.config.wrapper,
-                agent: record.pubkey,
-                tap: telemetry && ((session, fresh, cwd) => telemetry.tap(session, fresh, cwd)),
-                children,
-              },
-              log,
-            )
-          : this.spawnHarness(
-              harness,
-              record.pubkey,
-              children,
-              log,
-              // Goose's raw ACP; Pi reports through its engine's feed.
-              telemetry && harness === GOOSE_HARNESS
-                ? () => telemetry.acpTap((session) => runtime.keyOfSession(session))
-                : undefined,
-            ),
+      spawn: this.buildHarnessSpawn({
+        harness,
+        agent: record.pubkey,
+        children,
+        log,
+        telemetry,
+        keyOfSession: (session) => runtime.keyOfSession(session),
+      }),
       state,
       config: this.config,
       limiter: this.limiter,
@@ -558,9 +610,45 @@ export class AgentManager {
     log.info("agent started");
   }
 
+  /** Claude uses the legacy Claude wrapper and session tap, while non-Claude
+   * harnesses run through harness-wrapper and only Goose emits raw ACP
+   * telemetry (Pi reports through its own engine feed). */
+  private buildHarnessSpawn(opts: {
+    harness: HarnessId;
+    agent: string;
+    children: ChildTracker;
+    log: Logger;
+    telemetry: Telemetry | undefined;
+    keyOfSession: (session: string) => string | undefined;
+  }) {
+    const { harness, agent, children, log, telemetry, keyOfSession } = opts;
+    if (harness === CLAUDE_HARNESS) {
+      return wrapperSpawn(
+        {
+          sudo: this.config.sudo,
+          runAsUser: this.config.runAsUser,
+          wrapper: this.config.wrapper,
+          agent,
+          tap: telemetry && ((session, fresh, cwd) => telemetry.tap(session, fresh, cwd)),
+          children,
+        },
+        log,
+      );
+    }
+    return this.spawnHarness(
+      harness,
+      agent,
+      children,
+      log,
+      // Goose's raw ACP; Pi reports through its engine's feed.
+      telemetry && harness === GOOSE_HARNESS ? () => telemetry.acpTap(keyOfSession) : undefined,
+    );
+  }
+
   /** Serializes calls per key; a failure does not block the next call. */
   private locked<T>(key: string, run: () => Promise<T>): Promise<T> {
-    if (this.stopping) return Promise.reject(new RunnerError("shutting_down", 503, "The runner is stopping"));
+    if (this.stopping)
+      return Promise.reject(new RunnerError("shutting_down", 503, "The runner is stopping"));
     const prior = this.locks.get(key) ?? Promise.resolve();
     const next = prior.then(run, run);
     const settled = next.catch(() => undefined);
@@ -576,7 +664,12 @@ export class AgentManager {
 const harnessOf = (config: AgentSettings) => config.harness ?? CLAUDE_HARNESS;
 
 /** `onLate` tells the work that its caller has stopped waiting. */
-function deadline<T>(work: Promise<T>, ms: number, operation: string, onLate: () => void): Promise<T> {
+function deadline<T>(
+  work: Promise<T>,
+  ms: number,
+  operation: string,
+  onLate: () => void,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     work,

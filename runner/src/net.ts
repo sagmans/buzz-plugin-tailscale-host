@@ -23,7 +23,9 @@ export function installFetchDeadline() {
   globalThis.fetch = (input, init = {}) => {
     if (init.signal) return original(input, init);
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const timeout = MEDIA_PATH.test(new URL(url).pathname) ? HTTP_MEDIA_TIMEOUT_MS : HTTP_TIMEOUT_MS;
+    const timeout = MEDIA_PATH.test(new URL(url).pathname)
+      ? HTTP_MEDIA_TIMEOUT_MS
+      : HTTP_TIMEOUT_MS;
     return original(input, { ...init, signal: AbortSignal.timeout(timeout) });
   };
 }
@@ -80,7 +82,8 @@ export async function retry<T>(
  * (429/502/503/504). nodeClient reports a refusal as "<status> <body>". */
 export function isTransient(error: unknown) {
   const message = errorMessage(error);
-  if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return true;
+  if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))
+    return true;
   if (error instanceof TypeError) return true; // fetch failed: DNS, reset, refused
   return /^(429|502|503|504)\b/.test(message);
 }

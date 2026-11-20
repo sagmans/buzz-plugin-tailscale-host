@@ -52,6 +52,22 @@ INSTALL_SH="$RUNNER_DIR/deploy/install.sh"
 CONFIG_EXAMPLE="$RUNNER_DIR/config.example.json"
 TOOLCHAIN_LINK="$RUNNER_DIR/buzz-app"
 RUNNER_LOCKFILE="$RUNNER_DIR/pnpm-lock.yaml"
+RUNNER_PACKAGE_JSON="$RUNNER_DIR/package.json"
+# The repo's formatter and linter at its pinned version in runner/package.json.
+BIOME_BIN="$RUNNER_DIR/node_modules/.bin/biome"
+BIOME_CONFIG=biome.json
+BIOME_PACKAGE=@biomejs/biome
+BIOME_VERSION_RE='Version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)'
+MISE_CONFIG=mise.toml
+# apply builds every part by running the factories in PART_FACTORIES; a make*
+# factory left out of that list leaves its parts undefined, and the views
+# break only when Desktop renders them. The icon sets are built into `ui`.
+# Any top-level function form a factory may take, so a factory written as
+# export or async still counts as defined; group 3 is its name.
+PART_FACTORY_DEF_RE='^(export )?(async )?function (make[A-Z][A-Za-z0-9]*)\('
+PART_FACTORY_LIST_START='^const PART_FACTORIES = '
+PART_FACTORY_LIST_END='^\]\);$'
+PART_FACTORIES_EXEMPT=' makeIcons makeGlyphs '
 # The root copy limit lives in each file that enforces or tests it: setup.sh
 # enforces it as root, the helper refuses a bigger stage before the copy, and
 # the smoke fakes probe its edge. A one-sided change would let the helper
@@ -89,13 +105,15 @@ SMOKE_TIMEOUT_SECONDS=600
 # The runner install may fetch packages missing from the local pnpm store.
 PNPM_INSTALL_TIMEOUT_SECONDS=300
 SEMGREP_REGISTRY_CONFIG=p/javascript
+# Security floors: carry the November 2026 Node.js CVE fixes and pnpm's
+# minimumReleaseAge/trustPolicy bypass and undici fixes.
+NODE_MIN_VERSION=24.22.3
+# Older pnpm reads the minimum release age settings differently. No
+# packageManager field pins it: pnpm 12 then writes a second YAML document
+# into the lockfile, and osv-scanner reads only the first, so the dependency
+# scan would miss every runner package.
+PNPM_MIN_VERSION=12.22.0
 # Minimum versions: the releases these flags and rule sets were verified with.
-NODE_MIN_VERSION=24.0.0
-# The release the runner lockfile was made with. Older pnpm reads the minimum
-# release age settings differently. No packageManager field pins it: pnpm 12
-# then writes a second YAML document into the lockfile, and osv-scanner reads
-# only the first, so the dependency scan would miss every runner package.
-PNPM_MIN_VERSION=12.4.2
 SHELLCHECK_MIN_VERSION=0.10.0
 SHFMT_MIN_VERSION=3.8.0
 MARKDOWNLINT_MIN_VERSION=0.23.2
@@ -129,7 +147,8 @@ HASH_PIN_LINE_RE='^readonly [A-Z][A-Z0-9_]*_SHA256_[A-Z0-9_]+=[0-9a-f]{64}$'
 HASH_PIN_FILES_RE='^runner/deploy/(node-setup|harnesses)\.sh$'
 # Files copied from the hook template stay byte-identical to it, so their
 # style is the template's concern; repo-owned shell lives elsewhere.
-TEMPLATE_SHELL_RE='^(\.githooks/[^/]+|\.githooks/lib/.*|scripts/setup-hooks)$'
+TEMPLATE_HOOK_RE='^\.githooks/lib/|^\.githooks/[^/]+$'
+TEMPLATE_SHELL_RE="($TEMPLATE_HOOK_RE|^scripts/setup-hooks$)"
 
 quick=0
 if [ "${1:-}" = --quick ]; then
@@ -139,6 +158,28 @@ fi
 default_target="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$REPO_TOP")"
 target="$(cd "${1:-$default_target}" && pwd -P)"
 cd "$target"
+
+# Resolve pinned CLI tools directly from this checkout's mise.toml before shims
+# or ambient PATH, and ignore any untrusted mise.toml inside a temporary staged
+# snapshot or commit worktree.
+use_mise_tools() {
+	local mise_dir="$1" checked_dir="$2" bins dir prefix=""
+	if [ "$checked_dir" != "$mise_dir" ]; then
+		MISE_IGNORED_CONFIG_PATHS="${MISE_IGNORED_CONFIG_PATHS:+$MISE_IGNORED_CONFIG_PATHS:}$checked_dir"
+		export MISE_IGNORED_CONFIG_PATHS
+	fi
+	command -v mise >/dev/null 2>&1 || return 0
+	[ ! -L "$mise_dir/$MISE_CONFIG" ] && [ -f "$mise_dir/$MISE_CONFIG" ] || return 0
+	bins="$(MISE_OFFLINE=1 mise -C "$mise_dir" bin-paths </dev/null 2>/dev/null || true)"
+	[ -n "$bins" ] || return 0
+	while IFS= read -r dir; do
+		[ -n "$dir" ] || continue
+		prefix="${prefix:+$prefix:}$dir"
+	done <<<"$bins"
+	[ -n "$prefix" ] && PATH="$prefix:$PATH"
+	export PATH
+}
+use_mise_tools "$REPO_TOP" "$target"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/repo-check.XXXXXX")"
 # Only the mktemp directory this run created, never a computed parent.
@@ -187,7 +228,7 @@ files_with() {
 }
 
 require_node() {
-	require_tool "$CHECK" node "$NODE_MIN_VERSION" 'install Node.js 24 or newer (https://nodejs.org)' node --version
+	require_tool "$CHECK" node "$NODE_MIN_VERSION" 'install Node.js (mise install, see mise.toml)' node --version
 }
 
 # Every JS file must parse, so neither the Buzz loader nor the host meets a
@@ -236,6 +277,28 @@ process.exit(problems.length ? 1 : 0);
 NODE
 }
 
+# Every make* factory must be listed in PART_FACTORIES exactly once, and the
+# list must name only factories the file defines (see PART_FACTORY_DEF_RE).
+# Membership only: build-time order is proven by the runner's plugin smoke,
+# which renders every view.
+check_part_factories() {
+	has_file "$PLUGIN_JS" || return 0
+	local defined listed name problems=''
+	defined="$(sed -n -E "s/$PART_FACTORY_DEF_RE.*/\\3/p" "$PLUGIN_JS" | sort)"
+	[ -n "$defined" ] || fail "$PLUGIN_JS: no make* factories found"
+	listed="$(sed -n -E "/$PART_FACTORY_LIST_START/,/$PART_FACTORY_LIST_END/p" "$PLUGIN_JS" |
+		sed -n -E 's/^[[:space:]]*(make[A-Za-z0-9]+),$/\1/p' | sort)"
+	[ -n "$listed" ] || fail "$PLUGIN_JS: cannot read PART_FACTORIES"
+	while IFS= read -r name; do
+		[[ "$PART_FACTORIES_EXEMPT" == *" $name "* ]] && continue
+		[ "$(grep -c -x -F -- "$name" <<<"$listed")" -eq 1 ] || problems+=" $name"
+	done <<<"$defined"
+	while IFS= read -r name; do
+		grep -q -x -F -- "$name" <<<"$defined" || problems+=" $name"
+	done <<<"$listed"
+	[ -z "$problems" ] || fail "$PLUGIN_JS: PART_FACTORIES does not list each make* factory exactly once:$problems"
+}
+
 # The installable plugin is a build output; the example host list must build,
 # and the built manifest must grant exactly one host process: node on this
 # tree's hosts helper with the hosts file, the plugin's only way to read and
@@ -279,7 +342,7 @@ check_shell() {
 	done
 	[ "${#shells[@]}" -gt 0 ] || return 0
 	require_tool "$CHECK" shellcheck "$SHELLCHECK_MIN_VERSION" 'install shellcheck (https://www.shellcheck.net)' shellcheck --version
-	require_tool "$CHECK" shfmt "$SHFMT_MIN_VERSION" 'install shfmt (https://github.com/mvdan/sh)' shfmt --version
+	require_tool "$CHECK" shfmt "$SHFMT_MIN_VERSION" 'install shfmt (mise install, see mise.toml)' shfmt --version
 	shellcheck --external-sources --severity=style "${shells[@]}" || fail "shellcheck found problems"
 	shfmt --diff "${shells[@]}" || fail "shfmt would reformat these files; run: shfmt --write <file>"
 }
@@ -380,11 +443,56 @@ check_stage_limit() {
 
 # The runner's own packages, exactly as its lockfile pins them: the judged
 # tree is built and smoke-tested with them, never with whatever is installed.
+# No install script runs.
 install_runner_packages() {
 	has_file "$RUNNER_LOCKFILE" || return 0
-	require_tool "$CHECK" pnpm "$PNPM_MIN_VERSION" 'install pnpm (https://pnpm.io/installation)' pnpm --version
-	run_with_timeout "$PNPM_INSTALL_TIMEOUT_SECONDS" pnpm --dir "$RUNNER_DIR" install --frozen-lockfile --reporter=silent ||
+	require_tool "$CHECK" pnpm "$PNPM_MIN_VERSION" 'install pnpm (mise install, see mise.toml)' pnpm --version
+	run_with_timeout "$PNPM_INSTALL_TIMEOUT_SECONDS" pnpm --dir "$RUNNER_DIR" install --frozen-lockfile --ignore-scripts --reporter=silent ||
 		fail "cannot install the runner packages from $RUNNER_LOCKFILE"
+}
+
+# Exact Biome version pinned in runner/package.json, so an outdated install or
+# a weakened pin in a staged commit fails closed.
+biome_pinned_version() {
+	local pkg="$1"
+	[ ! -L "$pkg" ] && [ -f "$pkg" ] || fail "$RUNNER_PACKAGE_JSON is missing or a symlink at $pkg"
+	require_node
+	node -e '
+const pkg = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const ver = pkg.devDependencies?.[process.argv[2]] ?? pkg.dependencies?.[process.argv[2]];
+if (typeof ver !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(ver)) process.exit(1);
+process.stdout.write(ver);
+' "$pkg" "$BIOME_PACKAGE" || fail "$pkg must pin an exact version for $BIOME_PACKAGE"
+}
+
+# Keep JS, TS, and JSON formatting and lint aligned with biome.json, using
+# only the exact Biome binary pinned in runner/package.json so hooks never drift.
+check_biome() {
+	local list config_root config_file pkg_file pinned out actual
+	list="$(files_with ts tsx js mjs cjs json | grep -v -E "$TEMPLATE_HOOK_RE" || true)"
+	[ -n "$list" ] || return 0
+	# Pre-commit validates the staged biome.json and runner/package.json pin;
+	# pre-push judges every commit in the range against this checkout's active
+	# config and pin.
+	if [ "$quick" -eq 1 ]; then
+		config_root="$target"
+	else
+		config_root="$REPO_TOP"
+	fi
+	config_file="$config_root/$BIOME_CONFIG"
+	pkg_file="$config_root/$RUNNER_PACKAGE_JSON"
+	[ ! -L "$config_file" ] && [ -f "$config_file" ] || fail "$BIOME_CONFIG is missing or a symlink at $config_file"
+	[ -x "$REPO_TOP/$BIOME_BIN" ] || fail "no Biome in $REPO_TOP: run 'pnpm --dir $RUNNER_DIR install --frozen-lockfile --ignore-scripts' there"
+	pinned="$(biome_pinned_version "$pkg_file")"
+	out="$("$REPO_TOP/$BIOME_BIN" --version 2>/dev/null || true)"
+	if ! [[ "$out" =~ $BIOME_VERSION_RE ]]; then
+		fail "cannot read the biome version from '$REPO_TOP/$BIOME_BIN --version'"
+	fi
+	actual="${BASH_REMATCH[1]}"
+	[ "$actual" = "$pinned" ] || fail "biome is '$actual', need pinned $pinned (run: pnpm --dir $RUNNER_DIR install --frozen-lockfile --ignore-scripts)"
+	# shellcheck disable=SC2086  # one path per word
+	"$REPO_TOP/$BIOME_BIN" check --config-path="$config_file" --error-on-warnings -- $list ||
+		fail "biome found format or lint problems; run: $BIOME_BIN check --write <file>"
 }
 
 # The buzz-app clone the runner builds with: BUZZ_APP_DIR, else this
@@ -423,16 +531,16 @@ check_markdown() {
 	local list
 	list="$(files_with md MD markdown)"
 	[ -n "$list" ] || return 0
-	require_tool "$CHECK" markdownlint-cli2 "$MARKDOWNLINT_MIN_VERSION" 'install markdownlint-cli2' markdownlint-cli2 --help
+	require_tool "$CHECK" markdownlint-cli2 "$MARKDOWNLINT_MIN_VERSION" 'install markdownlint-cli2 (mise install, see mise.toml)' markdownlint-cli2 --help
 	# shellcheck disable=SC2086  # one path per word
 	markdownlint-cli2 --config "$HOOK_LIB/markdownlint.jsonc" -- $list || fail "markdownlint found problems"
 }
 
 check_complexity() {
 	local list
-	list="$(files_with js mjs cjs ts)"
+	list="$(files_with js mjs cjs ts | grep -v -E "$TEMPLATE_HOOK_RE" || true)"
 	[ -n "$list" ] || return 0
-	require_tool "$CHECK" lizard "$LIZARD_MIN_VERSION" 'install lizard (pipx install lizard)' lizard --version
+	require_tool "$CHECK" lizard "$LIZARD_MIN_VERSION" 'install lizard (mise install, see mise.toml)' lizard --version
 	# shellcheck disable=SC2086  # one path per word
 	lizard --CCN "$LIZARD_MAX_CCN" --length "$LIZARD_MAX_LENGTH" --warnings_only $list ||
 		fail "lizard: a function is above CCN $LIZARD_MAX_CCN or $LIZARD_MAX_LENGTH lines"
@@ -442,7 +550,7 @@ check_complexity() {
 # ...) to the generic hook's vendored offline rules.
 check_semgrep() {
 	local list
-	list="$(files_with js mjs cjs ts)"
+	list="$(files_with js mjs cjs ts | grep -v -E "$TEMPLATE_HOOK_RE" || true)"
 	[ -n "$list" ] || return 0
 	require_tool "$CHECK" semgrep "$SEMGREP_MIN_VERSION" 'install semgrep (https://semgrep.dev)' semgrep --version
 	# shellcheck disable=SC2086  # one path per word
@@ -472,6 +580,8 @@ check_manifest
 check_shell
 check_private_data
 check_stage_limit
+check_part_factories
+check_biome
 if [ "$quick" -eq 1 ]; then
 	exit 0
 fi

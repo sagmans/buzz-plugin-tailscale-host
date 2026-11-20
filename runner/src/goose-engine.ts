@@ -21,7 +21,12 @@
 import type { Settled, Spawn } from "@buzz/bundled/claude-code/claude";
 import { steerPrompt } from "@buzz/bundled/claude-code/prompt";
 import type { Choice, ToolServer } from "@buzz/bundled/goose/goose";
-import { AgentSessions, type Launch, ServerPool, SharedProcess } from "@buzz/bundled/goose/sessions";
+import {
+  AgentSessions,
+  type Launch,
+  type ServerPool,
+  SharedProcess,
+} from "@buzz/bundled/goose/sessions";
 import type { ServeMcp } from "@buzz/features/agent-harness/acp/types";
 import {
   GOOSE_HOST_KEY,
@@ -141,7 +146,11 @@ export class GooseEngine implements Engine {
       };
     } catch (error) {
       const message = errorMessage(error);
-      this.deps.log.warn("goose turn failed", { conversation: turn.key, elapsedMs: Date.now() - started, error: message });
+      this.deps.log.warn("goose turn failed", {
+        conversation: turn.key,
+        elapsedMs: Date.now() - started,
+        error: message,
+      });
       return { ok: false, error: message, undelivered: true };
     } finally {
       this.leave(turn.key);
@@ -215,7 +224,11 @@ export class GooseEngine implements Engine {
   }
 
   private quiet() {
-    return !this.working.size && !this.deps.inflight.size && !this.sessions.snapshot().some((item) => item.busy);
+    return (
+      !this.working.size &&
+      !this.deps.inflight.size &&
+      !this.sessions.snapshot().some((item) => item.busy)
+    );
   }
 
   private enter(key: string) {
@@ -255,7 +268,8 @@ export class GooseEngine implements Engine {
 export function choice(setup: Pick<GooseSetup, "model" | "effort">): Choice {
   const value = setup.model ?? "";
   const at = value.indexOf(GOOSE_MODEL_SEPARATOR);
-  const [provider, model] = at > 0 ? [value.slice(0, at), value.slice(at + GOOSE_MODEL_SEPARATOR.length)] : ["", value];
+  const [provider, model] =
+    at > 0 ? [value.slice(0, at), value.slice(at + GOOSE_MODEL_SEPARATOR.length)] : ["", value];
   return { provider, model, ...(setup.effort ? { effort: setup.effort } : {}) };
 }
 

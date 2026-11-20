@@ -60,7 +60,9 @@ function routeConsole() {
   const library = log.child({ component: "library" });
   const fields = (args: unknown[]) => ({
     ...(typeof args[0] === "string" ? { detail: args[0] } : {}),
-    ...(args.find((arg) => arg instanceof Error) ? { error: args.find((arg) => arg instanceof Error) } : {}),
+    ...(args.find((arg) => arg instanceof Error)
+      ? { error: args.find((arg) => arg instanceof Error) }
+      : {}),
   });
   console.log = (...args: unknown[]) => library.info("library message", fields(args));
   console.info = console.log;

@@ -2,7 +2,7 @@
 // buzz-app's `authTagOwner`, the same code Desktop uses to read attested
 // events, so the runner accepts exactly the tags Desktop would trust.
 import { authTagOwner } from "@buzz/features/agents/owner-attestation";
-import { HEX128, HEX64 } from "./constants";
+import { HEX64, HEX128 } from "./constants";
 import { AttestationError } from "./errors";
 
 export type AuthTag = readonly ["auth", string, string, string];

@@ -5,6 +5,7 @@
 // is size-capped, must be JSON, and is validated field by field here, at the
 // trust boundary, before it reaches the agent manager.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { AgentManager } from "./agents";
 import { parseAuthTag } from "./attest";
 import { optionalEffort, optionalModel, type RunnerConfig } from "./config";
 import {
@@ -13,6 +14,7 @@ import {
   CHANNEL_ID,
   FORBIDDEN_MESSAGE,
   HARNESS_CATALOG,
+  type HarnessId,
   HEADERS_TIMEOUT_MS,
   HEX64,
   INSTRUCTIONS_MAX,
@@ -23,9 +25,7 @@ import {
   PICTURE_MAX,
   REQUEST_TIMEOUT_MS,
   SCOPES,
-  type HarnessId,
 } from "./constants";
-import type { AgentManager } from "./agents";
 import {
   ConfigError,
   ForbiddenError,
@@ -116,7 +116,10 @@ function runnerRoutes(config: RunnerConfig, agents: AgentManager): Route[] {
       method: "GET",
       pattern: new RegExp(`^${API_PREFIX}/harnesses/${HARNESS_SEGMENT}/models$`),
       name: "harness models",
-      handle: async (match) => ({ status: 200, body: await agents.harnesses.listModels(match[1] as string) }),
+      handle: async (match) => ({
+        status: 200,
+        body: await agents.harnesses.listModels(match[1] as string),
+      }),
     },
     {
       method: "POST",
@@ -177,7 +180,10 @@ function agentRoutes(config: RunnerConfig, agents: AgentManager): Route[] {
       handle: async (match, body) => {
         const input = only(await body(), ["name", "picture"]);
         const picture = optionalPicture(input.picture);
-        await agents.profile(pk(match), { name: name(input.name), ...(picture ? { picture } : {}) });
+        await agents.profile(pk(match), {
+          name: name(input.name),
+          ...(picture ? { picture } : {}),
+        });
         return NO_CONTENT;
       },
     },
@@ -215,14 +221,16 @@ function agentRoutes(config: RunnerConfig, agents: AgentManager): Route[] {
  * value is never logged (it is personal data). */
 function authorize(req: IncomingMessage, config: RunnerConfig) {
   const login = req.headers[LOGIN_HEADER];
-  if (typeof login !== "string" || !config.allowedLogins.includes(login)) throw new ForbiddenError(FORBIDDEN_MESSAGE);
+  if (typeof login !== "string" || !config.allowedLogins.includes(login))
+    throw new ForbiddenError(FORBIDDEN_MESSAGE);
 }
 
 function readJson(req: IncomingMessage): Promise<Body> {
   const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
   if (type !== "application/json") return Promise.reject(new UnsupportedMediaError());
   const declared = Number(req.headers["content-length"] ?? 0);
-  if (declared > BODY_LIMIT_BYTES) return Promise.reject(new PayloadTooLargeError(BODY_LIMIT_BYTES));
+  if (declared > BODY_LIMIT_BYTES)
+    return Promise.reject(new PayloadTooLargeError(BODY_LIMIT_BYTES));
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -273,7 +281,8 @@ function name(value: unknown) {
 /** Desktop's rule: an HTTPS image URL without credentials. */
 function optionalPicture(value: unknown) {
   if (value === undefined || value === null || value === "") return undefined;
-  if (typeof value !== "string" || value.length > PICTURE_MAX) throw new ValidationError("picture must be a URL");
+  if (typeof value !== "string" || value.length > PICTURE_MAX)
+    throw new ValidationError("picture must be a URL");
   let url: URL;
   try {
     url = new URL(value);
@@ -296,13 +305,16 @@ function community(value: unknown, config: RunnerConfig) {
  * check; this one is shape only. A custom model id is allowed, as Desktop's
  * model field allows one. */
 function settings(value: unknown): AgentSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ValidationError("config must be an object");
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new ValidationError("config must be an object");
   const input = only(value as Body, ["instructions", "model", "effort", "harness", "scope"]);
   const harness = optionalHarness(input.harness);
   const scope = optionalScope(input.scope);
   const instructions = input.instructions ?? "";
   if (typeof instructions !== "string" || instructions.length > INSTRUCTIONS_MAX)
-    throw new ValidationError(`instructions must be a string of at most ${INSTRUCTIONS_MAX} characters`);
+    throw new ValidationError(
+      `instructions must be a string of at most ${INSTRUCTIONS_MAX} characters`,
+    );
   try {
     const model = optionalModel(input.model, MODEL_ID_ANY);
     const effort = optionalEffort(input.effort);
@@ -360,6 +372,10 @@ function send(res: ServerResponse, reply: Reply) {
   }
   const payload = JSON.stringify(reply.body);
   res
-    .writeHead(reply.status, { ...headers, "content-type": "application/json", "content-length": Buffer.byteLength(payload) })
+    .writeHead(reply.status, {
+      ...headers,
+      "content-type": "application/json",
+      "content-length": Buffer.byteLength(payload),
+    })
     .end(payload);
 }

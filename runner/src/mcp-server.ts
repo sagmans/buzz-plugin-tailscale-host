@@ -83,7 +83,8 @@ export class McpServers {
    * sessions answer by closing an idle session and trying once more. */
   readonly serve = async (handler: McpHandler): Promise<HostMcpServer> => {
     if (this.disposed) throw new ProcessError("The runner is stopping");
-    if (this.live.size >= MCP_MAX_SERVERS) throw new ProcessError("Too many MCP servers are running");
+    if (this.live.size >= MCP_MAX_SERVERS)
+      throw new ProcessError("Too many MCP servers are running");
     const server = new LoopbackServer(handler, this.log);
     this.live.add(server);
     void server.closed.then(() => this.live.delete(server));
@@ -162,7 +163,9 @@ class LoopbackServer {
   view(): HostMcpServer {
     return Object.freeze({
       url: `http://${this.authority}${MCP_ENDPOINT}`,
-      headers: Object.freeze([Object.freeze({ name: "Authorization", value: `${BEARER}${this.token}` })]),
+      headers: Object.freeze([
+        Object.freeze({ name: "Authorization", value: `${BEARER}${this.token}` }),
+      ]),
       close: async () => this.close(),
       closed: this.closed,
     });
@@ -248,7 +251,8 @@ class LoopbackServer {
       // Another client has the token too, and may hold the session.
       return "conflict";
     }
-    if (typeof method === "string" && OUTSIDE_METHODS.has(method) && this.claim !== "claimed") return "outside";
+    if (typeof method === "string" && OUTSIDE_METHODS.has(method) && this.claim !== "claimed")
+      return "outside";
     return STATUS.notFound;
   }
 
@@ -259,7 +263,11 @@ class LoopbackServer {
     try {
       message = JSON.parse(body);
     } catch {
-      return JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: PARSE_ERROR, message: "Parse error" } });
+      return JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: PARSE_ERROR, message: "Parse error" },
+      });
     }
     const id = (message as { id?: unknown } | null)?.id;
     let reply: unknown;
@@ -280,9 +288,15 @@ class LoopbackServer {
     return text;
   }
 
-  private respond(response: ServerResponse, status: number, body: string | undefined, joined: boolean) {
+  private respond(
+    response: ServerResponse,
+    status: number,
+    body: string | undefined,
+    joined: boolean,
+  ) {
     const headers: Record<string, string> = { "Cache-Control": "no-store", Connection: "close" };
-    if (joined && (status === STATUS.ok || status === STATUS.accepted)) headers["Mcp-Session-Id"] = this.session;
+    if (joined && (status === STATUS.ok || status === STATUS.accepted))
+      headers["Mcp-Session-Id"] = this.session;
     if (status === STATUS.ok) headers["Content-Type"] = JSON_TYPE;
     if (status === STATUS.notAllowed) headers.Allow = POST;
     response.writeHead(status, headers);
@@ -350,5 +364,12 @@ function secret() {
 }
 
 function rpcError(id: unknown, error: unknown) {
-  return { jsonrpc: "2.0", id, error: { code: INTERNAL_ERROR, message: error instanceof Error ? error.message : String(error) } };
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: {
+      code: INTERNAL_ERROR,
+      message: error instanceof Error ? error.message : String(error),
+    },
+  };
 }

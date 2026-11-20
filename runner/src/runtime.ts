@@ -11,13 +11,21 @@
 // limits.
 // Where it repeats Desktop's host code (buzz-app src/bundled/*/runtime.ts),
 // that code is Apache-2.0, Copyright 2026 Block, Inc.; see NOTICE.
-import { respond, type Listing } from "@buzz/buzz-mcp/rpc";
-import type { BuzzClient, BuzzEvent, Context } from "@buzz/buzz-mcp/client";
-import { TOOLS } from "@buzz/buzz-mcp/tools";
-import { turnNote } from "@buzz/buzz-mcp/session-tools";
+
 import type { Settled, Spawn, ToolServer } from "@buzz/bundled/claude-code/claude";
-import { CONTEXT_LIMIT, type Scope, systemPrompt, turnPrompt } from "@buzz/bundled/claude-code/prompt";
+import {
+  CONTEXT_LIMIT,
+  type Scope,
+  systemPrompt,
+  turnPrompt,
+} from "@buzz/bundled/claude-code/prompt";
+import type { ServerPool } from "@buzz/bundled/goose/sessions";
 import type { ToolResult } from "@buzz/bundled/pi/pi";
+import type { BuzzClient, BuzzEvent, Context } from "@buzz/buzz-mcp/client";
+import { type Listing, respond } from "@buzz/buzz-mcp/rpc";
+import { turnNote } from "@buzz/buzz-mcp/session-tools";
+import { TOOLS } from "@buzz/buzz-mcp/tools";
+import type { ServeMcp } from "@buzz/features/agent-harness/acp/types";
 import { coreMemorySection } from "@buzz/features/agent-harness/core-memory";
 import { addressedTo, CHAT_KINDS } from "@buzz/features/agents/attention";
 import { attestedOwner } from "@buzz/features/agents/owner-attestation";
@@ -25,21 +33,23 @@ import { type Pulses, pulseTyping } from "@buzz/features/agents/typing";
 import type { EventData, RelayEvent } from "@buzz/features/relay/events";
 import { threadReference } from "@buzz/features/relay/thread-reference";
 import { verifyEvent } from "nostr-tools/pure";
+import { CodexEngine } from "./codex-engine";
+import type { RunnerConfig } from "./config";
 import {
+  CLAUDE_HARNESS,
+  CODEX_HARNESS,
   CONTEXT_KINDS,
   CONTEXT_READ_TIMEOUT_MS,
   CORE_MEMORY_TIMEOUT_MS,
   DEFAULT_SCOPE,
-  CLAUDE_HARNESS,
-  CODEX_HARNESS,
   FAILURE_MESSAGE,
   GOOSE_HARNESS,
   HARNESS_CATALOG,
-  PI_HARNESS,
   type HarnessId,
-  MEDIA_TOTAL_MAX_BYTES,
   KIND_CHAT,
+  MEDIA_TOTAL_MAX_BYTES,
   NAMES_TIMEOUT_MS,
+  PI_HARNESS,
   REPLY_READ_TIMEOUT_MS,
   REPLY_THREAD_READ_LIMIT,
   STOP_INTERRUPT_MS,
@@ -48,20 +58,16 @@ import {
   TURN_WALL_CLOCK_MS,
   WALL_CLOCK_ERROR,
 } from "./constants";
-import type { RunnerConfig } from "./config";
-import type { ServerPool } from "@buzz/bundled/goose/sessions";
-import type { ServeMcp } from "@buzz/features/agent-harness/acp/types";
-import { CodexEngine } from "./codex-engine";
 import { ClaudeEngine, type Engine } from "./engine";
-import { GooseEngine, sessionTitle } from "./goose-engine";
 import { errorMessage } from "./errors";
+import { GooseEngine, sessionTitle } from "./goose-engine";
 import type { Limiter } from "./limiter";
-import type { PoolMember, SessionPool } from "./pool";
-import { short, type Logger } from "./log";
+import { type Logger, short } from "./log";
 import { withTimeout } from "./net";
 import { PiEngine } from "./pi-engine";
+import type { PoolMember, SessionPool } from "./pool";
 import type { ChannelSummary, CommunityReads } from "./reads";
-import { trimMedia, type AgentRecord, type AgentState } from "./store";
+import { type AgentRecord, type AgentState, trimMedia } from "./store";
 import type { Telemetry, TurnFailure, TurnHandle } from "./telemetry";
 
 /** Hosted agents run thread-scoped sessions, Desktop's default scope. */
@@ -80,7 +86,9 @@ const LISTING: Listing = {
  * the attention tools hosted agents do not have). */
 const PI_TOOLS = Object.freeze(TOOLS.map((tool) => ({ ...tool, load: "always" as const })));
 /** The same tools as Codex's dynamic tools list them. */
-const CODEX_TOOLS = Object.freeze(TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })));
+const CODEX_TOOLS = Object.freeze(
+  TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+);
 /** A JSON-RPC id for the tool calls this runtime makes to its own server. */
 const TOOL_CALL_ID = 1;
 
@@ -171,50 +179,55 @@ export class AgentRuntime {
       deps.harness === GOOSE_HARNESS
         ? this.gooseEngine(onChange)
         : deps.harness === CODEX_HARNESS
-        ? this.codexEngine(onChange)
-        : deps.harness === PI_HARNESS
-        ? new PiEngine({
-            agent: this.agent,
-            spawn: deps.spawn,
-            tools: PI_TOOLS,
-            hint: TOOLS_HINT,
-            setup: async () => {
-              const settings = this.settings();
-              const memory = await this.coreMemory();
-              return {
-                cwd: settings.cwd,
-                instructions: this.instructions(settings),
-                ...(memory === undefined
-                  ? {}
-                  : { core: { text: coreMemorySection(memory), placeholder: coreMemorySection(null) } }),
-                model: settings.model,
-                effort: settings.effort,
-              };
-            },
-            tool: (key, name, args) => this.callTool(key, name, args),
-            inflight: this.inflight,
-            onChange,
-            feed: deps.telemetry?.feed(this.settings().cwd),
-            log: deps.log.child({ harness: PI_HARNESS }),
-          })
-        : new ClaudeEngine({
-            spawn: deps.spawn,
-            state: deps.state,
-            fingerprint: () => JSON.stringify(this.settings()),
-            inflight: this.inflight,
-            onChange,
-            launch: async () => {
-              const settings = this.settings();
-              const memory = await this.coreMemory();
-              return {
-                cwd: settings.cwd,
-                ...(settings.model ? { model: settings.model } : {}),
-                ...(settings.effort ? { effort: settings.effort } : {}),
-                tools: this.tools,
-                systemPrompt: this.instructions(settings, memory),
-              };
-            },
-          });
+          ? this.codexEngine(onChange)
+          : deps.harness === PI_HARNESS
+            ? new PiEngine({
+                agent: this.agent,
+                spawn: deps.spawn,
+                tools: PI_TOOLS,
+                hint: TOOLS_HINT,
+                setup: async () => {
+                  const settings = this.settings();
+                  const memory = await this.coreMemory();
+                  return {
+                    cwd: settings.cwd,
+                    instructions: this.instructions(settings),
+                    ...(memory === undefined
+                      ? {}
+                      : {
+                          core: {
+                            text: coreMemorySection(memory),
+                            placeholder: coreMemorySection(null),
+                          },
+                        }),
+                    model: settings.model,
+                    effort: settings.effort,
+                  };
+                },
+                tool: (key, name, args) => this.callTool(key, name, args),
+                inflight: this.inflight,
+                onChange,
+                feed: deps.telemetry?.feed(this.settings().cwd),
+                log: deps.log.child({ harness: PI_HARNESS }),
+              })
+            : new ClaudeEngine({
+                spawn: deps.spawn,
+                state: deps.state,
+                fingerprint: () => JSON.stringify(this.settings()),
+                inflight: this.inflight,
+                onChange,
+                launch: async () => {
+                  const settings = this.settings();
+                  const memory = await this.coreMemory();
+                  return {
+                    cwd: settings.cwd,
+                    ...(settings.model ? { model: settings.model } : {}),
+                    ...(settings.effort ? { effort: settings.effort } : {}),
+                    tools: this.tools,
+                    systemPrompt: this.instructions(settings, memory),
+                  };
+                },
+              });
     this.member = {
       id: this.agent,
       live: () => this.engine.live(),
@@ -338,7 +351,9 @@ export class AgentRuntime {
     const busy = this.engine.busy();
     if (busy.length) this.deps.log.info("interrupting busy turns for stop", { turns: busy.length });
     await Promise.allSettled(
-      busy.map((key) => withTimeout(this.engine.interrupt(key), STOP_INTERRUPT_MS, "interrupt on stop")),
+      busy.map((key) =>
+        withTimeout(this.engine.interrupt(key), STOP_INTERRUPT_MS, "interrupt on stop"),
+      ),
     );
     this.dispose();
   }
@@ -347,7 +362,11 @@ export class AgentRuntime {
    * `null` when it has none, `undefined` when it could not be read. */
   private async coreMemory(): Promise<string | null | undefined> {
     try {
-      const { entries } = await withTimeout(this.deps.client.memories("core"), CORE_MEMORY_TIMEOUT_MS, "core memory read");
+      const { entries } = await withTimeout(
+        this.deps.client.memories("core"),
+        CORE_MEMORY_TIMEOUT_MS,
+        "core memory read",
+      );
       return entries.find((entry) => entry.slug === "core")?.body ?? null;
     } catch (error) {
       this.deps.log.warn("core memory unreadable", { error });
@@ -371,16 +390,22 @@ export class AgentRuntime {
     };
     if (request.method === "tools/list" && response.result?.tools)
       response.result.tools = response.result.tools.filter((tool) => TOOL_NAMES.has(tool.name));
-    if (request.method === "tools/call" && request.params?.name === MEDIA_TOOL) return this.capMedia(response);
+    if (request.method === "tools/call" && request.params?.name === MEDIA_TOOL)
+      return this.capMedia(response);
     return response;
   }
 
   /** A tool call from a harness that asks for tools by name (Pi), through
    * the same server, listing and media budget as Claude's calls. */
-  private async callTool(key: string | undefined, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  private async callTool(
+    key: string | undefined,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     // Only the tools this runtime lists: the server also knows the
     // attention tools, which hosted agents do not have.
-    if (!TOOL_NAMES.has(name)) return { content: [{ type: "text", text: `No tool ${name}` }], isError: true };
+    if (!TOOL_NAMES.has(name))
+      return { content: [{ type: "text", text: `No tool ${name}` }], isError: true };
     const context = (key && this.contexts.get(key)) || {};
     const response = (await this.serve(context, key, {
       jsonrpc: "2.0",
@@ -389,15 +414,22 @@ export class AgentRuntime {
       params: { name, arguments: args },
     })) as { result?: { content?: unknown; isError?: boolean }; error?: { message?: unknown } };
     if (response.error)
-      return { content: [{ type: "text", text: String(response.error.message ?? "Tool call failed") }], isError: true };
-    const content = Array.isArray(response.result?.content) ? (response.result.content as unknown[]) : [];
+      return {
+        content: [{ type: "text", text: String(response.error.message ?? "Tool call failed") }],
+        isError: true,
+      };
+    const content = Array.isArray(response.result?.content)
+      ? (response.result.content as unknown[])
+      : [];
     return { content, ...(response.result?.isError ? { isError: true } : {}) };
   }
 
   /** Applies the media budget after a download. A file that alone exceeds
    * it is removed too, and the call then reports an error instead of a path
    * that no longer exists. */
-  private async capMedia<T extends { result?: { content?: unknown; isError?: boolean } }>(response: T): Promise<T> {
+  private async capMedia<T extends { result?: { content?: unknown; isError?: boolean } }>(
+    response: T,
+  ): Promise<T> {
     const removed = await trimMedia(this.deps.mediaDir, MEDIA_TOTAL_MAX_BYTES).catch((error) => {
       this.deps.log.warn("media trim failed", { error });
       return [] as string[];
@@ -408,7 +440,10 @@ export class AgentRuntime {
     if (!removed.some((path) => text.includes(path))) return response;
     return {
       ...response,
-      result: { content: [{ type: "text", text: "Media is larger than this host keeps." }], isError: true },
+      result: {
+        content: [{ type: "text", text: "Media is larger than this host keeps." }],
+        isError: true,
+      },
     };
   }
 
@@ -424,7 +459,12 @@ export class AgentRuntime {
   async handle(event: RelayEvent): Promise<boolean> {
     const { log, config } = this.deps;
     const drop = (reason: string) => {
-      log.info("event dropped", { reason, event: event.id.slice(0, 12), kind: event.kind, author: short(event.pubkey) });
+      log.info("event dropped", {
+        reason,
+        event: event.id.slice(0, 12),
+        kind: event.kind,
+        author: short(event.pubkey),
+      });
       return false;
     };
     if (this.disposed) return drop("agent-stopped");
@@ -463,7 +503,8 @@ export class AgentRuntime {
     const { config } = this.deps;
     if (event.pubkey === config.ownerPubkey) return "owner";
     if (config.allowedSenders.includes(event.pubkey)) return "allowed";
-    if (config.acceptAttested && (await attestedOwner(event)) === config.ownerPubkey) return "attested";
+    if (config.acceptAttested && (await attestedOwner(event)) === config.ownerPubkey)
+      return "attested";
     return undefined;
   }
 
@@ -478,17 +519,27 @@ export class AgentRuntime {
    * is checked, since query results are not verified by the client. */
   private async replyTarget(event: RelayEvent, channel: string): Promise<string | undefined> {
     const { config, log } = this.deps;
-    if (!config.replyWake || event.pubkey !== config.ownerPubkey || event.kind !== KIND_CHAT) return undefined;
+    if (!config.replyWake || event.pubkey !== config.ownerPubkey || event.kind !== KIND_CHAT)
+      return undefined;
     if (event.tags.some((tag) => tag[0] === "p")) return undefined;
     const thread = threadReference(event);
     if (!thread) return undefined;
     try {
-      const summary = await withTimeout(this.deps.reads.channel(channel), REPLY_READ_TIMEOUT_MS, "reply channel read");
-      if (summary.channelType && REPLY_SKIPPED_CHANNEL_TYPES.has(summary.channelType)) return undefined;
+      const summary = await withTimeout(
+        this.deps.reads.channel(channel),
+        REPLY_READ_TIMEOUT_MS,
+        "reply channel read",
+      );
+      if (summary.channelType && REPLY_SKIPPED_CHANNEL_TYPES.has(summary.channelType))
+        return undefined;
       if (thread.parentId !== thread.rootId) return await this.replyRule(thread.parentId, channel);
       return await this.lastAgentRule(event, thread, channel);
     } catch (error) {
-      log.warn("reply target unreadable", { event: event.id.slice(0, 12), channel, error: errorMessage(error) });
+      log.warn("reply target unreadable", {
+        event: event.id.slice(0, 12),
+        channel,
+        error: errorMessage(error),
+      });
       return undefined;
     }
   }
@@ -521,7 +572,13 @@ export class AgentRuntime {
     const events = await withTimeout(
       this.deps.reads.read([
         { ids: [thread.rootId], kinds: [KIND_CHAT], "#h": [channel], limit: 1 },
-        { kinds: [KIND_CHAT], "#e": [thread.rootId], "#h": [channel], until: event.created_at, limit: REPLY_THREAD_READ_LIMIT },
+        {
+          kinds: [KIND_CHAT],
+          "#e": [thread.rootId],
+          "#h": [channel],
+          until: event.created_at,
+          limit: REPLY_THREAD_READ_LIMIT,
+        },
       ]),
       REPLY_READ_TIMEOUT_MS,
       "reply thread read",
@@ -537,7 +594,9 @@ export class AgentRuntime {
           (item.id === thread.rootId || threadReference(item)?.rootId === thread.rootId),
       )
       .sort((a, b) => orderKey(b) - orderKey(a));
-    for (const item of earlier) if (await this.ownersAgent(item)) return item.pubkey === this.agent ? "last agent" : undefined;
+    for (const item of earlier)
+      if (await this.ownersAgent(item))
+        return item.pubkey === this.agent ? "last agent" : undefined;
     return undefined;
   }
 
@@ -599,12 +658,21 @@ export class AgentRuntime {
     const contextRoot = key === channel && !dm && !topLevel ? root : undefined;
     const prompt = async (fresh: boolean) => {
       const turn = await this.turn(event, summary, key, topLevel, fresh, contextRoot);
-      const text = turnPrompt({ ...turn, agent: this.agent, label: "@mention", channelLevel: false });
+      const text = turnPrompt({
+        ...turn,
+        agent: this.agent,
+        label: "@mention",
+        channelLevel: false,
+      });
       return this.review(text);
     };
     this.contexts.set(
       key,
-      topLevel ? { channel, ...(solo ? { topLevel } : {}) } : key === channel ? { channel } : { channel, root },
+      topLevel
+        ? { channel, ...(solo ? { topLevel } : {}) }
+        : key === channel
+          ? { channel }
+          : { channel, root },
     );
     const meta = {
       channelId: channel,
@@ -617,9 +685,18 @@ export class AgentRuntime {
     const place = dm ? "DM" : summary.name ? `#${summary.name}` : channel;
     const title = sessionTitle(this.settings().name, place, key !== channel ? root : undefined);
     const settled = await this.dispatch(key, meta, () =>
-      this.engine.deliver({ key, request: event.id, at: event.created_at, prompt, context, contextRoot, title }),
+      this.engine.deliver({
+        key,
+        request: event.id,
+        at: event.created_at,
+        prompt,
+        context,
+        contextRoot,
+        title,
+      }),
     );
-    if (!settled.ok) await this.report(channel, event, settled.error ?? this.stoppedError(), topLevel);
+    if (!settled.ok)
+      await this.report(channel, event, settled.error ?? this.stoppedError(), topLevel);
   }
 
   /** `text` with the Buzz tools' end-of-turn note, when there is one. */
@@ -652,7 +729,12 @@ export class AgentRuntime {
               ? [
                   // nodeClient requires kinds on every filter.
                   { ids: [rootId], kinds: CONTEXT_KINDS, "#h": [channelId], limit: 1 },
-                  { kinds: CONTEXT_KINDS, "#h": [channelId], "#e": [rootId], limit: THREAD_CONTEXT_LIMIT },
+                  {
+                    kinds: CONTEXT_KINDS,
+                    "#h": [channelId],
+                    "#e": [rootId],
+                    limit: THREAD_CONTEXT_LIMIT,
+                  },
                 ]
               : [{ kinds: CONTEXT_KINDS, "#h": [channelId], limit: CONTEXT_LIMIT + 1 }],
           ),
@@ -672,7 +754,9 @@ export class AgentRuntime {
         this.deps.log.warn("conversation unreadable", { channel: channelId, error });
       }
     // A session already has its own replies; a new one is shown them too.
-    const unseen = earlier.filter((item) => item.created_at > seen && (!seen || item.pubkey !== this.agent));
+    const unseen = earlier.filter(
+      (item) => item.created_at > seen && (!seen || item.pubkey !== this.agent),
+    );
     const pubkeys = [
       ...new Set([
         event.pubkey,
@@ -680,9 +764,11 @@ export class AgentRuntime {
         ...event.tags.filter((tag) => tag[0] === "p").map((tag) => tag[1] ?? ""),
       ]),
     ].filter(Boolean);
-    const names = await withTimeout(this.deps.reads.names(pubkeys), NAMES_TIMEOUT_MS, "names read").catch(
-      () => new Map<string, string>(),
-    );
+    const names = await withTimeout(
+      this.deps.reads.names(pubkeys),
+      NAMES_TIMEOUT_MS,
+      "names read",
+    ).catch(() => new Map<string, string>());
     return {
       key,
       event,
@@ -698,7 +784,11 @@ export class AgentRuntime {
 
   /** Runs `deliver` under the global parallel-turn limit and the per-turn
    * wall-clock cap. Settles as the turn does. */
-  private async dispatch(key: string, meta: TurnMeta, deliver: () => Promise<Settled>): Promise<Settled> {
+  private async dispatch(
+    key: string,
+    meta: TurnMeta,
+    deliver: () => Promise<Settled>,
+  ): Promise<Settled> {
     const { limiter, log } = this.deps;
     let slot = this.inflight.get(key);
     if (slot) {
@@ -741,7 +831,11 @@ export class AgentRuntime {
     };
     if (current.failed || this.disposed) {
       done();
-      return { ok: false, error: current.failed?.message ?? "The agent was stopped", undelivered: true };
+      return {
+        ok: false,
+        error: current.failed?.message ?? "The agent was stopped",
+        undelivered: true,
+      };
     }
     // A new process needs a slot under the host's live-session cap.
     let admitted: () => void;
@@ -758,7 +852,9 @@ export class AgentRuntime {
       // Set now: a forced stop may release the slot before delivery settles.
       current.failure = { outcome: OUTCOME_TIMEOUT, error: WALL_CLOCK_ERROR };
       log.warn("turn over wall-clock cap", { conversation: key, capMs: TURN_WALL_CLOCK_MS });
-      void this.engine.interrupt(key).catch((error) => log.warn("interrupt failed", { conversation: key, error }));
+      void this.engine
+        .interrupt(key)
+        .catch((error) => log.warn("interrupt failed", { conversation: key, error }));
       stopTimer = setTimeout(() => void this.hardStop(key, done), TURN_STOP_GRACE_MS);
     }, TURN_WALL_CLOCK_MS);
     try {
@@ -766,7 +862,10 @@ export class AgentRuntime {
       const result: Settled = timedOut ? { ok: false, error: WALL_CLOCK_ERROR } : settled;
       current.failure = result.ok
         ? undefined
-        : { outcome: timedOut ? OUTCOME_TIMEOUT : OUTCOME_ERROR, error: result.error ?? this.stoppedError() };
+        : {
+            outcome: timedOut ? OUTCOME_TIMEOUT : OUTCOME_ERROR,
+            error: result.error ?? this.stoppedError(),
+          };
       return result;
     } catch (error) {
       current.failure = { outcome: OUTCOME_ERROR, error: errorMessage(error) };
@@ -824,7 +923,9 @@ export class AgentRuntime {
           ["p", this.deps.config.ownerPubkey],
         ],
       })
-      .catch((failure) => this.deps.log.warn("failure report not posted", { error: errorMessage(failure) }));
+      .catch((failure) =>
+        this.deps.log.warn("failure report not posted", { error: errorMessage(failure) }),
+      );
   }
 }
 
@@ -841,7 +942,10 @@ function channelOf(event: { readonly tags: readonly (readonly string[])[] }) {
 
 /** Buzz's message order: seconds, then the `ms` tag, as the reply-wake
  * plugin orders them, since seconds alone tie often. */
-function orderKey(event: { readonly created_at: number; readonly tags: readonly (readonly string[])[] }) {
+function orderKey(event: {
+  readonly created_at: number;
+  readonly tags: readonly (readonly string[])[];
+}) {
   const ms = Number(event.tags.find((tag) => tag[0] === "ms")?.[1]);
   return event.created_at * MS_PER_S + (Number.isInteger(ms) && ms >= 0 && ms < MS_PER_S ? ms : 0);
 }

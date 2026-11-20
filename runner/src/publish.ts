@@ -48,7 +48,12 @@ export function withoutAttestation(client: BuzzClient, target: PublishTarget): B
   const base = target.relay.replace(/^ws/, "http").replace(/\/+$/, "");
   const sign = (template: Template) =>
     finalizeEvent(
-      { kind: template.kind, content: template.content, tags: template.tags.map((tag) => [...tag]), created_at: now() },
+      {
+        kind: template.kind,
+        content: template.content,
+        tags: template.tags.map((tag) => [...tag]),
+        created_at: now(),
+      },
       secret,
     ) as BuzzEvent;
 
@@ -76,7 +81,10 @@ export function withoutAttestation(client: BuzzClient, target: PublishTarget): B
       redirect: "error",
     });
     const text = await response.text();
-    if (!response.ok) throw new RelayError(`Publish failed: ${response.status} ${text.slice(0, REFUSAL_MAX)}`.trim());
+    if (!response.ok)
+      throw new RelayError(
+        `Publish failed: ${response.status} ${text.slice(0, REFUSAL_MAX)}`.trim(),
+      );
     let reply: { accepted?: boolean; message?: string };
     try {
       reply = JSON.parse(text) as typeof reply;

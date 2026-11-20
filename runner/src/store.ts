@@ -6,6 +6,8 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:
 import { open, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { SavedSession, SessionStore } from "@buzz/bundled/claude-code/sessions";
+import type { Effort } from "./config";
+import type { HarnessId, SCOPES } from "./constants";
 import {
   AGENTS_DIR,
   FILES_DIR,
@@ -17,8 +19,6 @@ import {
   STATE_DIR_MODE,
   STATE_FILE_MODE,
 } from "./constants";
-import type { Effort } from "./config";
-import type { HarnessId, SCOPES } from "./constants";
 import { StateError } from "./errors";
 import { log } from "./log";
 
@@ -107,10 +107,17 @@ export class StateStore {
    * could read: keys would be exposed. */
   init() {
     try {
-      for (const dir of [this.root, this.agentsDir, this.sessionsDir, join(this.root, FILES_DIR), join(this.root, MEDIA_DIR)])
+      for (const dir of [
+        this.root,
+        this.agentsDir,
+        this.sessionsDir,
+        join(this.root, FILES_DIR),
+        join(this.root, MEDIA_DIR),
+      ])
         ensureDir(dir);
       const mode = statSync(this.root).mode & 0o777;
-      if (mode !== STATE_DIR_MODE) throw new StateError(`State dir ${this.root} has mode ${mode.toString(8)}`);
+      if (mode !== STATE_DIR_MODE)
+        throw new StateError(`State dir ${this.root} has mode ${mode.toString(8)}`);
     } catch (cause) {
       if (cause instanceof StateError) throw cause;
       throw new StateError(`Cannot prepare state dir ${this.root}`, { cause });
@@ -150,7 +157,11 @@ export class StateStore {
     const mode = statSync(path).mode & 0o777;
     if (mode !== STATE_FILE_MODE) chmodSync(path, STATE_FILE_MODE);
     const record = JSON.parse(readFileSync(path, "utf8")) as AgentRecord;
-    if (record.pubkey !== pubkey || typeof record.secretKey !== "string" || !HEX64.test(record.secretKey))
+    if (
+      record.pubkey !== pubkey ||
+      typeof record.secretKey !== "string" ||
+      !HEX64.test(record.secretKey)
+    )
       throw new StateError(`Agent record ${pubkey.slice(0, 12)} is malformed`);
     return record;
   }

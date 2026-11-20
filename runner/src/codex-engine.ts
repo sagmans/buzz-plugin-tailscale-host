@@ -26,15 +26,22 @@
 // - The process is stopped after CODEX_IDLE_MS without a turn, and counts as
 //   one live session under the host-wide cap, evictable when idle.
 import { createHash } from "node:crypto";
-import { isFinalMessage } from "@buzz/buzz-mcp/session-tools";
 import type { Settled, Spawn } from "@buzz/bundled/claude-code/claude";
 import { steerPrompt } from "@buzz/bundled/claude-code/prompt";
 import type { SessionStore } from "@buzz/bundled/claude-code/sessions";
 import { config as codexConfig, resolveModel } from "@buzz/bundled/codex/config";
 import { developerInstructions, turnContext } from "@buzz/bundled/codex/prompt";
-import { AppServer, listModels, Refused, type ToolCall, type ToolReply, type Wire } from "@buzz/bundled/codex/rpc";
+import {
+  AppServer,
+  listModels,
+  Refused,
+  type ToolCall,
+  type ToolReply,
+  type Wire,
+} from "@buzz/bundled/codex/rpc";
 import { codexStep } from "@buzz/bundled/codex/runtime";
 import type { ToolResult } from "@buzz/bundled/pi/pi";
+import { isFinalMessage } from "@buzz/buzz-mcp/session-tools";
 import {
   CODEX_HOST_KEY,
   CODEX_IDLE_MS,
@@ -63,7 +70,11 @@ export type CodexSetup = Readonly<{
 }>;
 
 /** One Buzz tool as a Codex dynamic tool lists it. */
-export type CodexTool = Readonly<{ name: string; description: string; inputSchema: Readonly<Record<string, unknown>> }>;
+export type CodexTool = Readonly<{
+  name: string;
+  description: string;
+  inputSchema: Readonly<Record<string, unknown>>;
+}>;
 
 export type CodexEngineDeps = Readonly<{
   agent: string;
@@ -197,7 +208,10 @@ export class CodexEngine implements Engine {
       try {
         await active.ready;
         if (active.finished || !active.threadId || !active.turnId) return;
-        await active.rpc.request("turn/interrupt", { threadId: active.threadId, turnId: active.turnId });
+        await active.rpc.request("turn/interrupt", {
+          threadId: active.threadId,
+          turnId: active.turnId,
+        });
       } catch (error) {
         active.stopping = undefined;
         if (!active.finished) active.stopped = false;
@@ -212,7 +226,12 @@ export class CodexEngine implements Engine {
   }
 
   busy() {
-    return [...new Set([...this.working.keys(), ...[...this.lanes].filter(([, lane]) => lane.active).map(([key]) => key)])];
+    return [
+      ...new Set([
+        ...this.working.keys(),
+        ...[...this.lanes].filter(([, lane]) => lane.active).map(([key]) => key),
+      ]),
+    ];
   }
 
   slot() {
@@ -255,7 +274,11 @@ export class CodexEngine implements Engine {
   }
 
   private quiet() {
-    return !this.working.size && !this.deps.inflight.size && ![...this.lanes.values()].some((lane) => lane.active);
+    return (
+      !this.working.size &&
+      !this.deps.inflight.size &&
+      ![...this.lanes.values()].some((lane) => lane.active)
+    );
   }
 
   private lane(key: string) {
@@ -289,7 +312,11 @@ export class CodexEngine implements Engine {
       // A completion racing the message means this is the next turn.
       if (errorMessage(error) === CODEX_NO_ACTIVE_TURN) return undefined;
       const reason = `Steering was not accepted: ${errorMessage(error)}`;
-      this.deps.log.warn("codex steer refused", { conversation: turn.key, refused: error instanceof Refused, error: reason });
+      this.deps.log.warn("codex steer refused", {
+        conversation: turn.key,
+        refused: error instanceof Refused,
+        error: reason,
+      });
       return { ok: false, error: reason, undelivered: true };
     }
     this.remember(turn, active.threadId);
@@ -326,7 +353,10 @@ export class CodexEngine implements Engine {
   /** One turn (Desktop codex `execute`): resume or start the thread, start
    * the turn, and follow it to its end. Resolves as the work settles, which
    * a final Buzz send does before Codex ends its turn. */
-  private execute(lane: Lane, turn: EngineTurn): { settled: Promise<Settled>; ended: Promise<void> } {
+  private execute(
+    lane: Lane,
+    turn: EngineTurn,
+  ): { settled: Promise<Settled>; ended: Promise<void> } {
     // A turn queued before a stop must not start the process again.
     if (this.disposed) throw new ProcessError("The agent was stopped");
     const server = this.open();
@@ -360,7 +390,9 @@ export class CodexEngine implements Engine {
   private async run(server: Server, active: Active, turn: EngineTurn, ready: () => void) {
     const { key } = turn;
     const started = Date.now();
-    const followed = follow(server.rpc, active, (method, item) => this.item(key, active, method, item));
+    const followed = follow(server.rpc, active, (method, item) =>
+      this.item(key, active, method, item),
+    );
     let reported = false;
     // The feed hears the outcome before the delivery settles: a settled
     // delivery ends its telemetry turn, which would answer the prompt itself.
@@ -376,19 +408,20 @@ export class CodexEngine implements Engine {
       const saveKey = this.saveKey(key);
       const saved = this.deps.store.get(saveKey);
       type Started = { thread: { id: string } };
-      const start = () => rpc.request<Started>("thread/start", { ...params, dynamicTools: this.dynamicTools });
+      const start = () =>
+        rpc.request<Started>("thread/start", { ...params, dynamicTools: this.dynamicTools });
       let thread: Started;
       let fresh = false;
       if (saved) {
-        thread = await rpc.request<Started>("thread/resume", { ...params, threadId: saved.id, excludeTurns: true }).catch(
-          async (error) => {
+        thread = await rpc
+          .request<Started>("thread/resume", { ...params, threadId: saved.id, excludeTurns: true })
+          .catch(async (error) => {
             if (errorMessage(error) !== `${CODEX_MISSING_ROLLOUT}${saved.id}`) throw error;
             // Its rollout is gone: a new thread is shown the conversation again.
             await this.deps.store.delete(saveKey);
             fresh = true;
             return start();
-          },
-        );
+          });
       } else thread = await start();
       const threadId = thread.thread.id;
       active.threadId = threadId;
@@ -444,7 +477,11 @@ export class CodexEngine implements Engine {
         elapsedMs: Date.now() - started,
         error: message,
       });
-      active.settle({ ok: false, error: message, ...(active.turnId ? {} : { undelivered: true as const }) });
+      active.settle({
+        ok: false,
+        error: message,
+        ...(active.turnId ? {} : { undelivered: true as const }),
+      });
     } finally {
       active.finished = true;
       active.settle({ ok: false, error: ENDED_UNANSWERED });
@@ -473,7 +510,9 @@ export class CodexEngine implements Engine {
         ? {
             threads: {
               ...same?.threads,
-              ...(turn.contextRoot ? { [turn.contextRoot]: Math.max(same?.threads?.[turn.contextRoot] ?? 0, turn.at) } : {}),
+              ...(turn.contextRoot
+                ? { [turn.contextRoot]: Math.max(same?.threads?.[turn.contextRoot] ?? 0, turn.at) }
+                : {}),
             },
           }
         : {}),
@@ -489,7 +528,11 @@ export class CodexEngine implements Engine {
     if (method === "item/started") {
       const step = codexStep(item);
       if (step) feed.step(key, active.threadId, step.tool, step.target);
-    } else if (method === "item/completed" && item.type === "agentMessage" && typeof item.text === "string")
+    } else if (
+      method === "item/completed" &&
+      item.type === "agentMessage" &&
+      typeof item.text === "string"
+    )
       feed.answer(key, active.threadId, item.text);
   }
 
@@ -501,7 +544,11 @@ export class CodexEngine implements Engine {
     const active = [...this.lanes.values()]
       .map((lane) => lane.active)
       .find((turn) => turn && turn.threadId === call?.threadId && turn.turnId === call?.turnId);
-    if (!active || call.namespace !== CODEX_TOOL_NAMESPACE || !this.deps.tools.some((tool) => tool.name === call.tool))
+    if (
+      !active ||
+      call.namespace !== CODEX_TOOL_NAMESPACE ||
+      !this.deps.tools.some((tool) => tool.name === call.tool)
+    )
       throw new ProcessError("No active Buzz tool for this thread and turn");
     if (active.finished) throw new ProcessError(TURN_ENDED);
     if (!call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments))
@@ -520,13 +567,18 @@ export class CodexEngine implements Engine {
       await rpc.request("thread/backgroundTerminals/clean", { threadId });
       const until = Date.now() + linger;
       for (let cursor: string | null = null; ; ) {
-        const page: { data: { processId: string }[]; nextCursor: string | null } = await rpc.request(
-          "thread/backgroundTerminals/list",
-          { threadId, limit: CODEX_TERMINALS_PAGE, cursor },
-        );
+        const page: { data: { processId: string }[]; nextCursor: string | null } =
+          await rpc.request("thread/backgroundTerminals/list", {
+            threadId,
+            limit: CODEX_TERMINALS_PAGE,
+            cursor,
+          });
         await Promise.all(
           page.data.map((terminal) =>
-            rpc.request("thread/backgroundTerminals/terminate", { threadId, processId: terminal.processId }),
+            rpc.request("thread/backgroundTerminals/terminate", {
+              threadId,
+              processId: terminal.processId,
+            }),
           ),
         );
         cursor = page.nextCursor;
@@ -534,11 +586,17 @@ export class CodexEngine implements Engine {
         if (Date.now() >= until) break;
         await new Promise((resolve) => setTimeout(resolve, CODEX_LINGER_POLL_MS));
       }
-      const remaining = await rpc.request<{ data: unknown[] }>("thread/backgroundTerminals/list", { threadId, limit: 1 });
-      if (remaining.data.length) throw new ProcessError("Codex background terminals could not be stopped");
+      const remaining = await rpc.request<{ data: unknown[] }>("thread/backgroundTerminals/list", {
+        threadId,
+        limit: 1,
+      });
+      if (remaining.data.length)
+        throw new ProcessError("Codex background terminals could not be stopped");
     } catch (error) {
       // Shells that could not be ended must not outlive an idle process.
-      this.deps.log.warn("codex terminal cleanup failed; stopping the process", { error: errorMessage(error) });
+      this.deps.log.warn("codex terminal cleanup failed; stopping the process", {
+        error: errorMessage(error),
+      });
       await rpc.close();
     }
   }
@@ -606,7 +664,10 @@ export class CodexEngine implements Engine {
     const server = this.server;
     this.server = undefined;
     if (this.alive) this.deps.log.info("codex stopping", { why });
-    if (server) void server.rpc.close().catch((error) => this.deps.log.warn("codex stop failed", { error: errorMessage(error) }));
+    if (server)
+      void server.rpc
+        .close()
+        .catch((error) => this.deps.log.warn("codex stop failed", { error: errorMessage(error) }));
   }
 }
 
@@ -615,21 +676,31 @@ export class CodexEngine implements Engine {
  * hooks, which the runner has none of). */
 async function prepare(rpc: AppServer, setup: CodexSetup, agent: string) {
   const normalized = await rpc.request<{
-    config: { mcp_servers?: Record<string, Record<string, unknown>>; model_reasoning_summary?: string | null };
+    config: {
+      mcp_servers?: Record<string, Record<string, unknown>>;
+      model_reasoning_summary?: string | null;
+    };
   }>("config/read", { cwd: setup.cwd });
   const models = await listModels(rpc);
   const own = resolveModel(setup.model ?? "", models);
   const selected = models.find((row) => row.model === own);
-  if (!selected) throw new ProcessError("The selected Codex model is unavailable. Choose an available model.");
+  if (!selected)
+    throw new ProcessError("The selected Codex model is unavailable. Choose an available model.");
   const supported = selected.supportedReasoningEfforts.map((level) => level.reasoningEffort);
   // A model may not support the configured effort.
-  const effort = setup.effort && supported.includes(setup.effort) ? setup.effort : selected.defaultReasoningEffort;
+  const effort =
+    setup.effort && supported.includes(setup.effort)
+      ? setup.effort
+      : selected.defaultReasoningEffort;
   // Inherited MCP servers are off: the Buzz tools are the dynamic ones. CLI
   // overrides replace the table, and a disabled server still needs a transport.
   const mcp = Object.fromEntries(
     Object.entries(normalized.config.mcp_servers ?? {}).map(([name, server]) => [
       name,
-      { ...(typeof server.command === "string" ? { command: server.command } : { url: server.url }), enabled: false },
+      {
+        ...(typeof server.command === "string" ? { command: server.command } : { url: server.url }),
+        enabled: false,
+      },
     ]),
   );
   const params = {
@@ -639,7 +710,12 @@ async function prepare(rpc: AppServer, setup: CodexSetup, agent: string) {
     approvalPolicy: "never",
     // Matches Claude's bypassPermissions; only admitted messages start work.
     sandbox: "danger-full-access",
-    config: { web_search: "disabled", mcp_servers: mcp, "features.plugins": false, "features.apps": false },
+    config: {
+      web_search: "disabled",
+      mcp_servers: mcp,
+      "features.plugins": false,
+      "features.apps": false,
+    },
   };
   // Reasoning summaries, unless the shared config chose a summary mode.
   const summary = normalized.config.model_reasoning_summary ? {} : { summary: "auto" };
@@ -660,7 +736,12 @@ function follow(rpc: AppServer, active: Active, onItem: (method: string, item: I
   const off = rpc.onMessage((wire) => {
     // #lizard forgives: one branch per app-server notification, as Desktop's Codex runtime
     const p = wire.params as
-      | { threadId?: string; message?: string; turn?: { id: string; status: string; error?: { message: string } }; item?: Item }
+      | {
+          threadId?: string;
+          message?: string;
+          turn?: { id: string; status: string; error?: { message: string } };
+          item?: Item;
+        }
       | undefined;
     if (wire.method === "connection/closed") {
       fail(new ProcessError(p?.message ?? "Codex connection closed"));
@@ -671,7 +752,8 @@ function follow(rpc: AppServer, active: Active, onItem: (method: string, item: I
     if (p.item && wire.method) onItem(wire.method, p.item);
     if (wire.method === "turn/completed" && p.turn) {
       active.finished = true;
-      if (p.turn.status === "failed") fail(new ProcessError(p.turn.error?.message ?? "Codex turn failed"));
+      if (p.turn.status === "failed")
+        fail(new ProcessError(p.turn.error?.message ?? "Codex turn failed"));
       else finish(p.turn.status);
     }
   });
@@ -682,9 +764,19 @@ function follow(rpc: AppServer, active: Active, onItem: (method: string, item: I
 function contentItems(content: readonly unknown[]): ToolReply["contentItems"] {
   const items: ToolReply["contentItems"] = [];
   for (const value of content) {
-    const block = value as { type?: unknown; text?: unknown; data?: unknown; mimeType?: unknown } | null;
-    if (block?.type === "text" && typeof block.text === "string") items.push({ type: "inputText", text: block.text });
-    else if (block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string")
+    const block = value as {
+      type?: unknown;
+      text?: unknown;
+      data?: unknown;
+      mimeType?: unknown;
+    } | null;
+    if (block?.type === "text" && typeof block.text === "string")
+      items.push({ type: "inputText", text: block.text });
+    else if (
+      block?.type === "image" &&
+      typeof block.data === "string" &&
+      typeof block.mimeType === "string"
+    )
       items.push({ type: "inputImage", imageUrl: `data:${block.mimeType};base64,${block.data}` });
   }
   return items;

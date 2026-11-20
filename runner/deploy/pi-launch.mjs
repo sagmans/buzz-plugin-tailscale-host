@@ -21,7 +21,18 @@
 // user, which the runner already drives with prompts, so it grants nothing
 // new; it is still checked for shape and size before any of it is used.
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -61,7 +72,8 @@ process.removeAllListeners("warning").on("warning", (warning) => {
 /** An absolute, normalized folder path from the wrapper's environment. */
 function folder(name) {
   const value = process.env[name];
-  if (!value || !isAbsolute(value) || normalize(value) !== value) fail(`${name} must be an absolute, normalized path`, EXIT_USAGE);
+  if (!value || !isAbsolute(value) || normalize(value) !== value)
+    fail(`${name} must be an absolute, normalized path`, EXIT_USAGE);
   return value;
 }
 const data = folder("BUZZ_PI_DATA");
@@ -101,7 +113,10 @@ let input;
 try {
   input = JSON.parse(await firstLine());
 } catch (error) {
-  fail(error instanceof SyntaxError ? "its first input line is not JSON" : error.message, EXIT_USAGE);
+  fail(
+    error instanceof SyntaxError ? "its first input line is not JSON" : error.message,
+    EXIT_USAGE,
+  );
 }
 const { host, package: pkg, lock } = input ?? {};
 if (typeof host !== "string" || typeof pkg !== "string" || typeof lock !== "string" || !host)
@@ -123,9 +138,11 @@ let pinned;
 try {
   pinned = JSON.parse(lock).packages;
   const wanted = JSON.parse(pkg).dependencies;
-  if (!pinned || typeof pinned !== "object" || !wanted || typeof wanted !== "object") throw new Error("no packages");
+  if (!pinned || typeof pinned !== "object" || !wanted || typeof wanted !== "object")
+    throw new Error("no packages");
   for (const [name, version] of Object.entries(wanted))
-    if (pinned[`${NODE_MODULES}/${name}`]?.version !== version) throw new Error(`lock and package disagree on ${name}`);
+    if (pinned[`${NODE_MODULES}/${name}`]?.version !== version)
+      throw new Error(`lock and package disagree on ${name}`);
 } catch (error) {
   fail(`its package lock is unreadable (${error.message})`, EXIT_USAGE);
 }
@@ -136,10 +153,15 @@ for (const [path, entry] of Object.entries(pinned)) {
     fail(`its package lock names an unsafe path ${JSON.stringify(path)}`, EXIT_USAGE);
   const found = installed(path);
   if (found === undefined && entry?.optional === true) continue;
-  if (found !== entry?.version) drift.push(`${path.slice(NODE_MODULES.length + 1)} ${entry?.version} (installed: ${found ?? "none"})`);
+  if (found !== entry?.version)
+    drift.push(
+      `${path.slice(NODE_MODULES.length + 1)} ${entry?.version} (installed: ${found ?? "none"})`,
+    );
 }
 if (drift.length)
-  fail(`the installed Pi packages are not the ones this Buzz pins. Install them as root at ${modules}. Differs: ${drift.join(", ")}`);
+  fail(
+    `the installed Pi packages are not the ones this Buzz pins. Install them as root at ${modules}. Differs: ${drift.join(", ")}`,
+  );
 
 // The agent's folder: its storage, and the host source beside a link to the
 // installed packages, so the host's imports resolve there.
@@ -172,7 +194,8 @@ try {
   writeFileSync(part, host, { mode: FILE_MODE });
   renameSync(part, file);
   for (const entry of readdirSync(hostDir))
-    if (entry !== name && entry.startsWith(HOST_PREFIX)) rmSync(join(hostDir, entry), { force: true });
+    if (entry !== name && entry.startsWith(HOST_PREFIX))
+      rmSync(join(hostDir, entry), { force: true });
 } catch (error) {
   fail(`cannot write the host source (${error.code ?? error.message})`);
 }

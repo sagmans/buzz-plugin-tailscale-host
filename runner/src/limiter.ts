@@ -5,7 +5,10 @@ import { RunnerError } from "./errors";
 
 export class Limiter {
   private active = 0;
-  private readonly waiting: { grant: (release: () => void) => void; refuse: (error: Error) => void }[] = [];
+  private readonly waiting: {
+    grant: (release: () => void) => void;
+    refuse: (error: Error) => void;
+  }[] = [];
   private closed = false;
 
   constructor(
@@ -22,20 +25,24 @@ export class Limiter {
 
   /** Resolves with a one-shot release once a slot is free. */
   acquire(): Promise<() => void> {
-    if (this.closed) return Promise.reject(new RunnerError("shutting_down", 503, "The runner is stopping"));
+    if (this.closed)
+      return Promise.reject(new RunnerError("shutting_down", 503, "The runner is stopping"));
     if (this.active < this.max) {
       this.active++;
       return Promise.resolve(this.releaser());
     }
     if (this.waiting.length >= this.queueLimit)
-      return Promise.reject(new RunnerError("busy", 503, "Too many turns are waiting; try again later"));
+      return Promise.reject(
+        new RunnerError("busy", 503, "Too many turns are waiting; try again later"),
+      );
     return new Promise((grant, refuse) => this.waiting.push({ grant, refuse }));
   }
 
   /** Refuses every waiting turn; running ones finish or are stopped by their owners. */
   close() {
     this.closed = true;
-    for (const waiter of this.waiting.splice(0)) waiter.refuse(new RunnerError("shutting_down", 503, "The runner is stopping"));
+    for (const waiter of this.waiting.splice(0))
+      waiter.refuse(new RunnerError("shutting_down", 503, "The runner is stopping"));
   }
 
   private releaser() {

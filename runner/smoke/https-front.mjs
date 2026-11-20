@@ -5,8 +5,8 @@
 // trusts that certificate through NODE_EXTRA_CA_CERTS, the way the user's
 // node trusts the certificate that `tailscale serve` gets.
 import { execFile } from "node:child_process";
-import { createServer } from "node:https";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:https";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -28,7 +28,25 @@ export async function makeCertificate(dir) {
   const cert = join(dir, "front-cert.pem");
   await run(
     "openssl",
-    ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", key, "-out", cert, "-days", String(CERT_DAYS), "-subj", `/CN=${FRONT_HOST}`, "-addext", `subjectAltName=IP:${FRONT_HOST}`],
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-keyout",
+      key,
+      "-out",
+      cert,
+      "-days",
+      String(CERT_DAYS),
+      "-subj",
+      `/CN=${FRONT_HOST}`,
+      "-addext",
+      `subjectAltName=IP:${FRONT_HOST}`,
+    ],
     { timeout: OPENSSL_TIMEOUT_MS },
   );
   return { key, cert };
@@ -53,21 +71,32 @@ async function readBody(request) {
  * @returns {Promise<{origin: string, close: () => Promise<void>}>}
  */
 export async function startFront(tls, handle) {
-  const server = createServer({ key: readFileSync(tls.key), cert: readFileSync(tls.cert) }, async (request, response) => {
-    try {
-      const body = await readBody(request);
-      const answer = await handle({ method: request.method, path: request.url, body, headers: request.headers });
-      if (answer === "drop") {
-        request.socket.destroy();
-        return;
+  const server = createServer(
+    { key: readFileSync(tls.key), cert: readFileSync(tls.cert) },
+    async (request, response) => {
+      try {
+        const body = await readBody(request);
+        const answer = await handle({
+          method: request.method,
+          path: request.url,
+          body,
+          headers: request.headers,
+        });
+        if (answer === "drop") {
+          request.socket.destroy();
+          return;
+        }
+        response.writeHead(answer.status, {
+          "content-type": "application/json",
+          ...(answer.headers ?? {}),
+        });
+        response.end(answer.body ?? "");
+      } catch (error) {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "front", message: String(error?.message ?? error) }));
       }
-      response.writeHead(answer.status, { "content-type": "application/json", ...(answer.headers ?? {}) });
-      response.end(answer.body ?? "");
-    } catch (error) {
-      response.writeHead(500, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "front", message: String(error?.message ?? error) }));
-    }
-  });
+    },
+  );
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, FRONT_HOST, resolve);

@@ -33,7 +33,11 @@ export function matches(filter, event) {
   if (filter.since !== undefined && event.created_at < filter.since) return false;
   if (filter.until !== undefined && event.created_at > filter.until) return false;
   for (const [key, values] of Object.entries(filter))
-    if (key.startsWith("#") && !event.tags.some((tag) => tag[0] === key.slice(1) && values.includes(tag[1]))) return false;
+    if (
+      key.startsWith("#") &&
+      !event.tags.some((tag) => tag[0] === key.slice(1) && values.includes(tag[1]))
+    )
+      return false;
   return true;
 }
 
@@ -91,7 +95,10 @@ export class MockRelay {
 
   /** Relay-authored event (channel metadata, rosters). */
   relaySigned(kind, tags, content = "") {
-    return finalizeEvent({ kind, tags, content, created_at: Math.floor(Date.now() / 1000) }, this.secret);
+    return finalizeEvent(
+      { kind, tags, content, created_at: Math.floor(Date.now() / 1000) },
+      this.secret,
+    );
   }
 
   /** Stores an event and pushes it to live subscriptions, as an accepted write. */
@@ -100,19 +107,29 @@ export class MockRelay {
     // roster without the agent hides the old roster that named it.
     if (event.kind >= ADDRESSABLE_MIN && event.kind < ADDRESSABLE_END) {
       const d = (item) => item.tags.find((tag) => tag[0] === "d")?.[1] ?? "";
-      this.events = this.events.filter((item) => !(item.kind === event.kind && item.pubkey === event.pubkey && d(item) === d(event)));
+      this.events = this.events.filter(
+        (item) =>
+          !(item.kind === event.kind && item.pubkey === event.pubkey && d(item) === d(event)),
+      );
     }
     this.events.push(event);
     const live = (filter) => !CHANNEL_SCOPED_KINDS.includes(event.kind) || "#h" in filter;
     for (const connection of this.connections)
       for (const [subId, filters] of connection.subs)
-        if (filters.some((filter) => live(filter) && matches(filter, event))) this.send(connection, ["EVENT", subId, event]);
+        if (filters.some((filter) => live(filter) && matches(filter, event)))
+          this.send(connection, ["EVENT", subId, event]);
   }
 
   /** The relay's membership notice to `member` about `channel` (buzz-relay
    * `emit_membership_notification`): what a join or leave sends live. */
   notice(member, channel, kind = KIND_MEMBER_ADDED, type = "stream") {
-    this.inject(this.relaySigned(kind, [["p", member], ["h", channel], ["t", type]]));
+    this.inject(
+      this.relaySigned(kind, [
+        ["p", member],
+        ["h", channel],
+        ["t", type],
+      ]),
+    );
   }
 
   /** Pushes raw JSON (for example an event with a broken signature) to every subscription. */
@@ -140,7 +157,8 @@ export class MockRelay {
 
   /** Drops only `agent`'s sockets, so other runners on this relay go on. */
   drop(agent) {
-    for (const connection of this.connections) if (connection.authed === agent) connection.socket.destroy();
+    for (const connection of this.connections)
+      if (connection.authed === agent) connection.socket.destroy();
   }
 
   /** The next `subId` REQ of `agent` gets no EOSE. */
@@ -179,11 +197,16 @@ export class MockRelay {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
     };
-    if (req.method === "GET" && req.url === "/") return reply(200, { name: "mock", self: this.pubkey });
+    if (req.method === "GET" && req.url === "/")
+      return reply(200, { name: "mock", self: this.pubkey });
     if (req.method === "GET" && req.url.startsWith("/media/")) {
       const blob = this.blobs.get(req.url.slice("/media/".length));
-      if (!blob || !(req.headers.authorization ?? "").startsWith("Nostr ")) return reply(404, { error: "no blob" });
-      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": blob.length });
+      if (!blob || !(req.headers.authorization ?? "").startsWith("Nostr "))
+        return reply(404, { error: "no blob" });
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": blob.length,
+      });
       return res.end(blob);
     }
     const chunks = [];
@@ -200,7 +223,8 @@ export class MockRelay {
       }
       if (req.method === "POST" && req.url === "/events") {
         const event = JSON.parse(body);
-        if (!verifyEvent(event)) return reply(200, { accepted: false, message: "invalid: bad signature" });
+        if (!verifyEvent(event))
+          return reply(200, { accepted: false, message: "invalid: bad signature" });
         const accept = () => {
           // A held write whose caller gave up has no one to answer.
           if (res.destroyed || res.writableEnded) return;
@@ -208,7 +232,8 @@ export class MockRelay {
           this.inject(event);
           reply(200, { accepted: true, message: "", event_id: event.id });
         };
-        if (event.kind === 0 && this.holding.has(event.pubkey)) return void this.held.push({ author: event.pubkey, answer: accept });
+        if (event.kind === 0 && this.holding.has(event.pubkey))
+          return void this.held.push({ author: event.pubkey, answer: accept });
         return accept();
       }
       if (req.method === "POST" && req.url === "/profiles/search") return reply(404, {});
@@ -218,11 +243,19 @@ export class MockRelay {
 
   upgrade(req, socket) {
     const key = req.headers["sec-websocket-key"];
-    const accept = createHash("sha1").update(key + WS_GUID).digest("base64");
+    const accept = createHash("sha1")
+      .update(key + WS_GUID)
+      .digest("base64");
     socket.write(
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
-    const connection = { socket, buffer: Buffer.alloc(0), subs: new Map(), challenge: randomBytes(16).toString("hex"), authed: undefined };
+    const connection = {
+      socket,
+      buffer: Buffer.alloc(0),
+      subs: new Map(),
+      challenge: randomBytes(16).toString("hex"),
+      authed: undefined,
+    };
     this.connections.add(connection);
     socket.on("data", (chunk) => this.read(connection, chunk));
     socket.on("close", () => this.connections.delete(connection));
@@ -231,7 +264,8 @@ export class MockRelay {
   }
 
   send(connection, message) {
-    if (!connection.socket.destroyed) connection.socket.write(frame(OP_TEXT, JSON.stringify(message)));
+    if (!connection.socket.destroyed)
+      connection.socket.write(frame(OP_TEXT, JSON.stringify(message)));
   }
 
   read(connection, chunk) {
@@ -333,8 +367,17 @@ export class MockRelay {
     if (!verifyEvent(event)) return "invalid: bad signature";
     if (event.pubkey !== connection.authed) return "restricted: not the authenticated agent";
     if (event.kind !== KIND_AGENT_OBSERVER) return "restricted: kind not accepted over WebSocket";
-    if (Math.abs(event.created_at - Math.floor(Date.now() / 1000)) > OBSERVER_FRESHNESS_S) return "invalid: stale";
-    if (tags !== JSON.stringify([["p", this.owner], ["agent", event.pubkey], ["frame", "telemetry"]])) return "invalid: route tags";
+    if (Math.abs(event.created_at - Math.floor(Date.now() / 1000)) > OBSERVER_FRESHNESS_S)
+      return "invalid: stale";
+    if (
+      tags !==
+      JSON.stringify([
+        ["p", this.owner],
+        ["agent", event.pubkey],
+        ["frame", "telemetry"],
+      ])
+    )
+      return "invalid: route tags";
     return "";
   }
 }

@@ -2,9 +2,9 @@
 // user could connect and send a forged `Tailscale-User-Login` header; a socket
 // in a 0700 directory owned by the runner user can be reached only by that
 // user and root, which is what `tailscale serve` (tailscaled) runs as.
-import { chmodSync, lstatSync, unlinkSync } from "node:fs";
-import { connect } from "node:net";
+import { chmodSync, lstatSync, type Stats, unlinkSync } from "node:fs";
 import type { Server } from "node:http";
+import { connect } from "node:net";
 import { dirname } from "node:path";
 import { SOCKET_DIR_MODE, SOCKET_MODE } from "./constants";
 import { ConfigError } from "./errors";
@@ -19,7 +19,7 @@ const mode = (value: number) => (value & 0o777).toString(8).padStart(3, "0");
 /** Refuses a directory another user could reach: the socket's safety rests
  * entirely on it. */
 function checkDirectory(dir: string) {
-  let info;
+  let info: Stats;
   try {
     info = lstatSync(dir);
   } catch (cause) {
@@ -27,9 +27,13 @@ function checkDirectory(dir: string) {
   }
   if (!info.isDirectory()) throw new ConfigError(`Socket directory ${dir} is not a directory`);
   if ((info.mode & 0o777) !== SOCKET_DIR_MODE)
-    throw new ConfigError(`Socket directory ${dir} must have mode ${mode(SOCKET_DIR_MODE)}, has ${mode(info.mode)}`);
+    throw new ConfigError(
+      `Socket directory ${dir} must have mode ${mode(SOCKET_DIR_MODE)}, has ${mode(info.mode)}`,
+    );
   if (info.uid !== process.getuid?.())
-    throw new ConfigError(`Socket directory ${dir} must be owned by the runner user (uid ${process.getuid?.()}), is uid ${info.uid}`);
+    throw new ConfigError(
+      `Socket directory ${dir} must be owned by the runner user (uid ${process.getuid?.()}), is uid ${info.uid}`,
+    );
 }
 
 /** Whether something answers on `path` (another runner still running). */
@@ -50,7 +54,7 @@ function answers(path: string) {
 /** A socket left by a crash is removed; anything else at the path, or a
  * socket that still answers, stops the start instead of being replaced. */
 async function clearStale(path: string) {
-  let info;
+  let info: Stats;
   try {
     info = lstatSync(path);
   } catch {

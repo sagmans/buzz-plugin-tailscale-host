@@ -12,7 +12,7 @@
 // waits, in arrival order, as it does on the turn limiter.
 import { SESSION_CAP_RECHECK_MS } from "./constants";
 import { ProcessError } from "./errors";
-import { short, type Logger } from "./log";
+import { type Logger, short } from "./log";
 
 /** One live conversation process of an agent. */
 export type LiveSession = Readonly<{
@@ -89,7 +89,11 @@ export class SessionPool {
       if (occupied.size < this.cap) {
         this.pending.add(token);
         if (waitingSince !== undefined)
-          this.log.info("session slot free; turn continues", { agent: short(member.id), conversation: key, waitedMs: Date.now() - waitingSince });
+          this.log.info("session slot free; turn continues", {
+            agent: short(member.id),
+            conversation: key,
+            waitedMs: Date.now() - waitingSince,
+          });
         let released = false;
         return () => {
           if (released) return;
@@ -131,7 +135,8 @@ export class SessionPool {
   /** Live and admitted processes of every agent, each counted once. */
   private occupied() {
     const tokens = new Set(this.pending);
-    for (const member of this.members) for (const session of member.live()) tokens.add(`${member.id}\n${session.key}`);
+    for (const member of this.members)
+      for (const session of member.live()) tokens.add(`${member.id}\n${session.key}`);
     return tokens;
   }
 
@@ -140,7 +145,11 @@ export class SessionPool {
     let best: { member: PoolMember; key: string; at: number } | undefined;
     for (const member of this.members)
       for (const session of member.live())
-        if (session.evictable && !refused.has(`${member.id}\n${session.key}`) && (!best || session.at < best.at))
+        if (
+          session.evictable &&
+          !refused.has(`${member.id}\n${session.key}`) &&
+          (!best || session.at < best.at)
+        )
           best = { member, key: session.key, at: session.at };
     return best;
   }

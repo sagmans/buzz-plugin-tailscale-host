@@ -5,7 +5,13 @@
 import type { BuzzClient, BuzzEvent } from "@buzz/buzz-mcp/client";
 import { soloChannelMetadata } from "@buzz/features/relay/discovery";
 import type { RelayEvent } from "@buzz/features/relay/events";
-import { HEX64, KIND_CHANNEL_MEMBERS, KIND_CHANNEL_METADATA, KIND_PROFILE, NIP11_TIMEOUT_MS } from "./constants";
+import {
+  HEX64,
+  KIND_CHANNEL_MEMBERS,
+  KIND_CHANNEL_METADATA,
+  KIND_PROFILE,
+  NIP11_TIMEOUT_MS,
+} from "./constants";
 import { RelayError } from "./errors";
 
 export type ChannelSummary = Readonly<{
@@ -17,7 +23,8 @@ export type ChannelSummary = Readonly<{
   members: readonly string[];
 }>;
 
-const tag = (event: Pick<BuzzEvent, "tags">, name: string) => event.tags.find((item) => item[0] === name)?.[1];
+const tag = (event: Pick<BuzzEvent, "tags">, name: string) =>
+  event.tags.find((item) => item[0] === name)?.[1];
 
 /** Desktop `metadataName`: the JSON body's name, else the `name` tag. */
 function metadataName(event: BuzzEvent) {
@@ -33,7 +40,9 @@ function metadataName(event: BuzzEvent) {
 export function rosterMembers(roster: BuzzEvent | undefined) {
   return [
     ...new Set(
-      (roster?.tags ?? []).flatMap(([name, value]) => (name === "p" && value && HEX64.test(value) ? [value] : [])),
+      (roster?.tags ?? []).flatMap(([name, value]) =>
+        name === "p" && value && HEX64.test(value) ? [value] : [],
+      ),
     ),
   ].sort();
 }
@@ -68,8 +77,12 @@ export class CommunityReads {
     const author = this.relayAuthor();
     if (!author) return { id, members: [] };
     const [metadata, roster] = await Promise.all([
-      this.client.query([{ kinds: [KIND_CHANNEL_METADATA], "#d": [id], authors: [author], limit: 1 }]),
-      this.client.query([{ kinds: [KIND_CHANNEL_MEMBERS], "#d": [id], authors: [author], limit: 1 }]),
+      this.client.query([
+        { kinds: [KIND_CHANNEL_METADATA], "#d": [id], authors: [author], limit: 1 },
+      ]),
+      this.client.query([
+        { kinds: [KIND_CHANNEL_MEMBERS], "#d": [id], authors: [author], limit: 1 },
+      ]),
     ]);
     const event = metadata.find((item) => item.pubkey === author);
     const members = rosterMembers(roster.find((item) => item.pubkey === author));
@@ -96,7 +109,9 @@ export class CommunityReads {
     const names = new Map<string, string>();
     const wanted = pubkeys.filter((pubkey) => HEX64.test(pubkey));
     if (!wanted.length) return names;
-    const profiles = await this.client.query([{ kinds: [KIND_PROFILE], authors: wanted, limit: wanted.length }]);
+    const profiles = await this.client.query([
+      { kinds: [KIND_PROFILE], authors: wanted, limit: wanted.length },
+    ]);
     for (const profile of profiles) {
       try {
         const body = JSON.parse(profile.content) as { display_name?: unknown; name?: unknown };

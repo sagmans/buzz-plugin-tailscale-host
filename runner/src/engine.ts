@@ -6,10 +6,11 @@
 // `AgentSessions` (one claude per conversation); Pi's is `pi-engine.ts` (one
 // Pi host per agent); Goose's is `goose-engine.ts` (one `goose-acp` per
 // agent, one ACP session per conversation).
-import type { Context } from "@buzz/buzz-mcp/client";
+
 import type { Settled, Spawn } from "@buzz/bundled/claude-code/claude";
 import { steerPrompt } from "@buzz/bundled/claude-code/prompt";
 import { AgentSessions, type SessionsOptions } from "@buzz/bundled/claude-code/sessions";
+import type { Context } from "@buzz/buzz-mcp/client";
 import type { LiveSession } from "./pool";
 import type { AgentState } from "./store";
 
@@ -85,7 +86,8 @@ export class ClaudeEngine implements Engine {
     this.sessions = new AgentSessions({
       spawn: deps.spawn,
       store: deps.state.sessions,
-      fingerprint: (key) => (key !== undefined && key === this.evicting ? EVICTING : deps.fingerprint()),
+      fingerprint: (key) =>
+        key !== undefined && key === this.evicting ? EVICTING : deps.fingerprint(),
       onChange: () => deps.onChange(),
       launch: (key) => deps.launch(key),
     });
@@ -113,7 +115,10 @@ export class ClaudeEngine implements Engine {
   }
 
   busy() {
-    return this.sessions.snapshot().filter((session) => session.busy).map((session) => session.key);
+    return this.sessions
+      .snapshot()
+      .filter((session) => session.busy)
+      .map((session) => session.key);
   }
 
   slot(key: string) {
@@ -129,7 +134,9 @@ export class ClaudeEngine implements Engine {
   }
 
   holds(key: string) {
-    return this.sessions.active(key) || this.sessions.snapshot().some((session) => session.key === key);
+    return (
+      this.sessions.active(key) || this.sessions.snapshot().some((session) => session.key === key)
+    );
   }
 
   /** Stops an idle conversation's process for the live-session cap, through

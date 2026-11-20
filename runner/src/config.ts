@@ -4,8 +4,8 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, normalize } from "node:path";
 import {
-  CONFIG_ENV,
   CLAUDE_HARNESS,
+  CONFIG_ENV,
   CONFIG_FLAG,
   DEFAULT_CONFIG,
   DEFAULT_HARNESSES,
@@ -13,8 +13,8 @@ import {
   DEFAULT_STATE_DIR,
   EFFORTS,
   HARNESS_CATALOG,
-  HEX64,
   type HarnessId,
+  HEX64,
   LOGIN_MAX,
   MODEL_ID,
   MODEL_MAX,
@@ -167,7 +167,8 @@ export function parseConfig(raw: unknown): RunnerConfig {
   if (typeof ownerPubkey !== "string" || !HEX64.test(ownerPubkey))
     throw new ConfigError("ownerPubkey must be 64 lowercase hex characters");
 
-  const allowedSenders = value.allowedSenders === undefined ? [] : hexList(value.allowedSenders, "allowedSenders");
+  const allowedSenders =
+    value.allowedSenders === undefined ? [] : hexList(value.allowedSenders, "allowedSenders");
 
   const allowedLogins = stringList(value.allowedLogins, "allowedLogins");
   for (const login of allowedLogins)
@@ -180,9 +181,15 @@ export function parseConfig(raw: unknown): RunnerConfig {
   if (Buffer.byteLength(socket) > SOCKET_PATH_MAX)
     throw new ConfigError(`socket path must be at most ${SOCKET_PATH_MAX} bytes`);
   const wrapper = absolutePath(value.wrapper, "wrapper");
-  const harnessWrapper = absolutePath(value.harnessWrapper ?? DEFAULTS.harnessWrapper, "harnessWrapper");
+  const harnessWrapper = absolutePath(
+    value.harnessWrapper ?? DEFAULTS.harnessWrapper,
+    "harnessWrapper",
+  );
   const sudo = absolutePath(value.sudo ?? DEFAULTS.sudo, "sudo");
-  const workspaceRoot = absolutePath(value.workspaceRoot ?? DEFAULTS.workspaceRoot, "workspaceRoot");
+  const workspaceRoot = absolutePath(
+    value.workspaceRoot ?? DEFAULTS.workspaceRoot,
+    "workspaceRoot",
+  );
   const stateDir = absolutePath(value.stateDir ?? DEFAULTS.stateDir, "stateDir");
 
   const runAsUser = value.runAsUser ?? DEFAULTS.runAsUser;
@@ -207,16 +214,21 @@ export function parseConfig(raw: unknown): RunnerConfig {
     throw new ConfigError(`maxLiveSessions must be an integer 1..${MAX_LIVE_SESSIONS_LIMIT}`);
 
   const { ids: harnesses, paths: harnessPaths } =
-    value.harnesses === undefined ? { ids: [...DEFAULT_HARNESSES], paths: {} } : harnessMap(value.harnesses);
+    value.harnesses === undefined
+      ? { ids: [...DEFAULT_HARNESSES], paths: {} }
+      : harnessMap(value.harnesses);
 
   const attestEvents = value.attestEvents ?? DEFAULTS.attestEvents;
-  if (typeof attestEvents !== "boolean") throw new ConfigError("attestEvents must be true or false");
+  if (typeof attestEvents !== "boolean")
+    throw new ConfigError("attestEvents must be true or false");
   const acceptAttested = value.acceptAttested ?? DEFAULTS.acceptAttested;
-  if (typeof acceptAttested !== "boolean") throw new ConfigError("acceptAttested must be true or false");
+  if (typeof acceptAttested !== "boolean")
+    throw new ConfigError("acceptAttested must be true or false");
   const replyWake = value.replyWake ?? DEFAULTS.replyWake;
   if (typeof replyWake !== "boolean") throw new ConfigError("replyWake must be true or false");
   const publishTelemetry = value.publishTelemetry ?? DEFAULTS.publishTelemetry;
-  if (typeof publishTelemetry !== "boolean") throw new ConfigError("publishTelemetry must be true or false");
+  if (typeof publishTelemetry !== "boolean")
+    throw new ConfigError("publishTelemetry must be true or false");
 
   const model = optionalModel(value.model);
   const effort = optionalEffort(value.effort);
@@ -259,7 +271,9 @@ export function optionalModel(value: unknown, pattern: RegExp = MODEL_ID): strin
   if (value === undefined || value === "") return undefined;
   if (typeof value !== "string" || value.length > MODEL_MAX || !pattern.test(value))
     throw new ConfigError(
-      pattern === MODEL_ID ? "model must be a Claude model id or alias" : "model must be a model id (letters, digits and ._:-[]/@)",
+      pattern === MODEL_ID
+        ? "model must be a Claude model id or alias"
+        : "model must be a model id (letters, digits and ._:-[]/@)",
     );
   return value;
 }
@@ -275,24 +289,33 @@ const HARNESS_ENTRY_KEYS = ["path"];
 /** `{ "<id>": { path? } }`: a non-empty map of known harness ids, offered in
  * key order (JSON keeps it). Unknown ids or keys fail the start, so a typo
  * never silently hides a harness or drops its path. */
-function harnessMap(value: unknown): { ids: HarnessId[]; paths: Partial<Record<HarnessId, string>> } {
+function harnessMap(value: unknown): {
+  ids: HarnessId[];
+  paths: Partial<Record<HarnessId, string>>;
+} {
   if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length)
-    throw new ConfigError('harnesses must be a non-empty object of { "<id>": { "path"?: "/abs/path" } }');
+    throw new ConfigError(
+      'harnesses must be a non-empty object of { "<id>": { "path"?: "/abs/path" } }',
+    );
   const known = Object.keys(HARNESS_CATALOG);
   const ids: HarnessId[] = [];
   const paths: Partial<Record<HarnessId, string>> = {};
   for (const [id, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (!known.includes(id)) throw new ConfigError(`harnesses keys must be among ${known.join(", ")}`);
+    if (!known.includes(id))
+      throw new ConfigError(`harnesses keys must be among ${known.join(", ")}`);
     if (!entry || typeof entry !== "object" || Array.isArray(entry))
       throw new ConfigError(`harnesses.${id} must be an object`);
     const extra = Object.keys(entry).filter((key) => !HARNESS_ENTRY_KEYS.includes(key));
-    if (extra.length) throw new ConfigError(`harnesses.${id} has unknown keys: ${extra.join(", ")}`);
+    if (extra.length)
+      throw new ConfigError(`harnesses.${id} has unknown keys: ${extra.join(", ")}`);
     const path = (entry as { path?: unknown }).path;
     if (path !== undefined) {
-      if (id === CLAUDE_HARNESS) throw new ConfigError(`harnesses.${id}.path is not used: \`wrapper\` starts Claude`);
+      if (id === CLAUDE_HARNESS)
+        throw new ConfigError(`harnesses.${id}.path is not used: \`wrapper\` starts Claude`);
       const checked = absolutePath(path, `harnesses.${id}.path`);
       // A path with `..` or doubled slashes is a typo or a trick; keep it plain.
-      if (normalize(checked) !== checked) throw new ConfigError(`harnesses.${id}.path must be a normalized path`);
+      if (normalize(checked) !== checked)
+        throw new ConfigError(`harnesses.${id}.path must be a normalized path`);
       paths[id as HarnessId] = checked;
     }
     ids.push(id as HarnessId);

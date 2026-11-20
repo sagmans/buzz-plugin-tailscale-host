@@ -34,16 +34,18 @@
 //                      setup.sh stops before the install (its exit 82)
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const STAGE_RE = /\/tmp\/buzz-runner-setup\.[A-Za-z0-9]{6,}/;
 /** The root command as host-setup.mjs installCommand builds it: the script
  * as base64, then setup.sh's arguments. */
-const ROOT_RUN_RE = /\/bin\/bash -c "\$\(printf %s ([A-Za-z0-9+/=]+) \| \/usr\/bin\/base64 -d\)" setup\.sh (\S+) (\d+) (\S+) ([0-9a-f]{64})/;
+const ROOT_RUN_RE =
+  /\/bin\/bash -c "\$\(printf %s ([A-Za-z0-9+/=]+) \| \/usr\/bin\/base64 -d\)" setup\.sh (\S+) (\d+) (\S+) ([0-9a-f]{64})/;
 /** The root command of node-setup.sh: the script as base64 and no
  * arguments, at the end of the remote shell's quoted command. */
-const NODE_RUN_RE = /\/bin\/bash -c "\$\(printf %s ([A-Za-z0-9+/=]+) \| \/usr\/bin\/base64 -d\)" node-setup\.sh'$/;
+const NODE_RUN_RE =
+  /\/bin\/bash -c "\$\(printf %s ([A-Za-z0-9+/=]+) \| \/usr\/bin\/base64 -d\)" node-setup\.sh'$/;
 const NODE_LINE = "@@node /opt/buzz-runner/node 24.22.1\n";
 const MANIFEST = "MANIFEST";
 const TAMPERED_FILE = "runner/deploy/install.sh";
@@ -69,28 +71,47 @@ const PI_DEPS = "runner/pi";
 
 const argv = process.argv.slice(2);
 const stdin = readFileSync(0);
-appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ argv, stdin: stdin.toString("utf8") })}\n`);
+appendFileSync(
+  process.env.FAKE_SSH_LOG,
+  `${JSON.stringify({ argv, stdin: stdin.toString("utf8") })}\n`,
+);
 
 /** The value of one `-o Key=value` option. */
-const option = (key) => argv.find((arg, at) => argv[at - 1] === "-o" && arg.startsWith(`${key}=`))?.slice(key.length + 1);
+const option = (key) =>
+  argv.find((arg, at) => argv[at - 1] === "-o" && arg.startsWith(`${key}=`))?.slice(key.length + 1);
 const command = argv[argv.indexOf("--") + 2] ?? "";
 
 // ssh with StrictHostKeyChecking=yes connects only to a key in the file.
 const knownHosts = readFileSync(option("UserKnownHostsFile"), "utf8");
 const alias = option("HostKeyAlias");
-if (option("StrictHostKeyChecking") !== "yes" || !knownHosts.split("\n").some((line) => line.startsWith(`${alias} `) && line.includes(process.env.FAKE_SSH_HOST_KEY))) {
+if (
+  option("StrictHostKeyChecking") !== "yes" ||
+  !knownHosts
+    .split("\n")
+    .some((line) => line.startsWith(`${alias} `) && line.includes(process.env.FAKE_SSH_HOST_KEY))
+) {
   process.stderr.write("Host key verification failed.\n");
   process.exit(EXIT_SSH);
 }
 
 if (command.startsWith("/bin/sh -c 'echo os=")) {
-  if (process.env.FAKE_SSH_CHECK === "1") process.stderr.write(`# Tailscale SSH requires an additional check.\n# To authenticate, visit: ${CHECK_LINK}\n`);
+  if (process.env.FAKE_SSH_CHECK === "1")
+    process.stderr.write(
+      `# Tailscale SSH requires an additional check.\n# To authenticate, visit: ${CHECK_LINK}\n`,
+    );
   const facts = JSON.parse(process.env.FAKE_SSH_FACTS);
-  process.stdout.write(Object.entries(facts).map(([key, value]) => `${key}=${value}\n`).join(""));
+  process.stdout.write(
+    Object.entries(facts)
+      .map(([key, value]) => `${key}=${value}\n`)
+      .join(""),
+  );
   process.exit(0);
 }
 if (command.includes("eval(Buffer.from(")) {
-  const program = Buffer.from(/Buffer\.from\("([A-Za-z0-9+/=]+)"/.exec(command)[1], "base64").toString("utf8");
+  const program = Buffer.from(
+    /Buffer\.from\("([A-Za-z0-9+/=]+)"/.exec(command)[1],
+    "base64",
+  ).toString("utf8");
   const run = spawnSync(process.execPath, ["-e", program], { input: stdin });
   process.stdout.write(run.stdout);
   process.stderr.write(run.stderr);
@@ -108,7 +129,10 @@ const filesIn = (folder) =>
 function stageMatches(stage, pinned) {
   const manifest = readFileSync(join(stage, MANIFEST), "utf8");
   if (sha256(manifest) !== pinned) return false;
-  const listed = manifest.split("\n").filter(Boolean).map((line) => [line.slice(0, 64), line.slice(66)]);
+  const listed = manifest
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => [line.slice(0, 64), line.slice(66)]);
   const data = listed.map(([, path]) => readFileSync(join(stage, path)));
   if (data.reduce((sum, bytes) => sum + bytes.length, 0) > STAGE_BYTES_MAX) return false;
   return listed.every(([hash], index) => sha256(data[index]) === hash);
@@ -125,11 +149,16 @@ function sudoChecked() {
 
 const nodeRun = NODE_RUN_RE.exec(command);
 if (nodeRun) {
-  appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ nodeRun: { script: Buffer.from(nodeRun[1], "base64").toString("utf8") } })}\n`);
+  appendFileSync(
+    process.env.FAKE_SSH_LOG,
+    `${JSON.stringify({ nodeRun: { script: Buffer.from(nodeRun[1], "base64").toString("utf8") } })}\n`,
+  );
   sudoChecked();
   const code = Number(process.env.FAKE_SSH_NODE_EXIT || 0);
   if (code) {
-    process.stderr.write("node-setup.sh: no /usr/bin/curl or /usr/bin/wget to download Node with\n");
+    process.stderr.write(
+      "node-setup.sh: no /usr/bin/curl or /usr/bin/wget to download Node with\n",
+    );
     process.exit(code);
   }
   process.stdout.write(NODE_LINE);
@@ -139,34 +168,58 @@ if (nodeRun) {
 const rootRun = ROOT_RUN_RE.exec(command);
 if (rootRun) {
   const [, script, stage, port, node, pinned] = rootRun;
-  appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ rootRun: { script: Buffer.from(script, "base64").toString("utf8"), stage, port, node, pinned, files: filesIn(stage).sort() } })}\n`);
+  appendFileSync(
+    process.env.FAKE_SSH_LOG,
+    `${JSON.stringify({ rootRun: { script: Buffer.from(script, "base64").toString("utf8"), stage, port, node, pinned, files: filesIn(stage).sort() } })}\n`,
+  );
   sudoChecked();
   if (process.env.FAKE_SSH_NODE_UNSAFE === "1") {
-    process.stderr.write(`setup.sh: a user who is not root can change ${node} or a folder above it; the root runner does not run it\n`);
+    process.stderr.write(
+      `setup.sh: a user who is not root can change ${node} or a folder above it; the root runner does not run it\n`,
+    );
     process.exit(EXIT_UNSAFE_NODE);
   }
   if (process.env.FAKE_SSH_TAILSCALE_UNSAFE === "1") {
-    process.stderr.write("setup.sh: a user who is not root can change the tailscale CLI or a folder above it; root does not run it\n");
+    process.stderr.write(
+      "setup.sh: a user who is not root can change the tailscale CLI or a folder above it; root does not run it\n",
+    );
     process.exit(EXIT_UNSAFE_TAILSCALE);
   }
   if (process.env.FAKE_SSH_TAMPER === "1") appendFileSync(join(stage, TAMPERED_FILE), "id\n");
-  if (process.env.FAKE_SSH_GROW === "1") appendFileSync(join(stage, GROWN_FILE), Buffer.alloc(STAGE_BYTES_MAX));
+  if (process.env.FAKE_SSH_GROW === "1")
+    appendFileSync(join(stage, GROWN_FILE), Buffer.alloc(STAGE_BYTES_MAX));
   if (!stageMatches(stage, pinned)) {
-    process.stderr.write(`setup.sh: the stage at ${stage} is not what the helper sent; nothing was installed\n`);
+    process.stderr.write(
+      `setup.sh: the stage at ${stage} is not what the helper sent; nothing was installed\n`,
+    );
     process.exit(EXIT_TAMPERED);
   }
   // What setup.sh would install as the config, and the Pi package files
   // harnesses.sh would install from, for the scenario to check.
-  const pi = Object.fromEntries(["package.json", "package-lock.json"].map((name) => [name, readFileSync(join(stage, PI_DEPS, name), "utf8")]));
-  appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify({ config: JSON.parse(readFileSync(`${stage}/config.json`, "utf8")), pi })}\n`);
+  const pi = Object.fromEntries(
+    ["package.json", "package-lock.json"].map((name) => [
+      name,
+      readFileSync(join(stage, PI_DEPS, name), "utf8"),
+    ]),
+  );
+  appendFileSync(
+    process.env.FAKE_SSH_LOG,
+    `${JSON.stringify({ config: JSON.parse(readFileSync(`${stage}/config.json`, "utf8")), pi })}\n`,
+  );
   process.stdout.write("@@step harnesses\n");
   if (process.env.FAKE_SSH_HARNESS_EXIT === "1") {
     process.stdout.write(`${HARNESS_LINES[0]}\n`);
-    process.stderr.write("harnesses.sh: the download of Codex 0.164.0 does not match its pinned SHA-256; nothing was installed\nsetup.sh: a harness install failed (exit 70); the runner was not installed\n");
+    process.stderr.write(
+      "harnesses.sh: the download of Codex 0.164.0 does not match its pinned SHA-256; nothing was installed\nsetup.sh: a harness install failed (exit 70); the runner was not installed\n",
+    );
     process.exit(EXIT_HARNESS);
   }
-  const agentUser = process.env.FAKE_SSH_AGENT_USER ? `@@agent-user ${process.env.FAKE_SSH_AGENT_USER}\n` : "";
-  process.stdout.write(`${HARNESS_LINES.join("\n")}\n@@step install\ninstall.sh: buzz-runner is active.\n${agentUser}@@step serve\n@@step done\n`);
+  const agentUser = process.env.FAKE_SSH_AGENT_USER
+    ? `@@agent-user ${process.env.FAKE_SSH_AGENT_USER}\n`
+    : "";
+  process.stdout.write(
+    `${HARNESS_LINES.join("\n")}\n@@step install\ninstall.sh: buzz-runner is active.\n${agentUser}@@step serve\n@@step done\n`,
+  );
   process.exit(0);
 }
 const removal = /^rm -rf -- (\S+)$/.exec(command);

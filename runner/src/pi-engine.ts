@@ -18,10 +18,11 @@
 //   thread) instead of reopening and waiting again.
 // - The host is stopped after PI_IDLE_MS without a turn, and counts as one
 //   live session under the host-wide cap, evictable when idle.
-import { isFinalMessage } from "@buzz/buzz-mcp/session-tools";
+
 import type { Settled, Spawn } from "@buzz/bundled/claude-code/claude";
 import { steerPrompt } from "@buzz/bundled/claude-code/prompt";
 import { Pi, type PiEvent, type ToolCall, type ToolResult } from "@buzz/bundled/pi/pi";
+import { isFinalMessage } from "@buzz/buzz-mcp/session-tools";
 import { PI_HOST_KEY, PI_IDLE_MS, PI_KEY_WAIT_MS, PI_MODEL_SEPARATOR } from "./constants";
 import type { Engine, EngineTurn } from "./engine";
 import { errorMessage, ProcessError } from "./errors";
@@ -138,12 +139,21 @@ export class PiEngine implements Engine {
       const session = String(submitted.conversation);
       this.learn(submitted.conversation, turn.key);
       this.deps.feed?.prompt(turn.key, session, !this.seenAt.get(turn.key), text);
-      const waited = await pi.request<Waited>("wait", { agent: this.deps.agent, submission: submitted.submission });
+      const waited = await pi.request<Waited>("wait", {
+        agent: this.deps.agent,
+        submission: submitted.submission,
+      });
       return this.settle(turn.key, session, waited, Date.now() - started);
     } catch (error) {
       const message = errorMessage(error);
-      if (submitted) this.deps.feed?.settled(turn.key, String(submitted.conversation), { error: message });
-      this.deps.log.warn("pi turn failed", { conversation: turn.key, delivered: Boolean(submitted), elapsedMs: Date.now() - started, error: message });
+      if (submitted)
+        this.deps.feed?.settled(turn.key, String(submitted.conversation), { error: message });
+      this.deps.log.warn("pi turn failed", {
+        conversation: turn.key,
+        delivered: Boolean(submitted),
+        elapsedMs: Date.now() - started,
+        error: message,
+      });
       return { ok: false, error: message, ...(submitted ? {} : { undelivered: true as const }) };
     } finally {
       this.leave(turn.key);
@@ -179,7 +189,13 @@ export class PiEngine implements Engine {
 
   live() {
     if (!this.host?.alive) return [];
-    return [{ key: PI_HOST_KEY, at: this.lastUsed, evictable: !this.working.size && !this.deps.inflight.size }];
+    return [
+      {
+        key: PI_HOST_KEY,
+        at: this.lastUsed,
+        evictable: !this.working.size && !this.deps.inflight.size,
+      },
+    ];
   }
 
   holds(slot: string) {
@@ -215,7 +231,8 @@ export class PiEngine implements Engine {
    * failed to open is tried again by the next turn. */
   private ready(): Promise<Pi> {
     if (this.disposed) return Promise.reject(new ProcessError("The agent was stopped"));
-    const host = (this.host ??= this.start());
+    if (!this.host) this.host = this.start();
+    const host = this.host;
     if (!host.ready) {
       const ready = this.open(host.pi);
       host.ready = ready;
@@ -235,7 +252,8 @@ export class PiEngine implements Engine {
       alive: false,
       pi: new Pi(
         () => async (id, options) => {
-          if (used || this.host !== host) throw new ProcessError("The Pi host stopped; the next message starts it again");
+          if (used || this.host !== host)
+            throw new ProcessError("The Pi host stopped; the next message starts it again");
           used = true;
           host.alive = true;
           this.deps.onChange();
@@ -267,7 +285,10 @@ export class PiEngine implements Engine {
     if (!submissions.length) return;
     await pi.request("drop", {
       agent,
-      submissions: submissions.map(({ submission, conversation }) => ({ submission, conversation })),
+      submissions: submissions.map(({ submission, conversation }) => ({
+        submission,
+        conversation,
+      })),
     });
     this.deps.log.info("pi runs left by a stopped host dropped", { runs: submissions.length });
   }
@@ -291,7 +312,9 @@ export class PiEngine implements Engine {
     const error =
       waited.status === "reopen"
         ? REOPEN_ERROR
-        : (waited.detail ?? UNANSWERED[waited.reason ?? ""] ?? `Pi did not answer (${waited.reason ?? "unknown"})`);
+        : (waited.detail ??
+          UNANSWERED[waited.reason ?? ""] ??
+          `Pi did not answer (${waited.reason ?? "unknown"})`);
     // A failed storage closed the host's handle on it: open it again next time.
     if (waited.status === "reopen" && this.host) this.host.ready = undefined;
     feed?.settled(key, session, { error });
@@ -307,10 +330,14 @@ export class PiEngine implements Engine {
    * for the conversation, not what the host says: the host runs as the
    * harness user and is not trusted with where the agent posts. */
   private async tool(call: ToolCall): Promise<ToolResult> {
-    if (call.agent !== this.deps.agent) throw new ProcessError("Pi called a tool for another agent");
+    if (call.agent !== this.deps.agent)
+      throw new ProcessError("Pi called a tool for another agent");
     const key = await this.keyOf(call.conversation);
     const result = await this.deps.tool(key, call.name, call.arguments ?? {});
-    return { ...result, ...(isFinalMessage(call.name, call.arguments) && !result.isError ? { final: true } : {}) };
+    return {
+      ...result,
+      ...(isFinalMessage(call.name, call.arguments) && !result.isError ? { final: true } : {}),
+    };
   }
 
   private event(event: PiEvent) {
@@ -336,11 +363,15 @@ export class PiEngine implements Engine {
       const done = (found: string | undefined) => {
         clearTimeout(timer);
         waiters.delete(done);
-        if (!waiters.size && this.unknown.get(conversation) === waiters) this.unknown.delete(conversation);
+        if (!waiters.size && this.unknown.get(conversation) === waiters)
+          this.unknown.delete(conversation);
         resolve(found);
       };
       const timer = setTimeout(() => {
-        this.deps.log.warn("pi named a conversation no delivery made", { conversation, waitedMs: PI_KEY_WAIT_MS });
+        this.deps.log.warn("pi named a conversation no delivery made", {
+          conversation,
+          waitedMs: PI_KEY_WAIT_MS,
+        });
         done(undefined);
       }, PI_KEY_WAIT_MS);
       timer.unref();
@@ -394,7 +425,9 @@ export class PiEngine implements Engine {
     const wasAlive = host.alive;
     host.alive = false;
     if (wasAlive) this.deps.log.info("pi host stopping", { why });
-    void host.pi.dispose().catch((error) => this.deps.log.warn("pi host stop failed", { error: errorMessage(error) }));
+    void host.pi
+      .dispose()
+      .catch((error) => this.deps.log.warn("pi host stop failed", { error: errorMessage(error) }));
     this.deps.onChange();
   }
 }

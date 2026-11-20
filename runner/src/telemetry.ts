@@ -24,12 +24,15 @@
 // logs frame content, the conversation key or the agent key. Goose's
 // `session/new` carries its MCP server's Bearer token, so it is never passed
 // on, and that token is redacted from any frame that would still hold it.
-import { relative, resolve, sep } from "node:path";
+
 import { randomUUID } from "node:crypto";
+import { relative, resolve, sep } from "node:path";
+import type { BuzzEvent } from "@buzz/buzz-mcp/client";
 import { encrypt, getConversationKey } from "nostr-tools/nip44";
 import { finalizeEvent } from "nostr-tools/pure";
-import type { BuzzEvent } from "@buzz/buzz-mcp/client";
 import {
+  ACP_TAP_REDACTED,
+  ACP_TAP_REMEMBERED,
   KIND_AGENT_OBSERVER,
   OBSERVER_AGENT_INDEX,
   OBSERVER_CHUNK_MAX_TEXT_BYTES,
@@ -41,8 +44,6 @@ import {
   OBSERVER_QUEUE_MAX_BYTES,
   OBSERVER_TICK_MS,
   OBSERVER_TOOLS_REMEMBERED,
-  ACP_TAP_REDACTED,
-  ACP_TAP_REMEMBERED,
 } from "./constants";
 import { errorMessage } from "./errors";
 import type { Logger } from "./log";
@@ -139,12 +140,18 @@ const MS_PER_S = 1000;
 const now = () => Math.floor(Date.now() / MS_PER_S);
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 const object = (value: unknown): Json | undefined =>
-  value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Json) : undefined;
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Json)
+    : undefined;
 const str = (value: unknown) => (typeof value === "string" ? value : undefined);
 
 /** What one assistant message's blocks share: its turn, its id and the tool
  * use it runs under (a subagent's), if any. */
-type AssistantContext = Readonly<{ turn: Turn; messageId: string | undefined; parent: string | undefined }>;
+type AssistantContext = Readonly<{
+  turn: Turn;
+  messageId: string | undefined;
+  parent: string | undefined;
+}>;
 
 /** The text of a text or thinking block; undefined for any other block. */
 function blockText(block: Json) {
@@ -158,7 +165,15 @@ function planEntries(input: unknown) {
   if (!Array.isArray(todos)) return [];
   return todos.flatMap((todo) => {
     const entry = object(todo);
-    return entry ? [{ content: str(entry.content) ?? "", status: str(entry.status) ?? "", priority: PLAN_PRIORITY }] : [];
+    return entry
+      ? [
+          {
+            content: str(entry.content) ?? "",
+            status: str(entry.status) ?? "",
+            priority: PLAN_PRIORITY,
+          },
+        ]
+      : [];
   });
 }
 
@@ -183,11 +198,16 @@ export class Telemetry {
     try {
       conversation = getConversationKey(options.secret, options.owner);
     } catch (error) {
-      options.log.error("telemetry disabled: owner key unusable for encryption", { error: errorMessage(error) });
+      options.log.error("telemetry disabled: owner key unusable for encryption", {
+        error: errorMessage(error),
+      });
     }
     this.conversation = conversation;
     this.queue = new FrameQueue((dropped, pending) =>
-      options.log.warn("telemetry queue over budget; dropped oldest frames", { dropped, pendingBytes: pending }),
+      options.log.warn("telemetry queue over budget; dropped oldest frames", {
+        dropped,
+        pendingBytes: pending,
+      }),
     );
     this.timer = setInterval(() => void this.tick(), OBSERVER_TICK_MS);
     // Telemetry never holds the runner open at shutdown.
@@ -217,8 +237,16 @@ export class Telemetry {
     if (this.disposed) return { end: () => undefined };
     this.turns.set(start.key, turn);
     const root = turn.threadRootEventId ? { threadRootEventId: turn.threadRootEventId } : {};
-    this.emit(turn, "turn_started", { source: SOURCE_CHANNEL, triggeringEventIds: [...start.triggeringEventIds], ...root }, STARTED);
-    turn.liveness = setInterval(() => this.emit(turn, "turn_liveness", { ...root }, RUNNING), OBSERVER_LIVENESS_MS);
+    this.emit(
+      turn,
+      "turn_started",
+      { source: SOURCE_CHANNEL, triggeringEventIds: [...start.triggeringEventIds], ...root },
+      STARTED,
+    );
+    turn.liveness = setInterval(
+      () => this.emit(turn, "turn_liveness", { ...root }, RUNNING),
+      OBSERVER_LIVENESS_MS,
+    );
     turn.liveness.unref();
     return { end: (failure) => this.finish(turn, failure) };
   }
@@ -239,11 +267,20 @@ export class Telemetry {
         turn,
         false,
         failure
-          ? { jsonrpc: JSONRPC, id, error: { code: RPC_INTERNAL_ERROR, message: "Internal error", data: { error: failure.error } } }
+          ? {
+              jsonrpc: JSONRPC,
+              id,
+              error: {
+                code: RPC_INTERNAL_ERROR,
+                message: "Internal error",
+                data: { error: failure.error },
+              },
+            }
           : { jsonrpc: JSONRPC, id, result: { stopReason: STOP_SUCCESS } },
       );
     }
-    if (failure) this.emit(turn, "turn_error", { outcome: failure.outcome, error: failure.error }, ENDED);
+    if (failure)
+      this.emit(turn, "turn_error", { outcome: failure.outcome, error: failure.error }, ENDED);
     this.emit(turn, "turn_completed", {}, ENDED);
   }
 
@@ -358,7 +395,11 @@ export class Telemetry {
     this.dropped++;
     if (this.failing) return;
     this.failing = true;
-    this.options.log.warn("telemetry frame dropped", { stage, frameKind: frame.kind, error: errorMessage(error) });
+    this.options.log.warn("telemetry frame dropped", {
+      stage,
+      frameKind: frame.kind,
+      error: errorMessage(error),
+    });
   }
 }
 
@@ -431,7 +472,11 @@ class ProcessTap implements StreamTap {
         jsonrpc: JSONRPC,
         id: this.telemetry.nextId(),
         method: "session/new",
-        params: { cwd: this.cwd ?? "", mcpServers: [], _meta: { systemPrompt: { append: this.system } } },
+        params: {
+          cwd: this.cwd ?? "",
+          mcpServers: [],
+          _meta: { systemPrompt: { append: this.system } },
+        },
       });
     this.fresh = false;
     return turn;
@@ -450,7 +495,11 @@ class ProcessTap implements StreamTap {
     const turn = this.current();
     if (!turn) return;
     const body = object(message.message);
-    const context: AssistantContext = { turn, messageId: str(body?.id), parent: str(message.parent_tool_use_id) };
+    const context: AssistantContext = {
+      turn,
+      messageId: str(body?.id),
+      parent: str(message.parent_tool_use_id),
+    };
     for (const value of Array.isArray(body?.content) ? body.content : []) {
       const block = object(value);
       if (block) this.assistantBlock(context, block);
@@ -462,7 +511,10 @@ class ProcessTap implements StreamTap {
    * call. Other blocks show nothing. */
   private assistantBlock({ turn, messageId, parent }: AssistantContext, block: Json) {
     const meta = (toolName?: string) => ({
-      claudeCode: { ...(toolName ? { toolName } : {}), ...(parent ? { parentToolUseId: parent } : {}) },
+      claudeCode: {
+        ...(toolName ? { toolName } : {}),
+        ...(parent ? { parentToolUseId: parent } : {}),
+      },
     });
     const text = blockText(block);
     if (text) {
@@ -507,13 +559,16 @@ class ProcessTap implements StreamTap {
     for (const value of content) {
       const block = object(value);
       const id = str(block?.tool_use_id);
-      if (!block || block.type !== "tool_result" || !id) continue;
+      if (block?.type !== "tool_result" || !id) continue;
       const tool = this.tools.get(id);
       if (tool?.name === PLAN_TOOL) continue;
       const failed = block.is_error === true;
       // Edit and Write already show their diff; the result is only a
       // confirmation, which claude-agent-acp leaves out too.
-      const shown = tool && (tool.name === "Edit" || tool.name === "Write") && !failed ? [] : resultContent(block.content);
+      const shown =
+        tool && (tool.name === "Edit" || tool.name === "Write") && !failed
+          ? []
+          : resultContent(block.content);
       this.update(turn, {
         _meta: { claudeCode: { toolName: tool?.name ?? "" } },
         toolCallId: id,
@@ -543,13 +598,22 @@ class ProcessTap implements StreamTap {
       false,
       stop
         ? { jsonrpc: JSONRPC, id, result: { stopReason: stop } }
-        : { jsonrpc: JSONRPC, id, error: { code: RPC_INTERNAL_ERROR, message: "Internal error", data: { subtype: str(message.subtype) ?? "" } } },
+        : {
+            jsonrpc: JSONRPC,
+            id,
+            error: {
+              code: RPC_INTERNAL_ERROR,
+              message: "Internal error",
+              data: { subtype: str(message.subtype) ?? "" },
+            },
+          },
     );
   }
 
   private remember(id: string, name: string, input: unknown) {
     this.tools.set(id, { name, input });
-    if (this.tools.size > OBSERVER_TOOLS_REMEMBERED) this.tools.delete(this.tools.keys().next().value as string);
+    if (this.tools.size > OBSERVER_TOOLS_REMEMBERED)
+      this.tools.delete(this.tools.keys().next().value as string);
   }
 }
 
@@ -607,7 +671,10 @@ class FeedTap implements HarnessFeed {
     const turn = this.current(key, session, false);
     if (!turn || !text) return;
     this.close(turn, session);
-    this.update(turn, session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    this.update(turn, session, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text },
+    });
   }
 
   settled(key: string, session: string, outcome: FeedOutcome) {
@@ -622,7 +689,15 @@ class FeedTap implements HarnessFeed {
       false,
       "stop" in outcome
         ? { jsonrpc: JSONRPC, id, result: { stopReason: outcome.stop } }
-        : { jsonrpc: JSONRPC, id, error: { code: RPC_INTERNAL_ERROR, message: "Internal error", data: { error: outcome.error } } },
+        : {
+            jsonrpc: JSONRPC,
+            id,
+            error: {
+              code: RPC_INTERNAL_ERROR,
+              message: "Internal error",
+              data: { error: outcome.error },
+            },
+          },
     );
   }
 
@@ -644,11 +719,19 @@ class FeedTap implements HarnessFeed {
     if (!state?.step) return;
     const id = state.step;
     state.step = undefined;
-    this.update(turn, session, { toolCallId: id, sessionUpdate: "tool_call_update", status: "completed" });
+    this.update(turn, session, {
+      toolCallId: id,
+      sessionUpdate: "tool_call_update",
+      status: "completed",
+    });
   }
 
   private update(turn: Turn, session: string, update: Json) {
-    this.telemetry.acp(turn, false, { jsonrpc: JSONRPC, method: "session/update", params: { sessionId: session, update } });
+    this.telemetry.acp(turn, false, {
+      jsonrpc: JSONRPC,
+      method: "session/update",
+      params: { sessionId: session, update },
+    });
   }
 }
 
@@ -698,7 +781,8 @@ class AcpTap implements StreamTap {
     const session = str(params.sessionId);
     if (method === "session/new") {
       this.secrets(params);
-      if (message.id !== undefined) remember(this.opening, String(message.id), str(params.cwd) ?? "");
+      if (message.id !== undefined)
+        remember(this.opening, String(message.id), str(params.cwd) ?? "");
       return;
     }
     if (!session) return;
@@ -775,7 +859,10 @@ class AcpTap implements StreamTap {
     const turn = key === undefined ? undefined : this.telemetry.turnOf(key);
     if (!turn) return undefined;
     let sessions = this.announced.get(turn);
-    if (!sessions) this.announced.set(turn, (sessions = new Set()));
+    if (!sessions) {
+      sessions = new Set();
+      this.announced.set(turn, sessions);
+    }
     if (sessions.has(session)) return turn;
     sessions.add(session);
     turn.sessionId = session;
@@ -810,7 +897,8 @@ class AcpTap implements StreamTap {
         if (bare) this.tokens.add(bare);
       }
     }
-    while (this.tokens.size > ACP_TAP_REMEMBERED) this.tokens.delete(this.tokens.values().next().value as string);
+    while (this.tokens.size > ACP_TAP_REMEMBERED)
+      this.tokens.delete(this.tokens.values().next().value as string);
   }
 
   /** Records one message, with every known token replaced. */
@@ -927,7 +1015,9 @@ function toolFacts(name: string, raw: unknown, cwd: string | undefined): Facts {
         title: path ? `Write ${displayPath(path, cwd)}` : "Preparing file…",
         kind: "edit",
         locations: path ? [{ path }] : [],
-        ...(path ? { content: [{ type: "diff", path, oldText: null, newText: str(input.content) ?? "" }] } : {}),
+        ...(path
+          ? { content: [{ type: "diff", path, oldText: null, newText: str(input.content) ?? "" }] }
+          : {}),
       };
     case "Edit": {
       const oldText = str(input.old_string);
@@ -936,7 +1026,9 @@ function toolFacts(name: string, raw: unknown, cwd: string | undefined): Facts {
         title: path ? `Edit ${displayPath(path, cwd)}` : "Edit",
         kind: "edit",
         locations: path ? [{ path }] : [],
-        ...(path && (oldText || newText) ? { content: [{ type: "diff", path, oldText: oldText || null, newText: newText ?? "" }] } : {}),
+        ...(path && (oldText || newText)
+          ? { content: [{ type: "diff", path, oldText: oldText || null, newText: newText ?? "" }] }
+          : {}),
       };
     }
     case "Bash":
@@ -945,14 +1037,20 @@ function toolFacts(name: string, raw: unknown, cwd: string | undefined): Facts {
       return {
         title: str(input.command) || "Terminal",
         kind: "execute",
-        ...(description ? { content: [{ type: "content", content: { type: "text", text: description } }] } : {}),
+        ...(description
+          ? { content: [{ type: "content", content: { type: "text", text: description } }] }
+          : {}),
       };
     }
     case "Glob": {
       const where = str(input.path);
       const pattern = str(input.pattern);
       return {
-        title: ["Find", ...(where ? [`\`${where}\``] : []), ...(pattern ? [`\`${pattern}\``] : [])].join(" "),
+        title: [
+          "Find",
+          ...(where ? [`\`${where}\``] : []),
+          ...(pattern ? [`\`${pattern}\``] : []),
+        ].join(" "),
         kind: "search",
         locations: where ? [{ path: where }] : [],
       };
@@ -960,7 +1058,10 @@ function toolFacts(name: string, raw: unknown, cwd: string | undefined): Facts {
     case "Grep": {
       const pattern = str(input.pattern);
       const where = str(input.path);
-      return { title: ["grep", ...(pattern ? [`"${pattern}"`] : []), ...(where ? [where] : [])].join(" "), kind: "search" };
+      return {
+        title: ["grep", ...(pattern ? [`"${pattern}"`] : []), ...(where ? [where] : [])].join(" "),
+        kind: "search",
+      };
     }
     case "WebFetch": {
       const url = str(input.url);
@@ -1055,7 +1156,9 @@ class FrameQueue {
     this.chunks = [];
     this.chunkBytes = 0;
     for (const pending of chunks) {
-      const content = object(object(object(object(pending.frame.payload)?.params)?.update)?.content);
+      const content = object(
+        object(object(object(pending.frame.payload)?.params)?.update)?.content,
+      );
       if (content) content.text = pending.text;
       this.enqueue(pending.sources, pending.frame);
     }
@@ -1070,7 +1173,10 @@ class FrameQueue {
 
   private enforceBudget() {
     let dropped = 0;
-    while (this.frameBytes + this.chunkBytes > OBSERVER_QUEUE_MAX_BYTES && this.frames.length + this.chunks.length > 1) {
+    while (
+      this.frameBytes + this.chunkBytes > OBSERVER_QUEUE_MAX_BYTES &&
+      this.frames.length + this.chunks.length > 1
+    ) {
       const oldest = this.frames.shift();
       if (oldest) {
         this.frameBytes -= oldest.bytes;
@@ -1092,14 +1198,22 @@ function chunkKey(frame: ObserverFrame): { key: string; text: string } | undefin
   const text = str(object(update?.content)?.text);
   if (!type || !CHUNK_UPDATES.has(type) || text === undefined) return undefined;
   return {
-    key: JSON.stringify([type, str(update?.messageId) ?? null, frame.channelId, frame.sessionId, frame.turnId, frame.agentIndex]),
+    key: JSON.stringify([
+      type,
+      str(update?.messageId) ?? null,
+      frame.channelId,
+      frame.sessionId,
+      frame.turnId,
+      frame.agentIndex,
+    ]),
     text,
   };
 }
 
 /** buzz-acp `batch_envelope`: metadata of the last inner frame. */
 function envelope(frames: ObserverFrame[]): ObserverFrame {
-  const last = frames[frames.length - 1]!;
+  const last = frames[frames.length - 1];
+  if (!last) throw new Error("observer batch envelope requires at least one frame");
   return {
     seq: last.seq,
     timestamp: last.timestamp,
@@ -1141,8 +1255,11 @@ function largestLeaf(frame: ObserverFrame): Leaf | undefined {
     if (typeof value === "string") {
       const size = bytes(value);
       if ((!best || size > best.size) && shrinks(value)) best = { holder, key, size };
-    } else if (Array.isArray(value)) value.forEach((_, index) => visit(value as unknown as Record<number, unknown>, index));
-    else if (value && typeof value === "object")
+    } else if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) {
+        visit(value as unknown as Record<number, unknown>, index);
+      }
+    } else if (value && typeof value === "object")
       for (const child of Object.keys(value)) visit(value as Record<string, unknown>, child);
   };
   visit(frame as unknown as Record<string, unknown>, "payload");
@@ -1151,7 +1268,10 @@ function largestLeaf(frame: ObserverFrame): Leaf | undefined {
 
 const CONTINUATION_MASK = 0xc0;
 const CONTINUATION = 0x80;
-const isContinuation = (data: Buffer, at: number) => at < data.length && (data[at]! & CONTINUATION_MASK) === CONTINUATION;
+const isContinuation = (data: Buffer, at: number) => {
+  const byte = data[at];
+  return byte !== undefined && (byte & CONTINUATION_MASK) === CONTINUATION;
+};
 const marker = (removed: number) => `…[elided ${removed} bytes]…`;
 
 /** Head end and tail start in bytes, on UTF-8 character boundaries. */

@@ -24,17 +24,26 @@ const REQUEST_CHARS = 12;
 const BOGUS_CONTEXT = { channel: "00000000-0000-4000-8000-000000000000" };
 const agentArg = process.argv[2] ?? "";
 const log = (entry) => {
-  if (process.env.FAKE_PI_LOG) appendFileSync(process.env.FAKE_PI_LOG, `${JSON.stringify({ pid: process.pid, agent: agentArg, ...entry })}\n`);
+  if (process.env.FAKE_PI_LOG)
+    appendFileSync(
+      process.env.FAKE_PI_LOG,
+      `${JSON.stringify({ pid: process.pid, agent: agentArg, ...entry })}\n`,
+    );
 };
 const statePath = (agent) => join(process.env.FAKE_PI_STATE ?? ".", `${agent}.json`);
-const load = (agent) => (existsSync(statePath(agent)) ? JSON.parse(readFileSync(statePath(agent), "utf8")) : { places: {}, unfinished: [], next: 1 });
+const load = (agent) =>
+  existsSync(statePath(agent))
+    ? JSON.parse(readFileSync(statePath(agent), "utf8"))
+    : { places: {}, unfinished: [], next: 1 };
 const save = (agent, state) => writeFileSync(statePath(agent), JSON.stringify(state));
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
 log({
   type: "start",
   argv: process.argv.slice(2),
-  env: Object.keys(process.env).filter((key) => !key.startsWith("__")).sort(),
+  env: Object.keys(process.env)
+    .filter((key) => !key.startsWith("__"))
+    .sort(),
   piDir: process.env.PI_CODING_AGENT_DIR,
 });
 
@@ -93,8 +102,12 @@ async function run(agent, key, conversation, text, request) {
   if (mode === "HANG") return;
   if (mode === "SLOW") await new Promise((resolve) => setTimeout(resolve, SLOW_MS));
   if (!runs.has(key)) return;
-  if (mode === "FAIL") return finish(key, { status: "unanswered", reason: "error", detail: "provider said no" });
-  write({ method: "event", params: { agent, conversation, type: "step", tool: "bash", target: "ls -la" } });
+  if (mode === "FAIL")
+    return finish(key, { status: "unanswered", reason: "error", detail: "provider said no" });
+  write({
+    method: "event",
+    params: { agent, conversation, type: "step", tool: "bash", target: "ls -la" },
+  });
   // The reply names the request, so the smoke can match it to its event.
   const words = `${REQUEST_PREFIX}${String(request).slice(0, REQUEST_CHARS)}`;
   const steered = runs.get(key)?.submissions.length > 1;
@@ -103,9 +116,21 @@ async function run(agent, key, conversation, text, request) {
     conversation,
     context: BOGUS_CONTEXT,
     name: "send",
-    arguments: { text: `${PREFIX_REPLY}${words}${steered ? " (steered)" : ""}`, audience: "everyone", final: true },
+    arguments: {
+      text: `${PREFIX_REPLY}${words}${steered ? " (steered)" : ""}`,
+      audience: "everyone",
+      final: true,
+    },
   }).catch((error) => ({ error: String(error) }));
-  log({ type: "tool", key, name: "send", isError: Boolean(result?.isError || result?.error), final: result?.final === true, contextSent: BOGUS_CONTEXT, said: String(result?.content?.[0]?.text ?? result?.error ?? "").slice(0, 300) });
+  log({
+    type: "tool",
+    key,
+    name: "send",
+    isError: Boolean(result?.isError || result?.error),
+    final: result?.final === true,
+    contextSent: BOGUS_CONTEXT,
+    said: String(result?.content?.[0]?.text ?? result?.error ?? "").slice(0, 300),
+  });
   finish(key, { status: "done", text: `${PREFIX_REPLY}${words}` });
 }
 
@@ -114,13 +139,21 @@ const methods = {
   // credentials: no provider is configured and Pi's settings pick nothing.
   providers: () =>
     existsSync(join(process.env.FAKE_PI_STATE ?? ".", "signed-out"))
-      ? { providers: PROVIDERS.map(({ configured: _configured, ...provider }) => provider), defaults: {} }
+      ? {
+          providers: PROVIDERS.map(({ configured: _configured, ...provider }) => provider),
+          defaults: {},
+        }
       : { providers: PROVIDERS, defaults: DEFAULTS },
   defaults: () => DEFAULTS,
   models: ({ provider }) => MODELS[provider] ?? [],
   open({ agent, tools, hint }) {
     opened.add(agent);
-    log({ type: "open", tools: tools.map((tool) => tool.name), loads: [...new Set(tools.map((tool) => tool.load))], hint });
+    log({
+      type: "open",
+      tools: tools.map((tool) => tool.name),
+      loads: [...new Set(tools.map((tool) => tool.load))],
+      hint,
+    });
     return {};
   },
   unfinished({ agent }) {
@@ -140,11 +173,28 @@ const methods = {
     return { seen: load(agent).places[key]?.seen ?? 0 };
   },
   deliver(params) {
-    const { agent, key, at, context, request, text, steer, provider, model, thinking, instructions, cwd, core, pick } = params;
+    const {
+      agent,
+      key,
+      at,
+      context,
+      request,
+      text,
+      steer,
+      provider,
+      model,
+      thinking,
+      instructions,
+      cwd,
+      core,
+      pick,
+    } = params;
     if (!opened.has(agent)) throw new Error("The agent is not open");
-    if (/\bNOMODEL\b/.test(text)) throw new Error("This agent has no model. Choose a provider and model in its Identity tab.");
+    if (/\bNOMODEL\b/.test(text))
+      throw new Error("This agent has no model. Choose a provider and model in its Identity tab.");
     const state = load(agent);
-    const place = (state.places[key] ??= { conversation: state.next++, seen: 0 });
+    if (!state.places[key]) state.places[key] = { conversation: state.next++, seen: 0 };
+    const place = state.places[key];
     const conversation = place.conversation;
     const submission = state.next++;
     const busy = runs.has(key);
@@ -170,7 +220,10 @@ const methods = {
     state.unfinished.push({ submission, conversation, request });
     save(agent, state);
     waiting.set(submission, { agent, waiters: [], result: undefined });
-    write({ method: "event", params: { agent, conversation, type: "placed", request, entry: submission } });
+    write({
+      method: "event",
+      params: { agent, conversation, type: "placed", request, entry: submission },
+    });
     if (busy) runs.get(key).submissions.push(submission);
     else {
       runs.set(key, { submissions: [submission] });
@@ -186,7 +239,8 @@ const methods = {
   },
   abort({ agent, conversation }) {
     for (const [key, place] of Object.entries(load(agent).places))
-      if (place.conversation === conversation) finish(key, { status: "unanswered", reason: "aborted" });
+      if (place.conversation === conversation)
+        finish(key, { status: "unanswered", reason: "aborted" });
     return {};
   },
   session({ key, action }) {
@@ -210,7 +264,11 @@ lines.on("line", async (line) => {
     }
     log({
       type: "launch",
-      ok: typeof first.host === "string" && first.host.includes("BUZZ_PI_HOST") && typeof first.package === "string" && typeof first.lock === "string",
+      ok:
+        typeof first.host === "string" &&
+        first.host.includes("BUZZ_PI_HOST") &&
+        typeof first.package === "string" &&
+        typeof first.lock === "string",
       hostBytes: first.host?.length ?? 0,
     });
     write({ method: "ready", params: {} });

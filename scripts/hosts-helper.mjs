@@ -49,7 +49,13 @@
 // Exit: 0 when stdin ends and every call is answered; 64 for wrong arguments.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { PluginBuildError, readJson, runnerOrigin, validateHosts, writeAtomic } from "./build-plugin.mjs";
+import {
+  PluginBuildError,
+  readJson,
+  runnerOrigin,
+  validateHosts,
+  writeAtomic,
+} from "./build-plugin.mjs";
 import { parseSetupRequest, setupHost } from "./host-setup.mjs";
 import { HostSignIn } from "./host-signin.mjs";
 
@@ -100,7 +106,8 @@ export class HostsHelperError extends Error {
  * anything past the one fixed flag is refused: the plugin cannot point the
  * helper at another file. */
 function parseArgs(argv) {
-  if (argv.length !== 2 || argv[0] !== "--hosts" || !argv[1]) throw new PluginBuildError(USAGE, { exit: EXIT_USAGE });
+  if (argv.length !== 2 || argv[0] !== "--hosts" || !argv[1])
+    throw new PluginBuildError(USAGE, { exit: EXIT_USAGE });
   return { hostsPath: resolve(argv[1]) };
 }
 
@@ -114,11 +121,18 @@ export function parseRequest(line) {
   } catch (cause) {
     throw new HostsHelperError("request is not JSON", { cause });
   }
-  if (!request || typeof request !== "object" || Array.isArray(request)) throw new HostsHelperError("request must be a JSON object");
+  if (!request || typeof request !== "object" || Array.isArray(request))
+    throw new HostsHelperError("request must be a JSON object");
   if (!isId(request.id)) throw new HostsHelperError("request id must be a positive whole number");
-  if (!OPS.includes(request.op)) throw Object.assign(new HostsHelperError(`request op must be one of ${OPS.join(", ")}`), { id: request.id });
+  if (!OPS.includes(request.op))
+    throw Object.assign(new HostsHelperError(`request op must be one of ${OPS.join(", ")}`), {
+      id: request.id,
+    });
   const extra = Object.keys(request).filter((key) => !REQUEST_KEYS[request.op].includes(key));
-  if (extra.length) throw Object.assign(new HostsHelperError(`unknown request keys: ${extra.join(", ")}`), { id: request.id });
+  if (extra.length)
+    throw Object.assign(new HostsHelperError(`unknown request keys: ${extra.join(", ")}`), {
+      id: request.id,
+    });
   return request;
 }
 
@@ -127,17 +141,32 @@ export function parseRequest(line) {
  * address, and the path stays under the contract's prefix. */
 export function runnerUrl(hosts, request) {
   const host = hosts.find((entry) => entry.id === request.host);
-  if (typeof request.host !== "string" || !host) throw new HostsHelperError(`no host ${JSON.stringify(String(request.host).slice(0, 40))} in hosts.json`);
-  if (!METHODS.includes(request.method)) throw new HostsHelperError(`method must be one of ${METHODS.join(", ")}`);
-  if (typeof request.path !== "string" || !PATH_RE.test(request.path)) throw new HostsHelperError("path is not a runner route");
-  if (request.body !== undefined && (typeof request.body !== "string" || !BODY_METHODS.includes(request.method)))
-    throw new HostsHelperError(`a body must be text, and only ${BODY_METHODS.join(" or ")} take one`);
-  if (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1 || request.timeoutMs > TIMEOUT_MAX_MS)
+  if (typeof request.host !== "string" || !host)
+    throw new HostsHelperError(
+      `no host ${JSON.stringify(String(request.host).slice(0, 40))} in hosts.json`,
+    );
+  if (!METHODS.includes(request.method))
+    throw new HostsHelperError(`method must be one of ${METHODS.join(", ")}`);
+  if (typeof request.path !== "string" || !PATH_RE.test(request.path))
+    throw new HostsHelperError("path is not a runner route");
+  if (
+    request.body !== undefined &&
+    (typeof request.body !== "string" || !BODY_METHODS.includes(request.method))
+  )
+    throw new HostsHelperError(
+      `a body must be text, and only ${BODY_METHODS.join(" or ")} take one`,
+    );
+  if (
+    !Number.isInteger(request.timeoutMs) ||
+    request.timeoutMs < 1 ||
+    request.timeoutMs > TIMEOUT_MAX_MS
+  )
     throw new HostsHelperError(`timeoutMs must be 1-${TIMEOUT_MAX_MS}`);
   const origin = runnerOrigin(host.origin);
   const url = new URL(`${origin}${API_PREFIX}${request.path}`);
   // validateHosts and PATH_RE make this hold; the check keeps it so if either changes.
-  if (url.origin !== origin || url.pathname !== `${API_PREFIX}${request.path}`) throw new HostsHelperError("path leaves the runner API");
+  if (url.origin !== origin || url.pathname !== `${API_PREFIX}${request.path}`)
+    throw new HostsHelperError("path leaves the runner API");
   return url;
 }
 
@@ -170,15 +199,24 @@ async function runnerCall(request, { hostsPath }) {
   try {
     const response = await fetch(url, {
       method: request.method,
-      headers: { Accept: "application/json", ...(request.body === undefined ? {} : { "Content-Type": "application/json" }) },
+      headers: {
+        Accept: "application/json",
+        ...(request.body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
       ...(request.body === undefined ? {} : { body: request.body }),
       redirect: "manual",
       signal: AbortSignal.timeout(request.timeoutMs),
     });
     return { status: response.status, body: await boundedText(response) };
   } catch (cause) {
-    const reason = cause?.name === "TimeoutError" ? `no answer in ${request.timeoutMs} ms` : String(cause?.cause?.code || cause?.cause?.message || cause?.message || cause);
-    throw new HostsHelperError(`${request.method} ${API_PREFIX}${request.path} on ${request.host} failed after ${Date.now() - started} ms: ${reason}`, { cause });
+    const reason =
+      cause?.name === "TimeoutError"
+        ? `no answer in ${request.timeoutMs} ms`
+        : String(cause?.cause?.code || cause?.cause?.message || cause?.message || cause);
+    throw new HostsHelperError(
+      `${request.method} ${API_PREFIX}${request.path} on ${request.host} failed after ${Date.now() - started} ms: ${reason}`,
+      { cause },
+    );
   }
 }
 
@@ -194,7 +232,11 @@ async function setup(request, paths, emit) {
   if (settingUp) throw new HostsHelperError("a setup is already running; wait for it to end");
   settingUp = true;
   try {
-    return await setupHost(parsed, { hostsPath: paths.hostsPath, onProgress: emit, deps: paths.setupDeps });
+    return await setupHost(parsed, {
+      hostsPath: paths.hostsPath,
+      onProgress: emit,
+      deps: paths.setupDeps,
+    });
   } finally {
     settingUp = false;
   }
@@ -207,9 +249,14 @@ let signingIn;
 /** One sign-in; `emit` sends the terminal to the plugin as it changes. Not
  * while a setup runs: the setup may replace buzz-login on that machine. */
 async function signIn(request, paths, emit) {
-  if (signingIn) throw new HostsHelperError("a sign-in is already running; cancel it or wait for it to end");
+  if (signingIn)
+    throw new HostsHelperError("a sign-in is already running; cancel it or wait for it to end");
   if (settingUp) throw new HostsHelperError("a setup is running; sign in when it ends");
-  const session = new HostSignIn(request.signin, { hostsPath: paths.hostsPath, onProgress: emit, deps: paths.signInDeps });
+  const session = new HostSignIn(request.signin, {
+    hostsPath: paths.hostsPath,
+    onProgress: emit,
+    deps: paths.signInDeps,
+  });
   signingIn = session;
   try {
     return await session.run();
@@ -235,10 +282,12 @@ function signInControl(request) {
  * (the `deps` of host-setup.mjs and host-signin.mjs); the command line
  * never sets them. */
 export async function handle(request, paths, emit = () => {}) {
-  if (request.op === "read") return { hosts: validateHosts(readJson(paths.hostsPath, "hosts file"), paths.hostsPath) };
+  if (request.op === "read")
+    return { hosts: validateHosts(readJson(paths.hostsPath, "hosts file"), paths.hostsPath) };
   if (request.op === "setup") return setup(request, paths, emit);
   if (request.op === "signin") return signIn(request, paths, emit);
-  if (request.op === "signin-input" || request.op === "signin-cancel") return signInControl(request);
+  if (request.op === "signin-input" || request.op === "signin-cancel")
+    return signInControl(request);
   if (request.op === "save") {
     // The setup's own add would write over a save made while it runs.
     if (settingUp) throw new HostsHelperError("a setup is running; save again when it ends");
@@ -250,7 +299,8 @@ export async function handle(request, paths, emit = () => {}) {
 }
 
 const reply = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const errorReply = (id, error) => reply({ id: id ?? null, ok: false, error: String(error?.message ?? error).slice(0, ERROR_MAX) });
+const errorReply = (id, error) =>
+  reply({ id: id ?? null, ok: false, error: String(error?.message ?? error).slice(0, ERROR_MAX) });
 
 /** Reads request lines and answers each; resolves when stdin ends and every
  * call is answered. */
@@ -279,7 +329,17 @@ async function serve(paths) {
         (fields) => reply({ id: request.id, ok: true, ...fields }),
         (error) => {
           // stderr is for a person who runs the helper by hand; Desktop gives it to the plugin's log.
-          console.error(JSON.stringify({ event: "hosts-helper.failed", op: request.op, host: request.host, path: request.path, step: error?.step, elapsedMs: Date.now() - started, error: String(error?.message ?? error) }));
+          console.error(
+            JSON.stringify({
+              event: "hosts-helper.failed",
+              op: request.op,
+              host: request.host,
+              path: request.path,
+              step: error?.step,
+              elapsedMs: Date.now() - started,
+              error: String(error?.message ?? error),
+            }),
+          );
           errorReply(request.id, error);
         },
       )
@@ -292,16 +352,18 @@ async function serve(paths) {
   process.stdin.setEncoding("utf8");
   for await (const chunk of process.stdin) {
     buffered += chunk;
-    let newline;
-    while ((newline = buffered.indexOf("\n")) !== -1) {
+    let newline = buffered.indexOf("\n");
+    while (newline !== -1) {
       const line = buffered.slice(0, newline);
       buffered = buffered.slice(newline + 1);
       // The rest of an overlong line is dropped up to its end.
       if (skipping) skipping = false;
       else dispatch(line);
+      newline = buffered.indexOf("\n");
     }
     if (buffered.length > LINE_MAX) {
-      if (!skipping) errorReply(null, new HostsHelperError(`request line is longer than ${LINE_MAX} bytes`));
+      if (!skipping)
+        errorReply(null, new HostsHelperError(`request line is longer than ${LINE_MAX} bytes`));
       skipping = true;
       buffered = "";
     }

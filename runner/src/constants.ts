@@ -52,7 +52,8 @@ export const EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max
 export const HEX64 = /^[0-9a-f]{64}$/;
 export const HEX128 = /^[0-9a-f]{128}$/;
 /** Buzz channel ids are UUIDs (buzz-acp parses them as `Uuid`). */
-export const CHANNEL_ID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+export const CHANNEL_ID =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 /** Model ids and aliases Claude takes: letters, digits, `.-_:[]`. The first
  * character is alphanumeric, so a value can never be read as a CLI flag. */
 export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\-[\]]*$/;
@@ -246,7 +247,12 @@ export const HARNESS_CATALOG = Object.freeze({
 export type HarnessId = keyof typeof HARNESS_CATALOG;
 export const CLAUDE_HARNESS: HarnessId = "claude-code";
 /** Desktop's own order of the harness choice. */
-export const DEFAULT_HARNESSES: readonly HarnessId[] = Object.freeze(["claude-code", "codex", "goose", "pi"]);
+export const DEFAULT_HARNESSES: readonly HarnessId[] = Object.freeze([
+  "claude-code",
+  "codex",
+  "goose",
+  "pi",
+]);
 /** Desktop's session scopes (claude-code `config.scope`): one session per
  * thread, or one per channel that every thread shares. */
 export const SCOPES = ["thread", "channel"] as const;
@@ -280,14 +286,15 @@ export const CLAUDE_HIDDEN_EFFORT = "max";
  * Pi clamps to what the model supports. Goose: every level, because each
  * model lists its own (`thinking_effort`) and Goose refuses one it lacks,
  * which fails that turn with Goose's own words. */
-export const HARNESS_EFFORTS: Readonly<Partial<Record<HarnessId, readonly string[]>>> = Object.freeze({
-  "claude-code": Object.freeze(["low", "medium", "high", "xhigh"]),
-  goose: Object.freeze([...EFFORTS]),
-  pi: Object.freeze(["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
-  // Codex's reasoning efforts; a level the model lacks runs at the model's
-  // default (Desktop codex `prepare`).
-  codex: Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh"]),
-});
+export const HARNESS_EFFORTS: Readonly<Partial<Record<HarnessId, readonly string[]>>> =
+  Object.freeze({
+    "claude-code": Object.freeze(["low", "medium", "high", "xhigh"]),
+    goose: Object.freeze([...EFFORTS]),
+    pi: Object.freeze(["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
+    // Codex's reasoning efforts; a level the model lacks runs at the model's
+    // default (Desktop codex `prepare`).
+    codex: Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh"]),
+  });
 export const PI_HARNESS: HarnessId = "pi";
 export const GOOSE_HARNESS: HarnessId = "goose";
 export const CODEX_HARNESS: HarnessId = "codex";
@@ -304,13 +311,14 @@ export const HARNESS_MODEL_IDS: Readonly<Partial<Record<HarnessId, RegExp>>> = O
  * own args reach the wrapper. Pi's args are its launcher source, which the
  * wrapper replaces with its fixed launcher, so they are dropped. Goose's
  * module starts `goose` (its manifest's `goose-acp`) with no args. */
-export const HARNESS_PROGRAMS: Readonly<Partial<Record<HarnessId, Readonly<{ programs: readonly string[]; passArgs: boolean }>>>> =
-  Object.freeze({
-    goose: Object.freeze({ programs: Object.freeze(["goose"]), passArgs: false }),
-    // Codex's module starts `app-server`; the wrapper runs it with fixed args.
-    codex: Object.freeze({ programs: Object.freeze(["app-server"]), passArgs: false }),
-    pi: Object.freeze({ programs: Object.freeze(["pi-sh"]), passArgs: false }),
-  });
+export const HARNESS_PROGRAMS: Readonly<
+  Partial<Record<HarnessId, Readonly<{ programs: readonly string[]; passArgs: boolean }>>>
+> = Object.freeze({
+  goose: Object.freeze({ programs: Object.freeze(["goose"]), passArgs: false }),
+  // Codex's module starts `app-server`; the wrapper runs it with fixed args.
+  codex: Object.freeze({ programs: Object.freeze(["app-server"]), passArgs: false }),
+  pi: Object.freeze({ programs: Object.freeze(["pi-sh"]), passArgs: false }),
+});
 /** The generic wrapper's self-report: `harness-wrapper <id> --path` prints
  * the binary path it runs for `id`, so the runner can check its config. */
 export const WRAPPER_PATH_FLAG = "--path";

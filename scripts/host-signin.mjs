@@ -28,7 +28,17 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readJson, validateHosts } from "./build-plugin.mjs";
-import { CHECK_LINK_RE, KILL_GRACE_MS, PASSWORD_MAX, SSH_BIN, SSH_USER_RE, clip, findPeer, sshArgs, tailscaleStatus } from "./host-setup.mjs";
+import {
+  CHECK_LINK_RE,
+  clip,
+  findPeer,
+  KILL_GRACE_MS,
+  PASSWORD_MAX,
+  SSH_BIN,
+  SSH_USER_RE,
+  sshArgs,
+  tailscaleStatus,
+} from "./host-setup.mjs";
 
 /** The sign-ins the page offers, as buzz-login's own commands (its USAGE).
  * Only fixed words: a provider or a model is chosen at buzz-login's own
@@ -87,10 +97,16 @@ const ESCAPE_HOLD_MAX = 512;
 const WORK_PREFIX = "buzz-signin-";
 /** Terminal escape sequences: OSC (a link or a title), CSI (colour, cursor)
  * and the two-character ones. The page shows plain text. */
-const ESCAPES = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-Z\\-_]/g;
+const ESCAPES =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional stripping of ANSI/OSC/CSI terminal escape sequences
+  /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-Z\\-_]/g;
 /** Control characters other than line ends and tabs: a bell or a backspace
  * means nothing on the page. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional stripping of non-printing control bytes from terminal output
 const OTHER_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f]/g;
+/** Disallowed line-breaking or NUL bytes in single-line password or terminal input. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional rejection of NUL/newline bytes in single-line input validation
+const DISALLOWED_LINE_CHARS = /[\n\r\u0000]/;
 const LINE_ENDS = /(\r\n|\n|\r)/;
 
 /** A sign-in the helper refuses or that failed, with the reason the page
@@ -105,7 +121,8 @@ export class HostSignInError extends Error {
 /** Refuses anything but a plain object with only the known keys, so no
  * field is read from a request the page could not have sent. */
 function requireSignInShape(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HostSignInError("sign-in must be an object");
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    throw new HostSignInError("sign-in must be an object");
   const extra = Object.keys(raw).filter((key) => !SIGNIN_KEYS.includes(key));
   if (extra.length) throw new HostSignInError(`unknown sign-in keys: ${extra.join(", ")}`);
 }
@@ -113,26 +130,36 @@ function requireSignInShape(raw) {
 /** The login and password rules, apart from the request parse: both reach
  * the remote shell, so each keeps its own plain refusal. */
 function requireSignInCredentials(sshUser, sudoPassword) {
-  if (typeof sshUser !== "string" || (sshUser && !SSH_USER_RE.test(sshUser))) throw new HostSignInError("the SSH login must be a Linux user name");
-  if (typeof sudoPassword !== "string" || sudoPassword.length > PASSWORD_MAX || /[\n\r\u0000]/.test(sudoPassword))
-    throw new HostSignInError(`the sudo password must be one line of at most ${PASSWORD_MAX} characters`);
+  if (typeof sshUser !== "string" || (sshUser && !SSH_USER_RE.test(sshUser)))
+    throw new HostSignInError("the SSH login must be a Linux user name");
+  if (
+    typeof sudoPassword !== "string" ||
+    sudoPassword.length > PASSWORD_MAX ||
+    DISALLOWED_LINE_CHARS.test(sudoPassword)
+  )
+    throw new HostSignInError(
+      `the sudo password must be one line of at most ${PASSWORD_MAX} characters`,
+    );
 }
 
 /** The sign-in request as the page may send it, and nothing else. */
 export function parseSignInRequest(raw) {
   requireSignInShape(raw);
   const { host, sshUser = "", sudoPassword = "", command } = raw;
-  if (typeof host !== "string" || !host) throw new HostSignInError("the sign-in must name a host id");
+  if (typeof host !== "string" || !host)
+    throw new HostSignInError("the sign-in must name a host id");
   requireSignInCredentials(sshUser, sudoPassword);
   if (typeof command !== "string" || !Object.hasOwn(SIGNIN_COMMANDS, command))
-    throw new HostSignInError(`the command must be one of ${Object.keys(SIGNIN_COMMANDS).join(", ")}`);
+    throw new HostSignInError(
+      `the command must be one of ${Object.keys(SIGNIN_COMMANDS).join(", ")}`,
+    );
   return { host, sshUser, sudoPassword, command };
 }
 
 /** One line that the owner typed, as the terminal may get it: a key, a
  * pasted code or a menu answer. An empty line is an Enter. */
 export function parseSignInInput(text) {
-  if (typeof text !== "string" || text.length > INPUT_MAX || /[\n\r\u0000]/.test(text))
+  if (typeof text !== "string" || text.length > INPUT_MAX || DISALLOWED_LINE_CHARS.test(text))
     throw new HostSignInError(`the input must be one line of at most ${INPUT_MAX} characters`);
   return text;
 }
@@ -200,7 +227,9 @@ class Screen {
   /** The screen as the page may see it: `mask` runs on each whole line,
    * then the line is cut to its bound. */
   text(mask) {
-    return [...this.lines, this.current].map((line) => mask(line).slice(0, SCREEN_LINE_MAX)).join("\n");
+    return [...this.lines, this.current]
+      .map((line) => mask(line).slice(0, SCREEN_LINE_MAX))
+      .join("\n");
   }
 }
 
@@ -233,7 +262,9 @@ export class HostSignIn {
   /** What the page may see: the screen with the sudo marker named and every
    * secret masked. */
   #output() {
-    return this.#screen.text((line) => this.#mask(line.replaceAll(this.#marker, "sudo password: ")));
+    return this.#screen.text((line) =>
+      this.#mask(line.replaceAll(this.#marker, "sudo password: ")),
+    );
   }
 
   #mask(text) {
@@ -246,7 +277,11 @@ export class HostSignIn {
     if (this.#emitTimer) return;
     this.#emitTimer = setTimeout(() => {
       this.#emitTimer = undefined;
-      this.#onProgress({ state: "running", output: this.#output(), ...(this.#link ? { link: this.#link } : {}) });
+      this.#onProgress({
+        state: "running",
+        output: this.#output(),
+        ...(this.#link ? { link: this.#link } : {}),
+      });
     }, EMIT_MS);
   }
 
@@ -273,13 +308,17 @@ export class HostSignIn {
    * again would only use up sudo's tries. */
   #watchMarker(text) {
     this.#scan += text;
-    let at;
-    while ((at = this.#scan.indexOf(this.#marker)) !== -1) {
+    let at = this.#scan.indexOf(this.#marker);
+    while (at !== -1) {
       this.#scan = this.#scan.slice(at + this.#marker.length);
       this.#markers += 1;
       if (this.#markers > 1) return this.#stop("sudo refused the password");
-      if (!this.#request.sudoPassword) return this.#stop("sudo on the machine asks for a password: enter it, or run Add host again with this login, then start the sign-in again");
+      if (!this.#request.sudoPassword)
+        return this.#stop(
+          "sudo on the machine asks for a password: enter it, or run Add host again with this login, then start the sign-in again",
+        );
       this.#child.stdin.write(`${this.#request.sudoPassword}\r`);
+      at = this.#scan.indexOf(this.#marker);
     }
     this.#scan = this.#scan.slice(-this.#marker.length);
   }
@@ -288,7 +327,7 @@ export class HostSignIn {
    * MASK_MIN characters or more may be a key, so it is masked from then on. */
   input(text) {
     const line = parseSignInInput(text);
-    if (!this.#child || !this.#child.stdin.writable) throw new HostSignInError("the sign-in is not running");
+    if (!this.#child?.stdin.writable) throw new HostSignInError("the sign-in is not running");
     if (line.length >= MASK_MIN) this.#secrets.push(line);
     this.#child.stdin.write(`${line}\r`);
   }
@@ -305,7 +344,9 @@ export class HostSignIn {
     const work = mkdtempSync(join(tmpdir(), WORK_PREFIX));
     try {
       const knownHosts = join(work, "known_hosts");
-      writeFileSync(knownHosts, peer.keys.map((key) => `${peer.dnsName} ${key}\n`).join(""), { mode: 0o600 });
+      writeFileSync(knownHosts, peer.keys.map((key) => `${peer.dnsName} ${key}\n`).join(""), {
+        mode: 0o600,
+      });
       const session = { sshUser: this.#request.sshUser, knownHosts, port: sshPort, tty: true };
       const command = remoteCommand(this.#marker, SIGNIN_COMMANDS[this.#request.command]);
       const { code, stderr } = await this.#session(ssh, sshArgs(peer, session, command));
@@ -322,14 +363,21 @@ export class HostSignIn {
 
   #result(host, code, stderr) {
     if (this.#failure) throw new HostSignInError(this.#failure);
-    if (code === EXIT_NO_TOOL) throw new HostSignInError(`${host.label} has no ${LOGIN_TOOL}: run Add host for it first`);
-    if (code === EXIT_SSH) throw new HostSignInError(`ssh failed: ${clip(this.#mask(stderr).trim().split("\n").at(-1) || "exit 255")}`);
+    if (code === EXIT_NO_TOOL)
+      throw new HostSignInError(`${host.label} has no ${LOGIN_TOOL}: run Add host for it first`);
+    if (code === EXIT_SSH)
+      throw new HostSignInError(
+        `ssh failed: ${clip(this.#mask(stderr).trim().split("\n").at(-1) || "exit 255")}`,
+      );
     return { code, output: this.#output() };
   }
 
   #session(ssh, args) {
     return new Promise((done, failed) => {
-      const child = spawn(ssh, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, TERM: TERM_TYPE } });
+      const child = spawn(ssh, args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, TERM: TERM_TYPE },
+      });
       this.#child = child;
       let raw = 0;
       let stderr = "";
@@ -354,7 +402,10 @@ export class HostSignIn {
       });
       // A write after the session ended is no error of the owner's.
       child.stdin.on("error", () => {});
-      const timer = setTimeout(() => this.#stop(`the sign-in did not end in ${SIGNIN_TIMEOUT_MS / 60_000} minutes`), SIGNIN_TIMEOUT_MS);
+      const timer = setTimeout(
+        () => this.#stop(`the sign-in did not end in ${SIGNIN_TIMEOUT_MS / 60_000} minutes`),
+        SIGNIN_TIMEOUT_MS,
+      );
       child.on("error", (cause) => {
         clearTimeout(timer);
         failed(new HostSignInError(`ssh did not start: ${cause.message}`, { cause }));
